@@ -727,12 +727,14 @@ function HistoryTab({history}){
   </div>;
 }
 
-function AIScanTab({stats,profile}){
+function AIScanTab({stats,profile,onAddMeal}){
   const[phase,setPhase]=useState("idle");
   const[imgData,setImgData]=useState(null);
   const[result,setResult]=useState(null);
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState("");
+  const[recipes,setRecipes]=useState(null);
+  const[recipesLoading,setRecipesLoading]=useState(false);
   const fileRef=useRef();
   const camRef=useRef();
 
@@ -759,6 +761,17 @@ function AIScanTab({stats,profile}){
       const json=extractJSON(raw);
       setResult(json);
       setPhase("results");
+      setRecipesLoading(true);
+      try{
+        const recRaw=await callClaude(
+          [{role:"user",content:`Body scan: grade ${json.overallGrade||"B"}, body fat ${json.bodyFatRange||"unknown"}, goal: ${profile.goal}, age: ${profile.age}. Suggest 3 personalized meal recipes optimized for this physique. Return ONLY: {"recipes":[{"name":"string","meal":"Breakfast|Lunch|Dinner","emoji":"single emoji","desc":"brief ingredients","cal":number,"p":number,"c":number,"f":number,"prepTime":"X min","tag":"string"}]}`}],
+          "You are a sports nutritionist. Return ONLY a raw JSON object with a 'recipes' array of exactly 3 recipe objects. No markdown, no explanation.",
+          500
+        );
+        const recJson=extractJSON(recRaw);
+        if(recJson?.recipes&&Array.isArray(recJson.recipes))setRecipes(recJson.recipes.slice(0,3));
+      }catch(e){/* silent fail */}
+      finally{setRecipesLoading(false);}
     }catch(e){
       setError(e.message||"Analysis failed. Please try again.");
       setPhase("error");
@@ -767,7 +780,7 @@ function AIScanTab({stats,profile}){
     }
   };
 
-  const reset=()=>{setPhase("idle");setImgData(null);setResult(null);setError("");};
+  const reset=()=>{setPhase("idle");setImgData(null);setResult(null);setError("");setRecipes(null);setRecipesLoading(false);};
 
   if(phase==="results"&&result){
     const gc=gradeColor(result.overallGrade);
@@ -837,6 +850,36 @@ function AIScanTab({stats,profile}){
             </div>
           ))}
         </div>}
+        {(recipesLoading||recipes)&&<Card style={{marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:recipesLoading&&!recipes?6:14}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700}}>Recipes for Your Physique</div>
+            {recipesLoading&&<Spin size={14} color={C.terra}/>}
+          </div>
+          {recipesLoading&&!recipes&&<div style={{fontSize:11,color:C.dust,fontStyle:"italic",paddingBottom:4}}>Generating personalized recipes…</div>}
+          {recipes&&<div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {recipes.map((r,i)=>{
+              const colors=[C.terra,C.sage,C.gold];const rc=colors[i%colors.length];
+              return<div key={i} className="recipe-card"
+                onClick={onAddMeal?()=>onAddMeal({id:Date.now()+i,name:r.name,time:r.meal==="Breakfast"?"08:00":r.meal==="Lunch"?"12:30":"19:00",cal:r.cal||0,p:r.p||0,c:r.c||0,f:r.f||0,tag:r.meal||"Meal"}):undefined}
+                style={{background:`linear-gradient(135deg,${rc}14,${rc}06)`,border:`1px solid ${rc}30`,borderRadius:18,padding:"14px 16px",display:"flex",alignItems:"center",gap:12,cursor:onAddMeal?"pointer":"default"}}>
+                <div style={{fontSize:32,flexShrink:0}}>{r.emoji||"🍽️"}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{r.name}</div>
+                    {r.tag&&<div style={{padding:"2px 7px",borderRadius:99,background:`${rc}20`,fontSize:8,color:rc,letterSpacing:1,textTransform:"uppercase",flexShrink:0}}>{r.tag}</div>}
+                  </div>
+                  <div style={{fontSize:10,color:C.dust,marginBottom:7,lineHeight:1.4}}>{r.desc}</div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    {[{v:`${r.cal||0} kcal`,c:rc},{v:`P ${r.p||0}g`,c:C.dust},{v:`C ${r.c||0}g`,c:C.dust},{v:`F ${r.f||0}g`,c:C.dust},{v:r.prepTime,c:C.dust}].filter(x=>x.v&&x.v!=="undefined").map(({v,c})=>(
+                      <span key={v} style={{fontSize:9,padding:"2px 8px",background:C.warm,borderRadius:99,color:c}}>{v}</span>
+                    ))}
+                  </div>
+                  {onAddMeal&&<div style={{fontSize:9,color:rc,marginTop:5}}>Tap to log meal →</div>}
+                </div>
+              </div>;
+            })}
+          </div>}
+        </Card>}
         <PBtn full onClick={reset} style={{background:C.warm,color:C.ink}}>New Scan</PBtn>
       </div>
     );
@@ -1136,7 +1179,7 @@ export default function MassIQ(){
         </div>
       </div>}
 
-      {navTab==="scan"&&<AIScanTab stats={stats} profile={profile}/>}
+      {navTab==="scan"&&<AIScanTab stats={stats} profile={profile} onAddMeal={addMeal}/>}
       {navTab==="challenges"&&<ChallengesTab meals={meals} habits={habits} stats={stats} score={score} history={history}/>}
       {navTab==="history"&&<HistoryTab history={history}/>}
 
