@@ -40,6 +40,13 @@ const CSS = `
   .ch-card{transition:transform .2s ease,box-shadow .2s ease;cursor:pointer}
   .ch-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.08)}
   .shimmer-bg{background:linear-gradient(90deg,#F0E8D8 0%,#E8DCC8 50%,#F0E8D8 100%);background-size:200% 100%;animation:shimmerSlide 2s linear infinite}
+  @keyframes ringPop{0%{transform:scale(0.7);opacity:0}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
+  .ch-tier-card{transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer}
+  .ch-tier-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(0,0,0,.1)}
+  .ch-hero{transition:transform .2s ease}.ch-hero:active{transform:scale(.98)}
+  .recipe-card{transition:transform .2s cubic-bezier(.34,1.56,.64,1),box-shadow .2s ease;cursor:pointer}
+  .recipe-card:hover{transform:translateY(-3px);box-shadow:0 12px 32px rgba(0,0,0,.1)}
+  .recipe-card:active{transform:scale(.97)}
 `;
 
 const C={cream:"#F5EFE4",warm:"#EDE4D4",paper:"#FAF6EE",ink:"#1A1410",inkLight:"#3D3530",terra:"#C4622D",sage:"#5C7A5A",dust:"#A89880",blush:"#E8A598",gold:"#C4952D",purple:"#7B68C8",cardBg:"#F0E8D8",border:"rgba(100,80,60,0.12)",red:"#D94040"};
@@ -95,6 +102,11 @@ const HISTORY_SEED=[
   {date:"Mar 04",weight:185.3,lbm:164.8,fatPct:11.2},
 ];
 const MEAL_TAGS=["Breakfast","Lunch","Dinner","Snack","Pre-Workout","Post-Workout"];
+const DAILY_RECIPES=[
+  {id:"r1",name:"Greek Power Bowl",meal:"Breakfast",emoji:"🥣",desc:"Greek yogurt, granola, mixed berries, honey drizzle",cal:485,p:28,c:62,f:12,prepTime:"5 min",color:C.terra,tag:"High Protein"},
+  {id:"r2",name:"Salmon & Quinoa",meal:"Lunch",emoji:"🐟",desc:"Pan-seared salmon fillet, quinoa, asparagus, lemon",cal:640,p:48,c:52,f:20,prepTime:"20 min",color:C.sage,tag:"Lean Gains"},
+  {id:"r3",name:"Steak & Sweet Potato",meal:"Dinner",emoji:"🥩",desc:"Grass-fed sirloin, roasted sweet potato, broccoli",cal:720,p:56,c:58,f:22,prepTime:"25 min",color:C.gold,tag:"Muscle Fuel"},
+];
 const TICKER="LEAN MASS ↑ 0.3 LBS  ·  BODY FAT ↓ 0.2%  ·  SCORE +3  ·  5-DAY STREAK  ·  ";
 
 function calcTargets(p){
@@ -500,101 +512,174 @@ function ChallengeDetailModal({challenge,progress,completed,onClose}){
   </div></Modal>;
 }
 
+function HeroChallenge({challenge,progress,onClick}){
+  const tm=TIER_META[challenge.tier];
+  const pct=Math.min(progress/challenge.target,1);
+  const r=44,circ=2*Math.PI*r;
+  const[arc,setArc]=useState(0);
+  useEffect(()=>{const t=setTimeout(()=>setArc(pct),400);return()=>clearTimeout(t);},[pct]);
+  return(
+    <div onClick={onClick} className="ch-hero" style={{background:"linear-gradient(135deg,rgba(255,255,255,.07),rgba(255,255,255,.02))",border:`1px solid ${tm.color}35`,borderRadius:24,padding:"20px",cursor:"pointer",position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",top:-40,right:-40,width:160,height:160,background:`${tm.color}12`,borderRadius:"50%",pointerEvents:"none"}}/>
+      <div style={{fontSize:9,color:tm.color,letterSpacing:2.5,textTransform:"uppercase",marginBottom:14}}>Active Challenge</div>
+      <div style={{display:"flex",alignItems:"center",gap:16}}>
+        <div style={{position:"relative",flexShrink:0}}>
+          <svg width={100} height={100} style={{transform:"rotate(-90deg)"}}>
+            <circle cx={50} cy={50} r={r} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth={9}/>
+            <circle cx={50} cy={50} r={r} fill="none" stroke={tm.color} strokeWidth={9}
+              strokeDasharray={`${circ*arc} ${circ*(1-arc)}`} strokeLinecap="round"
+              style={{transition:"stroke-dasharray 1.4s cubic-bezier(.34,1.56,.64,1)",filter:`drop-shadow(0 0 8px ${tm.color})`}}/>
+          </svg>
+          <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+            <div style={{fontSize:28,lineHeight:1}}>{challenge.emoji}</div>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:13,fontWeight:900,color:tm.color,marginTop:3}}>{Math.round(arc*100)}%</div>
+          </div>
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{padding:"3px 9px",borderRadius:99,background:`${tm.color}22`,border:`1px solid ${tm.color}40`,fontSize:8,color:tm.color,letterSpacing:1.5,textTransform:"uppercase",display:"inline-block",marginBottom:8}}>{tm.label}</div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:900,color:C.cream,lineHeight:1.1,marginBottom:5}}>{challenge.title}</div>
+          <div style={{fontSize:11,color:"rgba(245,239,228,.5)",lineHeight:1.55,marginBottom:10}}>{challenge.desc}</div>
+          <div style={{height:4,background:"rgba(255,255,255,.08)",borderRadius:99}}>
+            <div style={{height:"100%",width:`${arc*100}%`,background:tm.color,borderRadius:99,transition:"width 1.4s cubic-bezier(.34,1.56,.64,1)",boxShadow:`0 0 8px ${tm.color}60`}}/>
+          </div>
+          <div style={{fontSize:9,color:tm.color,marginTop:5}}>Target: {challenge.targetDesc}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChallengeCard({challenge,progress,unlocked,completed,onClick}){
+  const tm=TIER_META[challenge.tier];
+  const pct=Math.min(progress/challenge.target,1);
+  const r=26,circ=2*Math.PI*r;
+  const[arc,setArc]=useState(0);
+  useEffect(()=>{const t=setTimeout(()=>setArc(pct),350);return()=>clearTimeout(t);},[pct]);
+  return(
+    <div className="ch-tier-card" onClick={onClick}
+      style={{background:completed?`linear-gradient(135deg,${C.sage}15,${C.sage}05)`:unlocked?C.cardBg:"rgba(200,190,180,.35)",border:`1px solid ${completed?C.sage+"50":unlocked?tm.border:C.border}`,borderRadius:22,padding:16,opacity:unlocked?1:.6,position:"relative",overflow:"hidden"}}>
+      {!unlocked&&<div className="shimmer-bg" style={{position:"absolute",inset:0,borderRadius:22,opacity:.3}}/>}
+      <div style={{position:"relative"}}>
+        <div style={{position:"relative",width:64,height:64,margin:"0 auto 10px"}}>
+          <svg width={64} height={64} style={{transform:"rotate(-90deg)"}}>
+            <circle cx={32} cy={32} r={r} fill="none" stroke={unlocked?`${tm.color}22`:"rgba(0,0,0,.05)"} strokeWidth={7}/>
+            {unlocked&&<circle cx={32} cy={32} r={r} fill="none" stroke={completed?C.sage:tm.color} strokeWidth={7}
+              strokeDasharray={`${circ*arc} ${circ*(1-arc)}`} strokeLinecap="round"
+              style={{transition:"stroke-dasharray 1.1s cubic-bezier(.34,1.56,.64,1)",filter:`drop-shadow(0 0 4px ${completed?C.sage:tm.color})`}}/>}
+          </svg>
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,filter:unlocked?"none":"grayscale(1) opacity(.35)"}}>
+            {completed?"✅":challenge.emoji}
+          </div>
+        </div>
+        <div style={{textAlign:"center"}}>
+          <div style={{padding:"2px 7px",borderRadius:99,background:tm.bg,border:`1px solid ${tm.border}`,fontSize:7,color:tm.color,letterSpacing:1.5,textTransform:"uppercase",display:"inline-block",marginBottom:5}}>{tm.label}</div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:13,fontWeight:700,color:unlocked?C.ink:C.dust,lineHeight:1.15,marginBottom:3}}>{challenge.title}</div>
+          {unlocked&&<div style={{fontSize:9,color:completed?C.sage:tm.color,fontWeight:600}}>{Math.round(arc*100)}%</div>}
+          {!unlocked&&<div style={{fontSize:8,color:C.dust,letterSpacing:.3}}>Locked</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChallengesTab({meals,habits,stats,score,history}){
   const[filter,setFilter]=useState("all");
   const[selected,setSelected]=useState(null);
   const[newUnlock,setNewUnlock]=useState(null);
   const prevCompleted=useRef(new Set());
+
   const ctx={meals,habits,stats,score,completedIds:[],history};
   const progressMap={};
   ALL_CHALLENGES.forEach(c=>{progressMap[c.id]=getChallengeProgress(c,ctx);});
   const completedIds=ALL_CHALLENGES.filter(c=>isCompleted(c,progressMap[c.id])).map(c=>c.id);
   ctx.completedIds=completedIds;
   ALL_CHALLENGES.forEach(c=>{progressMap[c.id]=getChallengeProgress(c,ctx);});
+
   useEffect(()=>{
-    ALL_CHALLENGES.forEach(c=>{if(!prevCompleted.current.has(c.id)&&isCompleted(c,progressMap[c.id])){setNewUnlock(c);setTimeout(()=>setNewUnlock(null),3000);}});
+    ALL_CHALLENGES.forEach(c=>{if(!prevCompleted.current.has(c.id)&&isCompleted(c,progressMap[c.id])){setNewUnlock(c);setTimeout(()=>setNewUnlock(null),4000);}});
     prevCompleted.current=new Set(completedIds);
   },[completedIds.join(",")]);
+
   const tiers=["bronze","silver","gold","platinum","legendary"];
+  const TIER_XP={bronze:100,silver:250,gold:500,platinum:1000,legendary:5000};
   const filtered=filter==="all"?ALL_CHALLENGES:filter==="done"?ALL_CHALLENGES.filter(c=>completedIds.includes(c.id)):ALL_CHALLENGES.filter(c=>c.tier===filter);
   const completedCount=completedIds.length;
-  return<div style={{padding:"0 20px 120px"}} className="su">
-    {newUnlock&&<div className="unlock-pop" style={{position:"fixed",top:80,left:"50%",transform:"translateX(-50%)",background:C.ink,color:C.cream,borderRadius:16,padding:"12px 20px",zIndex:500,display:"flex",alignItems:"center",gap:10,boxShadow:"0 8px 32px rgba(0,0,0,.3)",whiteSpace:"nowrap"}}>
-      <span style={{fontSize:20}}>{newUnlock.emoji}</span>
-      <div><div style={{fontSize:11,fontWeight:600,letterSpacing:1}}>Challenge Complete!</div><div style={{fontSize:10,color:"rgba(245,239,228,.6)"}}>{newUnlock.title}</div></div>
-    </div>}
-    <Card style={{marginBottom:16}}>
-      <div style={{display:"flex",alignItems:"center",gap:16}}>
-        <div style={{position:"relative",width:80,height:80,flexShrink:0}}>
-          <svg width={80} height={80} style={{transform:"rotate(-90deg)"}}>
-            <circle cx={40} cy={40} r={34} fill="none" stroke={C.border} strokeWidth={8}/>
-            <circle cx={40} cy={40} r={34} fill="none" stroke={C.terra} strokeWidth={8}
-              strokeDasharray={`${2*Math.PI*34*(completedCount/ALL_CHALLENGES.length)} ${2*Math.PI*34*(1-completedCount/ALL_CHALLENGES.length)}`}
-              strokeLinecap="round" style={{transition:"stroke-dasharray 1s ease",filter:`drop-shadow(0 0 4px ${C.terra})`}}/>
-          </svg>
-          <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-            <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:900,color:C.terra,lineHeight:1}}>{completedCount}</div>
-            <div style={{fontSize:8,color:C.dust}}>/{ALL_CHALLENGES.length}</div>
-          </div>
+  const xp=completedIds.reduce((s,id)=>{const c=ALL_CHALLENGES.find(x=>x.id===id);return s+(c?TIER_XP[c.tier]||0:0);},0);
+  const steps=habits.find(h=>h.label==="Steps");
+  const streak=steps?.streak||0;
+  const activeChallenge=ALL_CHALLENGES.find(c=>isUnlocked(c,completedIds)&&!completedIds.includes(c.id)&&progressMap[c.id]>0)||ALL_CHALLENGES.find(c=>isUnlocked(c,completedIds)&&!completedIds.includes(c.id));
+
+  return(
+    <div style={{padding:"0 0 120px"}} className="su">
+      {newUnlock&&<div className="unlock-pop" style={{position:"fixed",top:80,left:"50%",transform:"translateX(-50%)",background:C.ink,color:C.cream,borderRadius:20,padding:"14px 22px",zIndex:500,display:"flex",alignItems:"center",gap:12,boxShadow:"0 12px 40px rgba(0,0,0,.4)",whiteSpace:"nowrap"}}>
+        <span style={{fontSize:26}}>{newUnlock.emoji}</span>
+        <div>
+          <div style={{fontSize:12,fontWeight:600,letterSpacing:.5}}>Challenge Complete!</div>
+          <div style={{fontSize:10,color:C.terra,marginTop:2}}>{newUnlock.title} · +{TIER_XP[newUnlock.tier]||100} XP</div>
         </div>
-        <div style={{flex:1}}>
-          <div style={{fontFamily:"'Playfair Display',serif",fontSize:17,fontWeight:700,marginBottom:4}}>Challenge Progress</div>
-          <div style={{fontSize:12,color:C.dust,lineHeight:1.6,marginBottom:8}}>
-            {completedCount===0?"Complete your first challenge to unlock more":completedCount<4?"Bronze active — complete 2 to unlock Silver":completedCount<8?"Silver unlocked! Gold challenges await":completedCount<12?"Gold active — Platinum is within reach":"Legendary status within reach 🏆"}
-          </div>
-          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-            {tiers.map(t=>{const tm=TIER_META[t];const cnt=ALL_CHALLENGES.filter(c=>c.tier===t&&completedIds.includes(c.id)).length;const tot=ALL_CHALLENGES.filter(c=>c.tier===t).length;
-              return<div key={t} style={{padding:"3px 8px",borderRadius:99,background:tm.bg,border:`1px solid ${tm.border}`,fontSize:8,color:tm.color,letterSpacing:1}}>{tm.label} {cnt}/{tot}</div>;
-            })}
-          </div>
+      </div>}
+
+      {/* Dark hero section */}
+      <div style={{background:C.ink,padding:"4px 20px 24px"}}>
+        {/* Stats row */}
+        <div style={{display:"flex",gap:8,marginBottom:20}}>
+          {[{icon:"⚡",val:xp.toLocaleString(),label:"XP",color:C.gold},{icon:"🔥",val:streak,label:"Streak",color:C.terra},{icon:"🏆",val:completedCount,label:"Done",color:C.cream}].map(({icon,val,label,color})=>(
+            <div key={label} style={{flex:1,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.07)",borderRadius:16,padding:"12px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+              <div style={{fontSize:18,lineHeight:1}}>{icon}</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,fontWeight:900,color,lineHeight:1}}>{val}</div>
+              <div style={{fontSize:7,color:"rgba(245,239,228,.35)",letterSpacing:1.5,textTransform:"uppercase"}}>{label}</div>
+            </div>
+          ))}
+        </div>
+        {activeChallenge&&<HeroChallenge challenge={activeChallenge} progress={progressMap[activeChallenge.id]} onClick={()=>setSelected(activeChallenge)}/>}
+      </div>
+
+      {/* Tier path */}
+      <div style={{padding:"20px 20px 0",marginBottom:16}}>
+        <div style={{fontSize:9,color:C.dust,letterSpacing:2,textTransform:"uppercase",marginBottom:14}}>Tier Path</div>
+        <div style={{position:"relative",display:"flex",alignItems:"flex-start"}}>
+          <div style={{position:"absolute",left:"calc(10%)",right:"calc(10%)",height:2,background:C.border,top:15,zIndex:0}}/>
+          {tiers.map(t=>{
+            const tm=TIER_META[t];
+            const tierChallenges=ALL_CHALLENGES.filter(c=>c.tier===t);
+            const tierCompleted=tierChallenges.filter(c=>completedIds.includes(c.id)).length;
+            const allDone=tierCompleted===tierChallenges.length;
+            const anyDone=tierCompleted>0;
+            return(
+              <div key={t} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative",zIndex:1,gap:5}}>
+                <div style={{width:30,height:30,borderRadius:"50%",background:allDone?tm.color:anyDone?`${tm.color}35`:C.warm,border:`2px solid ${allDone||anyDone?tm.color:C.border}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:allDone?C.cream:anyDone?tm.color:C.dust,boxShadow:allDone?`0 0 14px ${tm.color}50`:undefined,transition:"all .3s ease"}}>
+                  {allDone?"✓":anyDone?tierCompleted:""}
+                </div>
+                <div style={{fontSize:7,color:allDone||anyDone?tm.color:C.dust,letterSpacing:.8,textTransform:"uppercase",textAlign:"center"}}>{tm.label}</div>
+                <div style={{fontSize:7,color:C.dust,opacity:.6}}>{tierCompleted}/{tierChallenges.length}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
-    </Card>
-    <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:4,marginBottom:16}}>
-      {[{id:"all",label:"All"},...tiers.map(t=>({id:t,label:TIER_META[t].label})),{id:"done",label:"✓ Done"}].map(f=>(
-        <button key={f.id} onClick={()=>setFilter(f.id)} className="pill"
-          style={{flexShrink:0,padding:"7px 14px",borderRadius:99,border:`1px solid ${filter===f.id?C.terra:C.border}`,background:filter===f.id?C.ink:"transparent",color:filter===f.id?C.cream:C.dust,fontSize:10,letterSpacing:1,textTransform:"uppercase",cursor:"pointer",whiteSpace:"nowrap"}}>
-          {f.label}
-        </button>
-      ))}
+
+      {/* Filter pills */}
+      <div style={{display:"flex",gap:5,overflowX:"auto",padding:"0 20px 14px"}}>
+        {[{id:"all",label:"All"},{id:"done",label:"✓ Done"},...tiers.map(t=>({id:t,label:TIER_META[t].label}))].map(f=>(
+          <button key={f.id} onClick={()=>setFilter(f.id)} className="pill"
+            style={{flexShrink:0,padding:"7px 14px",borderRadius:99,border:`1px solid ${filter===f.id?C.terra:C.border}`,background:filter===f.id?C.ink:"transparent",color:filter===f.id?C.cream:C.dust,fontSize:10,letterSpacing:1,textTransform:"uppercase",cursor:"pointer",whiteSpace:"nowrap"}}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 2-col challenge grid */}
+      <div style={{padding:"0 20px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {filtered.map(c=>{
+          const unlocked=isUnlocked(c,completedIds);
+          const done=completedIds.includes(c.id);
+          return<ChallengeCard key={c.id} challenge={c} progress={progressMap[c.id]} unlocked={unlocked} completed={done} onClick={()=>setSelected(c)}/>;
+        })}
+      </div>
+
+      {selected&&<ChallengeDetailModal challenge={selected} progress={progressMap[selected.id]} completed={completedIds.includes(selected.id)} onClose={()=>setSelected(null)}/>}
     </div>
-    <div style={{display:"flex",flexDirection:"column",gap:10}}>
-      {filtered.map(c=>{
-        const tm=TIER_META[c.tier];
-        const unlocked=isUnlocked(c,completedIds);
-        const prog=progressMap[c.id];
-        const done=isCompleted(c,prog);
-        const pct=Math.min(prog/c.target,1);
-        return<div key={c.id} className="ch-card" onClick={()=>setSelected(c)}
-          style={{background:done?`${C.sage}08`:unlocked?C.cardBg:"rgba(200,190,180,.4)",border:`1px solid ${done?C.sage+"40":unlocked?tm.border:C.border}`,borderRadius:20,padding:16,opacity:unlocked?1:.7,position:"relative",overflow:"hidden"}}>
-          {!unlocked&&<div className="shimmer-bg" style={{position:"absolute",inset:0,borderRadius:20,opacity:.4}}/>}
-          <div style={{display:"flex",alignItems:"center",gap:12,position:"relative"}}>
-            <div style={{fontSize:32,flexShrink:0,filter:unlocked?"none":"grayscale(1) opacity(.5)"}}>{c.emoji}</div>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
-                <div style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:700,color:unlocked?C.ink:C.dust}}>{c.title}</div>
-                <div style={{padding:"2px 7px",borderRadius:99,background:tm.bg,border:`1px solid ${tm.border}`,fontSize:8,color:tm.color,letterSpacing:1,textTransform:"uppercase",flexShrink:0}}>{tm.label}</div>
-                {done&&<span>✅</span>}
-              </div>
-              <div style={{fontSize:11,color:C.dust,marginBottom:8,lineHeight:1.4}}>
-                {unlocked?c.desc:`Unlock by completing: ${c.requiresIds.map(id=>ALL_CHALLENGES.find(x=>x.id===id)?.title||id).join(", ")}`}
-              </div>
-              {unlocked&&<div>
-                <div style={{height:5,background:C.border,borderRadius:99,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${pct*100}%`,background:done?C.sage:tm.color,borderRadius:99,transition:"width 1s ease",boxShadow:`0 0 8px ${done?C.sage:tm.color}60`}}/>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
-                  <div style={{fontSize:9,color:C.dust}}>{c.targetDesc}</div>
-                  <div style={{fontSize:9,color:done?C.sage:tm.color,fontWeight:600}}>{Math.round(pct*100)}%</div>
-                </div>
-              </div>}
-            </div>
-          </div>
-        </div>;
-      })}
-    </div>
-    {selected&&<ChallengeDetailModal challenge={selected} progress={progressMap[selected.id]} completed={completedIds.includes(selected.id)} onClose={()=>setSelected(null)}/>}
-  </div>;
+  );
 }
 
 function HistoryTab({history}){
@@ -642,6 +727,194 @@ function HistoryTab({history}){
   </div>;
 }
 
+function AIScanTab({stats,profile}){
+  const[phase,setPhase]=useState("idle");
+  const[imgData,setImgData]=useState(null);
+  const[result,setResult]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[error,setError]=useState("");
+  const fileRef=useRef();
+  const camRef=useRef();
+
+  const gradeColor=g=>{if(!g)return C.dust;if(g.startsWith("A"))return C.sage;if(g.startsWith("B"))return C.terra;return C.gold;};
+
+  const handleFile=async(file)=>{
+    if(!file)return;
+    const url=URL.createObjectURL(file);
+    const mime=file.type&&file.type.startsWith("image/")?file.type:"image/jpeg";
+    setImgData({url,mime});
+    setPhase("scanning");
+    setLoading(true);
+    setError("");
+    try{
+      const b64=await fileToBase64(file);
+      const raw=await callClaude(
+        [{role:"user",content:[
+          {type:"image",source:{type:"base64",media_type:mime,data:b64}},
+          {type:"text",text:`Analyze this body photo for a fitness app. Return ONLY this JSON (no markdown, no extra text):\n{"bodyFatRange":"e.g. 10-13%","symmetryScore":84,"postureRating":"Excellent","postureNotes":"brief note","asymmetries":["example asymmetry"],"muscleDevelopment":{"chest":"assessment","back":"assessment","shoulders":"assessment","arms":"assessment","core":"assessment","legs":"assessment"},"strengths":["strength1","strength2"],"recommendations":["rec1","rec2","rec3"],"overallGrade":"A-","compositionSummary":"2-sentence summary"}`}
+        ]}],
+        "You are an elite body composition analyst and certified personal trainer. Analyze the body photo carefully and return ONLY a raw JSON object with the exact keys requested. Be professional, specific, and constructive. If the image is not a person or is unclear, still return valid JSON with honest assessments.",
+        800
+      );
+      const json=extractJSON(raw);
+      setResult(json);
+      setPhase("results");
+    }catch(e){
+      setError(e.message||"Analysis failed. Please try again.");
+      setPhase("error");
+    }finally{
+      setLoading(false);
+    }
+  };
+
+  const reset=()=>{setPhase("idle");setImgData(null);setResult(null);setError("");};
+
+  if(phase==="results"&&result){
+    const gc=gradeColor(result.overallGrade);
+    return(
+      <div style={{padding:"0 20px 120px"}} className="su">
+        <div style={{background:C.ink,borderRadius:24,padding:"28px 24px",marginBottom:16,textAlign:"center",position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",top:-50,right:-50,width:180,height:180,background:`${gc}12`,borderRadius:"50%",pointerEvents:"none"}}/>
+          <div style={{position:"relative"}}>
+            <div style={{fontSize:9,color:gc,letterSpacing:3,textTransform:"uppercase",marginBottom:10}}>AI Body Analysis</div>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:72,fontWeight:900,color:gc,lineHeight:1,letterSpacing:-2}}>{result.overallGrade||"—"}</div>
+            <div style={{fontSize:12,color:"rgba(245,239,228,.55)",marginTop:10,lineHeight:1.7,maxWidth:280,margin:"10px auto 0"}}>{result.compositionSummary}</div>
+          </div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"100px 1fr",gap:12,marginBottom:12}}>
+          <img src={imgData.url} alt="scan" style={{width:"100%",height:120,objectFit:"cover",borderRadius:20,border:`2px solid ${C.border}`,display:"block"}}/>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <div style={{background:C.cardBg,border:`1px solid ${C.border}`,borderRadius:16,padding:"10px 14px",flex:1,display:"flex",flexDirection:"column",justifyContent:"center"}}>
+              <div style={{fontSize:9,color:C.dust,letterSpacing:1.5,textTransform:"uppercase",marginBottom:3}}>Body Fat</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:900,color:C.terra}}>{result.bodyFatRange||"N/A"}</div>
+            </div>
+            <div style={{background:C.cardBg,border:`1px solid ${C.border}`,borderRadius:16,padding:"10px 14px",flex:1,display:"flex",flexDirection:"column",justifyContent:"center"}}>
+              <div style={{fontSize:9,color:C.dust,letterSpacing:1.5,textTransform:"uppercase",marginBottom:3}}>Symmetry</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:900,color:C.gold}}>{result.symmetryScore!=null?`${result.symmetryScore}/100`:"—"}</div>
+            </div>
+          </div>
+        </div>
+        <Card style={{marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700}}>Posture</div>
+            <div style={{padding:"4px 10px",borderRadius:99,background:`${C.sage}15`,border:`1px solid ${C.sage}30`,fontSize:10,color:C.sage}}>{result.postureRating||"—"}</div>
+          </div>
+          <div style={{fontSize:12,color:C.inkLight,lineHeight:1.65}}>{result.postureNotes}</div>
+        </Card>
+        {result.muscleDevelopment&&Object.keys(result.muscleDevelopment).length>0&&<Card style={{marginBottom:12}}>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700,marginBottom:14}}>Muscle Development</div>
+          {Object.entries(result.muscleDevelopment).map(([k,v],i,arr)=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",paddingBottom:8,marginBottom:i<arr.length-1?8:0,borderBottom:i<arr.length-1?`1px solid ${C.border}`:"none"}}>
+              <div style={{fontSize:11,color:C.dust,textTransform:"capitalize",letterSpacing:.5}}>{k}</div>
+              <div style={{fontSize:12,color:C.inkLight,fontWeight:500,maxWidth:"62%",textAlign:"right"}}>{v}</div>
+            </div>
+          ))}
+        </Card>}
+        {result.asymmetries?.length>0&&<Card style={{marginBottom:12}}>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700,marginBottom:12}}>Asymmetries Detected</div>
+          {result.asymmetries.map((a,i)=>(
+            <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",marginBottom:i<result.asymmetries.length-1?8:0}}>
+              <div style={{width:6,height:6,borderRadius:"50%",background:C.gold,marginTop:5,flexShrink:0}}/>
+              <div style={{fontSize:12,color:C.inkLight,lineHeight:1.5}}>{a}</div>
+            </div>
+          ))}
+        </Card>}
+        {result.strengths?.length>0&&<Card style={{marginBottom:12,background:`${C.sage}08`,border:`1px solid ${C.sage}25`}}>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700,marginBottom:12,color:C.sage}}>Strengths</div>
+          {result.strengths.map((s,i)=>(
+            <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",marginBottom:i<result.strengths.length-1?8:0}}>
+              <div style={{fontSize:14,color:C.sage,lineHeight:1.2}}>✓</div>
+              <div style={{fontSize:12,color:C.inkLight,lineHeight:1.5}}>{s}</div>
+            </div>
+          ))}
+        </Card>}
+        {result.recommendations?.length>0&&<div style={{background:C.ink,borderRadius:24,padding:"22px",marginBottom:16}}>
+          <div style={{fontSize:9,color:C.terra,letterSpacing:3,textTransform:"uppercase",marginBottom:14}}>◆ Recommendations</div>
+          {result.recommendations.map((rec,i)=>(
+            <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:i<result.recommendations.length-1?14:0}}>
+              <div style={{width:24,height:24,borderRadius:99,background:`${C.terra}25`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:C.terra,fontWeight:700,flexShrink:0,marginTop:1}}>{i+1}</div>
+              <div style={{fontSize:13,color:"rgba(245,239,228,.8)",lineHeight:1.65}}>{rec}</div>
+            </div>
+          ))}
+        </div>}
+        <PBtn full onClick={reset} style={{background:C.warm,color:C.ink}}>New Scan</PBtn>
+      </div>
+    );
+  }
+
+  return(
+    <div style={{padding:"0 20px 120px"}} className="su">
+      <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files[0])handleFile(e.target.files[0]);e.target.value="";}}/>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{if(e.target.files[0])handleFile(e.target.files[0]);e.target.value="";}}/>
+      <div style={{background:C.ink,borderRadius:24,padding:"28px 24px",marginBottom:16,position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",top:-30,right:-30,width:140,height:140,background:`${C.terra}15`,borderRadius:"50%",pointerEvents:"none"}}/>
+        <div style={{position:"absolute",bottom:-40,left:-20,width:120,height:120,background:`${C.sage}08`,borderRadius:"50%",pointerEvents:"none"}}/>
+        <div style={{position:"relative"}}>
+          <div style={{fontSize:9,color:C.terra,letterSpacing:3,textTransform:"uppercase",marginBottom:12}}>◆ AI Powered</div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:26,fontWeight:900,color:C.cream,lineHeight:1.1,marginBottom:10}}>Body Composition<br/>Scan</div>
+          <div style={{fontSize:12,color:"rgba(245,239,228,.55)",lineHeight:1.75}}>Upload or take a full-body photo. Our AI analyzes symmetry, posture, body fat estimate, muscle development, and delivers a complete physique assessment.</div>
+        </div>
+      </div>
+      {phase==="scanning"&&loading&&(
+        <Card style={{textAlign:"center",padding:"44px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
+          {imgData&&<img src={imgData.url} alt="scan" style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",opacity:.18,borderRadius:24}}/>}
+          <div style={{position:"relative"}}>
+            <div style={{fontSize:11,color:C.terra,letterSpacing:3,textTransform:"uppercase",marginBottom:18}}>Analyzing…</div>
+            <div style={{display:"flex",justifyContent:"center",marginBottom:18}}><Spin size={38} color={C.terra}/></div>
+            <div style={{fontSize:12,color:C.dust,lineHeight:1.65}}>AI is scanning your photo for<br/>body composition metrics</div>
+          </div>
+        </Card>
+      )}
+      {phase==="error"&&(
+        <Card style={{marginBottom:16,background:`${C.red}08`,border:`1px solid ${C.red}25`}}>
+          <div style={{fontSize:13,color:C.red,marginBottom:8,fontWeight:500}}>Analysis Failed</div>
+          <div style={{fontSize:12,color:C.dust,lineHeight:1.6,marginBottom:14}}>{error}</div>
+          <button onClick={reset} style={{background:"none",border:`1px solid ${C.border}`,borderRadius:99,padding:"8px 18px",fontSize:11,color:C.dust,cursor:"pointer"}}>Try Again</button>
+        </Card>
+      )}
+      {phase==="idle"&&(
+        <>
+          <Card style={{marginBottom:16}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:700,marginBottom:14}}>What you&#39;ll get</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              {[{icon:"📐",label:"Symmetry Score",desc:"Left/right balance analysis"},{icon:"📊",label:"Body Fat Range",desc:"Visual estimation"},{icon:"🏋️",label:"Muscle Assessment",desc:"Group-by-group breakdown"},{icon:"🧍",label:"Posture Analysis",desc:"Alignment & imbalances"},{icon:"⚡",label:"Strengths",desc:"What you're doing well"},{icon:"🎯",label:"Action Plan",desc:"Personalized recommendations"}].map(({icon,label,desc})=>(
+                <div key={label} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                  <div style={{fontSize:18,flexShrink:0,marginTop:1}}>{icon}</div>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:600,color:C.inkLight,marginBottom:2}}>{label}</div>
+                    <div style={{fontSize:9,color:C.dust,lineHeight:1.4}}>{desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+            <button onClick={()=>camRef.current.click()} style={{background:C.ink,border:"none",borderRadius:22,padding:"28px 16px",cursor:"pointer",textAlign:"center"}}>
+              <div style={{fontSize:36,marginBottom:10}}>📸</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700,color:C.cream,marginBottom:4}}>Take Photo</div>
+              <div style={{fontSize:10,color:"rgba(245,239,228,.4)"}}>Opens camera</div>
+            </button>
+            <button onClick={()=>fileRef.current.click()} style={{background:C.cardBg,border:`2px dashed ${C.border}`,borderRadius:22,padding:"28px 16px",cursor:"pointer",textAlign:"center"}}>
+              <div style={{fontSize:36,marginBottom:10}}>🖼️</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:700,color:C.ink,marginBottom:4}}>Upload Photo</div>
+              <div style={{fontSize:10,color:C.dust}}>From library</div>
+            </button>
+          </div>
+          <div style={{background:`linear-gradient(135deg,${C.terra}10,${C.gold}06)`,border:`1px solid ${C.terra}20`,borderRadius:20,padding:"16px 18px"}}>
+            <div style={{fontSize:9,color:C.terra,letterSpacing:2.5,textTransform:"uppercase",marginBottom:10}}>Photo Tips</div>
+            {["Stand 6-8 feet from the camera","Even, natural lighting works best","Full body visible in frame","Form-fitting clothing preferred","Neutral standing pose"].map((tip,i,arr)=>(
+              <div key={i} style={{display:"flex",gap:10,alignItems:"center",marginBottom:i<arr.length-1?7:0}}>
+                <div style={{width:4,height:4,borderRadius:"50%",background:C.terra,flexShrink:0}}/>
+                <div style={{fontSize:11,color:C.inkLight}}>{tip}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function MassIQ(){
   const[navTab,setNavTab]=useState("body");
   const[modal,setModal]=useState(null);
@@ -665,7 +938,7 @@ export default function MassIQ(){
   const deleteMeal=id=>{setDeleting(id);setTimeout(()=>{setMeals(p=>p.filter(m=>m.id!==id));setDeleting(null);},280);};
   const updateHabit=(id,val)=>setHabits(p=>p.map(h=>h.id===id?{...h,val:Math.min(parseFloat(val)||0,h.target)}:h));
   const saveStats=s=>{setStats(s);setHistory(p=>[...p.slice(-6),{date:`Mar ${new Date().getDate()}`,...s}]);};
-  const NAV=[{id:"body",icon:"◎",label:"Body"},{id:"fuel",icon:"⊕",label:"Fuel"},{id:"rhythm",icon:"◈",label:"Rhythm"},{id:"challenges",icon:"🏆",label:"Challenges"},{id:"history",icon:"◷",label:"History"}];
+  const NAV=[{id:"body",icon:"◎",label:"Body"},{id:"fuel",icon:"⊕",label:"Fuel"},{id:"scan",icon:"◉",label:"Scan"},{id:"rhythm",icon:"◈",label:"Rhythm"},{id:"challenges",icon:"🏆",label:"Win"},{id:"history",icon:"◷",label:"History"}];
   if(!mounted)return<div style={{minHeight:"100vh",background:C.paper}}/>;
   return<div style={{minHeight:"100vh",background:C.paper,color:C.ink,fontFamily:"'Instrument Sans',sans-serif",fontWeight:300,maxWidth:430,margin:"0 auto",position:"relative",overflow:"hidden"}}>
     <div style={{position:"fixed",inset:0,pointerEvents:"none",overflow:"hidden",zIndex:0}}>
@@ -759,6 +1032,32 @@ export default function MassIQ(){
             <MacroOrb label="Fat" current={totals.f} target={targets.fat} color={C.sage} emoji="🥑"/>
           </div>
         </Card>
+        <Card style={{marginBottom:16}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <ST>Today&#39;s Recipes</ST>
+            <div style={{fontSize:9,color:C.dust,letterSpacing:1}}>Tap to add</div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {DAILY_RECIPES.map(r=>(
+              <div key={r.id} className="recipe-card" onClick={()=>addMeal({id:Date.now()+Math.random(),name:r.name,time:r.meal==="Breakfast"?"08:00":r.meal==="Lunch"?"12:30":"19:00",cal:r.cal,p:r.p,c:r.c,f:r.f,tag:r.meal})}
+                style={{background:`linear-gradient(135deg,${r.color}14,${r.color}06)`,border:`1px solid ${r.color}30`,borderRadius:18,padding:"14px 16px",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{fontSize:32,flexShrink:0}}>{r.emoji}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{r.name}</div>
+                    <div style={{padding:"2px 7px",borderRadius:99,background:`${r.color}20`,fontSize:8,color:r.color,letterSpacing:1,textTransform:"uppercase",flexShrink:0}}>{r.tag}</div>
+                  </div>
+                  <div style={{fontSize:10,color:C.dust,marginBottom:7,lineHeight:1.4}}>{r.desc}</div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    {[{v:`${r.cal} kcal`,c:r.color},{v:`P ${r.p}g`,c:C.dust},{v:`C ${r.c}g`,c:C.dust},{v:`F ${r.f}g`,c:C.dust},{v:r.prepTime,c:C.dust}].map(({v,c})=>(
+                      <span key={v} style={{fontSize:9,padding:"2px 8px",background:C.warm,borderRadius:99,color:c}}>{v}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
         <Card style={{marginBottom:16,padding:0,overflow:"hidden"}}>
           <div style={{padding:"18px 20px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <ST>Today&#39;s Meals</ST>
@@ -837,6 +1136,7 @@ export default function MassIQ(){
         </div>
       </div>}
 
+      {navTab==="scan"&&<AIScanTab stats={stats} profile={profile}/>}
       {navTab==="challenges"&&<ChallengesTab meals={meals} habits={habits} stats={stats} score={score} history={history}/>}
       {navTab==="history"&&<HistoryTab history={history}/>}
 
