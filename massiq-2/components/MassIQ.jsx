@@ -81,6 +81,8 @@ const CSS = `
   }
   .ob-activity-row:hover{border-color:rgba(0,200,83,0.3)}
   .ob-activity-row.selected{border-color:${C.green};border-left:4px solid ${C.green};background:rgba(0,200,83,0.08)}
+  @keyframes skeleton{0%,100%{opacity:.5}50%{opacity:.9}}
+  .skeleton{animation:skeleton 1.4s ease-in-out infinite;background:rgba(255,255,255,0.08);border-radius:8px}
   .pulse-dot{
     width:10px;height:10px;border-radius:50%;background:${C.green};
     animation:pulse 2s ease-in-out infinite;
@@ -134,6 +136,132 @@ function calcMacros(profile) {
   return { calories: Math.round(calories), protein, fat, carbs };
 }
 
+/* ─── Session Storage ───────────────────────────────────────────────────── */
+const SS = {
+  get: (k, fb = null) => { try { const v = sessionStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+/* ─── AI Helpers ─────────────────────────────────────────────────────────── */
+async function callClaude(messages, maxTokens = 2000) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages, max_tokens: maxTokens }),
+      });
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const { text, error } = await res.json();
+      if (error) throw new Error(error);
+      return text;
+    } catch (err) {
+      console.error(`Claude call attempt ${attempt + 1} failed:`, err);
+      if (attempt === 1) throw err;
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+}
+
+function parseJSON(text) {
+  const m = text.match(/[\[\{][\s\S]*[\]\}]/);
+  if (!m) throw new Error('No JSON in response');
+  return JSON.parse(m[0]);
+}
+
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function hourKey()  { const d = new Date(); return `${todayStr()}:${d.getHours()}`; }
+function weekKey2() {
+  const d = new Date(), jan1 = new Date(d.getFullYear(), 0, 1);
+  return `${d.getFullYear()}-W${Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7)}`;
+}
+
+/* ─── AI Plan Generators ─────────────────────────────────────────────────── */
+async function generateInitialPlan(profile, macros) {
+  const in4weeks = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+  const text = await callClaude([{ role: 'user', content:
+    `You are an elite physique coach. Generate a complete personalized plan:
+Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
+Weight: ${profile.weightLbs} lbs, Height: ${profile.heightCm} cm
+Goal: ${profile.goal}, Activity: ${profile.activity}
+Dietary Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
+Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Calculated: ${macros.calories} kcal, ${macros.protein}g protein, ${macros.carbs}g carbs, ${macros.fat}g fat
+
+Return ONLY raw JSON (no markdown, no code blocks):
+{"phase":{"name":"string","label":"Cut|Bulk|Recomp|Maintain","objective":"string","durationWeeks":12},"dailyTargets":{"calories":${macros.calories},"protein":${macros.protein},"carbs":${macros.carbs},"fat":${macros.fat},"steps":8000,"sleepHours":8,"waterLiters":3,"trainingDaysPerWeek":4},"whyThisWorks":"3-4 sentence explanation specific to this person","weeklyMissions":["mission1 with exact target","mission2","mission3"],"trainingFocus":{"primary":"muscle group","secondary":"muscle group","frequency":"X times per week","reasoning":"why"},"nutritionKeyChange":"one specific change","dailyTips":["Monday tip referencing their goal","Tuesday tip","Wednesday tip","Thursday tip","Friday tip","Saturday tip","Sunday tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":20,"targetBF":16,"weeksToGoal":12}}`
+  }], 2000);
+  return parseJSON(text);
+}
+
+async function generateMealPlan(profile, activePlan, scanResults = null) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Generate a 7-day meal plan for ${profile.name}:
+Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, ${m.carbs||200}g carbs, ${m.fat||55}g fat
+Restrictions: ${(profile.dietPrefs||[]).join(', ')||'none'}
+Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
+${scanResults ? `Scan: BF ${scanResults.bodyFatPct}%, weak: ${(scanResults.weakestGroups||[]).join(', ')}` : ''}
+Rules: Hit macros daily. Vary cuisines. Never include avoided foods. Training days more carbs.
+Return ONLY raw JSON array of 7:
+[{"day":"Monday","isTrainingDay":true,"totalCalories":0,"totalProtein":0,"breakfast":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"lunch":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"dinner":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"snack":{"name":"string","calories":0,"protein":0,"description":"string"}}]`
+  }], 4000);
+  return parseJSON(text);
+}
+
+async function generateSuggestions(profile, activePlan, todayMeals) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
+  const h = new Date().getHours();
+  const timeOfDay = h < 11 ? 'morning (breakfast)' : h < 15 ? 'midday (lunch)' : 'evening (dinner)';
+  const text = await callClaude([{ role: 'user', content:
+    `Suggest 3 meals for ${profile.name} right now:
+Goal: ${profile.goal}, Time: ${timeOfDay}
+Remaining: ${Math.max(0,(m.calories||2000)-eaten.cal)} kcal, ${Math.max(0,(m.protein||150)-eaten.prot)}g protein
+Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}, Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Already eaten: ${todayMeals.map(x=>x.name).join(', ')||'nothing yet'}
+Return ONLY raw JSON array of 3:
+[{"id":"s1","name":"string","mealType":"breakfast|lunch|dinner|snack","time":"Breakfast|Lunch|Dinner|Snack","icon":"emoji","calories":0,"protein":0,"carbs":0,"fat":0,"description":"string","whyNow":"one sentence why this is right for right now"}]`
+  }], 800);
+  return parseJSON(text);
+}
+
+async function generateDailyTip(profile, activePlan, todayMeals) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
+  const text = await callClaude([{ role: 'user', content:
+    `Give ${profile.name} ONE specific actionable tip right now. Goal: ${profile.goal}. Time: ${new Date().getHours()}:00. Calories: ${eaten.cal}/${m.calories||2000}. Protein: ${eaten.prot}g/${m.protein||150}g. Write one sentence max 20 words with their actual numbers. No fluff. Return ONLY the tip text.`
+  }], 80);
+  return text.trim().replace(/^["']|["']$/g, '');
+}
+
+async function generatePatterns(profile, activePlan) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Analyze ${profile.name}'s fitness profile and generate 3 specific actionable insights:
+Goal: ${profile.goal}, Activity: ${profile.activity}
+Daily targets: ${m.calories||2000} kcal, ${m.protein||150}g protein
+Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
+Return ONLY raw JSON: {"insights":[{"icon":"emoji","pattern":"specific insight with numbers","action":"specific thing to do"}]}`
+  }], 400);
+  return parseJSON(text);
+}
+
+async function generateMissions(profile, activePlan) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Generate 8 progressive missions for ${profile.name} (Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, training ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week).
+2 Bronze (easy, 100 XP), 2 Silver (medium, 250 XP), 2 Gold (hard, 500 XP), 2 Platinum (elite, 1000 XP).
+Each specific to their numbers. Return ONLY raw JSON array:
+[{"id":"unique_id","tier":"Bronze|Silver|Gold|Platinum","emoji":"emoji","title":"short title","description":"specific with their numbers","xp":100}]`
+  }], 600);
+  return parseJSON(text);
+}
+
 /* ─── Tiny UI Primitives ─────────────────────────────────────────────────── */
 const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...rest }) => {
   const base = {
@@ -171,6 +299,38 @@ const ProgressBar = ({ value, max, color = C.green, height = 6 }) => {
     </div>
   );
 };
+
+/* ─── Plan Generating Screen ─────────────────────────────────────────────── */
+function PlanGeneratingScreen({ name }) {
+  const msgs = [
+    'Analyzing your goals...',
+    'Calculating your TDEE...',
+    'Building your 12-week program...',
+    'Personalizing your nutrition targets...',
+    'Setting up your missions...',
+  ];
+  const [shown, setShown] = useState(1);
+  useEffect(() => {
+    const t = setInterval(() => setShown(s => Math.min(s + 1, msgs.length)), 1500);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: C.bg, zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+      <div style={{ position: 'relative', width: 100, height: 100, marginBottom: 40 }}>
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}`, animation: 'pulse 2s ease-in-out infinite' }} />
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 8, textAlign: 'center' }}>Building your plan{name ? `, ${name}` : ''}.</div>
+      <div style={{ fontSize: 14, color: C.muted, marginBottom: 32 }}>This takes about 10 seconds</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center' }}>
+        {msgs.slice(0, shown).map((msg, i) => (
+          <div key={i} className="fi" style={{ fontSize: 15, color: i === shown - 1 ? C.white : C.muted, fontWeight: i === shown - 1 ? 600 : 400 }}>{msg}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /* ─── Onboarding ─────────────────────────────────────────────────────────── */
 const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Free', 'Dairy-Free', 'Halal', 'Kosher'];
@@ -253,7 +413,9 @@ function Onboarding({ onComplete }) {
     return () => clearTimeout(t);
   }, [step]);
 
-  const finish = () => {
+  const [generating, setGenerating] = useState(false);
+
+  const finish = async () => {
     const profile = {
       ...data,
       age: Number(data.age),
@@ -262,7 +424,59 @@ function Onboarding({ onComplete }) {
       heightIn: Number(data.heightCm) / 2.54,
     };
     LS.set(LS_KEYS.profile, profile);
-    onComplete(profile);
+
+    // Editing existing profile — skip plan gen
+    if (LS.get(LS_KEYS.activePlan)) { onComplete(profile, null); return; }
+
+    setGenerating(true);
+    try {
+      const macros = calcMacros(profile);
+      const planData = await generateInitialPlan(profile, macros);
+      const td = todayStr();
+      const plan = {
+        phase:          planData.phase?.label       || profile.goal,
+        phaseName:      planData.phase?.name        || `${profile.goal} Phase`,
+        objective:      planData.phase?.objective   || '',
+        week:           1,
+        startDate:      td,
+        nextScanDate:   planData.nextScanDate       || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+        macros: {
+          calories: planData.dailyTargets?.calories || macros.calories,
+          protein:  planData.dailyTargets?.protein  || macros.protein,
+          carbs:    planData.dailyTargets?.carbs    || macros.carbs,
+          fat:      planData.dailyTargets?.fat      || macros.fat,
+        },
+        dailyTargets:       planData.dailyTargets        || {},
+        trainDays:          planData.dailyTargets?.trainingDaysPerWeek || 4,
+        sleepHrs:           planData.dailyTargets?.sleepHours          || 8,
+        waterL:             planData.dailyTargets?.waterLiters         || 3,
+        steps:              planData.dailyTargets?.steps               || 8000,
+        weeklyMissions:     planData.weeklyMissions   || [],
+        whyThisWorks:       planData.whyThisWorks     || '',
+        dailyTips:          planData.dailyTips        || [],
+        trainingFocus:      planData.trainingFocus    || {},
+        nutritionKeyChange: planData.nutritionKeyChange|| '',
+        startBF:            planData.transformationTimeline?.startBF  || 20,
+        targetBF:           planData.transformationTimeline?.targetBF || (profile.goal === 'Cut' ? 16 : 20),
+        cardioDays: 2,
+      };
+      onComplete(profile, plan);
+    } catch (err) {
+      console.error('Plan generation failed:', err);
+      const macros = calcMacros(profile);
+      const td = todayStr();
+      const fallback = {
+        phase: profile.goal, phaseName: `${profile.goal} Phase`,
+        objective: `Optimize body composition through targeted ${profile.goal.toLowerCase()} protocols.`,
+        week: 1, startDate: td,
+        nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+        macros, dailyTargets: { ...macros, steps: 8000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4 },
+        trainDays: 4, sleepHrs: 8, waterL: 3, steps: 8000,
+        weeklyMissions: [], whyThisWorks: '', dailyTips: [],
+        startBF: 20, targetBF: profile.goal === 'Cut' ? 16 : 20, cardioDays: 2,
+      };
+      onComplete(profile, fallback);
+    }
   };
 
   const macros = calcMacros({
@@ -482,6 +696,8 @@ function Onboarding({ onComplete }) {
     }
   };
 
+  if (generating) return <><style>{CSS}</style><PlanGeneratingScreen name={data.name} /></>;
+
   return (
     <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {/* Pulsing dot */}
@@ -552,14 +768,22 @@ function getGreeting() {
   return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
 }
 
-function getTip(macros, todayStats) {
-  if (!macros) return 'Start logging meals to unlock AI tips.';
-  const proteinPct = todayStats.protein / macros.protein;
-  if (proteinPct < 0.5) return "You're behind on protein — add a shake or some eggs.";
-  if (proteinPct >= 1)  return 'Protein target crushed. Recovery is locked in.';
-  const calPct = todayStats.calories / macros.calories;
-  if (calPct > 0.95) return 'Almost at your calorie limit. Choose nutrient-dense foods for the rest of the day.';
-  return 'Stay consistent. Small daily surpluses compound into big results.';
+function AIDailyTip({ profile, activePlan, todayMeals }) {
+  const dayIdx = new Date().getDay();
+  const planTip = activePlan?.dailyTips?.[dayIdx] || activePlan?.dailyTips?.[0] || null;
+  const cacheKey = `massiq:dailytip:${todayStr()}`;
+  const [tip, setTip] = useState(() => planTip || LS.get(cacheKey, null));
+  const [loading, setLoading] = useState(!planTip && !LS.get(cacheKey, null));
+  useEffect(() => {
+    if (!loading) return;
+    let ok = true;
+    generateDailyTip(profile, activePlan, todayMeals)
+      .then(t => { if (ok) { setTip(t); LS.set(cacheKey, t); setLoading(false); } })
+      .catch(() => { if (ok) { setTip('Stay consistent with your targets today.'); setLoading(false); } });
+    return () => { ok = false; };
+  }, []);
+  if (loading) return <div className="skeleton" style={{ height: 14, width: '70%', borderRadius: 6 }} />;
+  return <span>💡 {tip}</span>;
 }
 
 function TargetTile({ icon, label, current, target, unit, color, showProgress = true }) {
@@ -651,7 +875,7 @@ function HomeTab({ profile, activePlan, setTab }) {
             </div>
 
             <p style={{ fontSize: 13, color: C.green, marginTop: 16, lineHeight: 1.5 }}>
-              💡 {getTip(macros, todayStats)}
+              <AIDailyTip profile={profile} activePlan={activePlan} todayMeals={todayMeals} />
             </p>
           </Card>
 
@@ -722,35 +946,37 @@ function MacroRing({ label, current, target, color, size = 90 }) {
   );
 }
 
-/* Generic high-protein suggestions by goal */
-function getDefaultSuggestions(goal, dietPrefs = []) {
-  const isVegan = dietPrefs.includes('Vegan') || dietPrefs.includes('Vegetarian');
-  const base = [
-    {
-      id: 's1', time: 'Breakfast', icon: '🍳',
-      name: isVegan ? 'Tofu Scramble + Oats' : 'Eggs & Oatmeal',
-      calories: 480, protein: 32, carbs: 44, fat: 14,
-    },
-    {
-      id: 's2', time: 'Lunch', icon: '🥗',
-      name: isVegan ? 'Lentil & Quinoa Bowl' : 'Chicken & Rice Bowl',
-      calories: 560, protein: 42, carbs: 55, fat: 12,
-    },
-    {
-      id: 's3', time: 'Dinner', icon: '🥩',
-      name: isVegan ? 'Tempeh Stir-Fry' : goal === 'Cut' ? 'Salmon & Veggies' : 'Beef & Sweet Potato',
-      calories: goal === 'Cut' ? 480 : 680, protein: 38, carbs: goal === 'Cut' ? 28 : 58, fat: 18,
-    },
-  ];
-  return base;
+/* ─── AI Suggestions Hook ───────────────────────────────────────────────── */
+function useAISuggestions(profile, activePlan, meals) {
+  const cacheKey = `massiq:suggestions:${hourKey()}`;
+  const cached = SS.get(cacheKey, null);
+  const [suggestions, setSuggestions] = useState(cached);
+  const [loading,     setLoading]     = useState(!cached);
+  const [error,       setError]       = useState('');
+  useEffect(() => {
+    if (cached) { setLoading(false); return; }
+    let ok = true;
+    generateSuggestions(profile, activePlan, meals)
+      .then(data => {
+        if (!ok) return;
+        const normalized = Array.isArray(data) ? data.map((s, i) => ({ id: s.id||`s${i}`, time: s.time||s.mealType||'Meal', icon: s.icon||'🍽️', ...s })) : [];
+        setSuggestions(normalized);
+        SS.set(cacheKey, normalized);
+        setLoading(false);
+      })
+      .catch(err => { if (ok) { console.error('Suggestions failed:', err); setError('Could not load suggestions.'); setLoading(false); } });
+    return () => { ok = false; };
+  }, []);
+  return { suggestions: suggestions || [], loading, error };
 }
 
 /* Log Meal Modal */
-function LogMealModal({ onClose, onAdd, macros }) {
+function LogMealModal({ onClose, onAdd, macros, profile }) {
   const [aiTab,     setAiTab]     = useState('describe');
   const [descText,  setDescText]  = useState('');
   const [analyzing, setAnalyzing] = useState(false);
-  const [form, setForm] = useState({ name: '', calories: '', protein: '', carbs: '', fat: '' });
+  const [form,    setForm]    = useState({ name: '', calories: '', protein: '', carbs: '', fat: '' });
+  const [comment, setComment] = useState('');
   const [category, setCategory] = useState('Lunch');
   const [error, setError] = useState('');
   const fileRef = useRef(null);
@@ -767,7 +993,7 @@ function LogMealModal({ onClose, onAdd, macros }) {
         body: JSON.stringify({
           messages: [{
             role: 'user',
-            content: `Analyze nutrition for: ${descText}. Return ONLY valid JSON with these exact keys: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}`,
+            content: `Analyze nutrition for: ${descText}. Goal: ${profile?.goal||'general fitness'}. Return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their goal"}`,
           }],
           max_tokens: 200,
         }),
@@ -777,6 +1003,7 @@ function LogMealModal({ onClose, onAdd, macros }) {
       if (match) {
         const d = JSON.parse(match[0]);
         setForm({ name: d.name || descText, calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
+        setComment(d.comment || '');
       }
     } catch { setError('Analysis failed — fill in manually.'); }
     setAnalyzing(false);
@@ -797,7 +1024,7 @@ function LogMealModal({ onClose, onAdd, macros }) {
               role: 'user',
               content: [
                 { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
-                { type: 'text', text: 'Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}' },
+                { type: 'text', text: `Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their ${profile?.goal||'fitness'} goal"}` },
               ],
             }],
             max_tokens: 200,
@@ -808,6 +1035,7 @@ function LogMealModal({ onClose, onAdd, macros }) {
         if (match) {
           const d = JSON.parse(match[0]);
           setForm({ name: d.name || 'Food', calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
+          setComment(d.comment || '');
         }
         setAnalyzing(false);
       };
@@ -901,6 +1129,12 @@ function LogMealModal({ onClose, onAdd, macros }) {
             {error && <p style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{error}</p>}
           </div>
 
+          {comment && (
+            <div style={{ background: C.greenBg, border: `1px solid ${C.greenDim}`, borderRadius: 12, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.green, lineHeight: 1.5 }}>
+              💬 {comment}
+            </div>
+          )}
+
           {/* Manual fields */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
             <input style={inputStyle} placeholder="Meal name" value={form.name} onChange={e => setField('name', e.target.value)} />
@@ -933,11 +1167,7 @@ function NutritionTab({ profile, activePlan }) {
   const today = new Date().toISOString().slice(0, 10);
   const [meals,      setMeals]      = useState(() => LS.get(LS_KEYS.meals(today), []));
   const [showModal,  setShowModal]  = useState(false);
-  const [suggestions] = useState(() => {
-    const mealplan = LS.get(LS_KEYS.mealplan);
-    if (mealplan?.suggestions) return mealplan.suggestions;
-    return getDefaultSuggestions(profile?.goal, profile?.dietPrefs);
-  });
+  const { suggestions, loading: suggestionsLoading, error: suggestionsError } = useAISuggestions(profile, activePlan, meals);
 
   const macros = activePlan?.macros || calcMacros(profile) || { calories: 2000, protein: 150, carbs: 200, fat: 55 };
 
@@ -990,18 +1220,24 @@ function NutritionTab({ profile, activePlan }) {
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
+        {suggestionsError && <div style={{ color: C.red, fontSize: 13, marginBottom: 8 }}>{suggestionsError}</div>}
         <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
-          {suggestions.map(s => (
+          {suggestionsLoading ? (
+            [1,2,3].map(i => (
+              <div key={i} className="skeleton" style={{ flexShrink: 0, width: 180, height: 200, borderRadius: 18 }} />
+            ))
+          ) : suggestions.map(s => (
             <div key={s.id} style={{
               background: C.card, borderRadius: 18, padding: 16,
               border: `1px solid ${C.border}`, flexShrink: 0, width: 180,
-              display: 'flex', flexDirection: 'column', gap: 10,
+              display: 'flex', flexDirection: 'column', gap: 8,
             }}>
               <div style={{ fontSize: 28 }}>{s.icon}</div>
               <div>
                 <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 8 }}>{s.name}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 6 }}>{s.name}</div>
+                {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
                   {[
                     { label: `${s.calories} kcal`, color: C.orange },
                     { label: `P ${s.protein}g`,    color: C.blue },
@@ -1015,7 +1251,7 @@ function NutritionTab({ profile, activePlan }) {
                 </div>
               </div>
               <button className="bp" onClick={() => logSuggestion(s)} style={{
-                width: '100%', padding: '8px 0', borderRadius: 10,
+                width: '100%', padding: '8px 0', borderRadius: 10, marginTop: 'auto',
                 background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
                 fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}>+ Log</button>
@@ -1081,6 +1317,7 @@ function NutritionTab({ profile, activePlan }) {
           onClose={() => setShowModal(false)}
           onAdd={(meal) => setMeals(prev => [...prev, meal])}
           macros={macros}
+          profile={profile}
         />
       )}
     </div>
@@ -1444,11 +1681,63 @@ function PhysiqueChart({ scans }) {
   );
 }
 
+/* ─── AI Patterns ─────────────────────────────────────────────────────────── */
+function AIPatterns({ profile, activePlan }) {
+  const cacheKey = 'massiq:patterns';
+  const isStale  = (() => { const c = LS.get(cacheKey, null); return !c || (Date.now() - (c.ts||0) > 7*24*3600*1000); })();
+  const [insights, setInsights] = useState(() => isStale ? null : LS.get(cacheKey, null)?.insights);
+  const [loading,  setLoading]  = useState(isStale);
+  useEffect(() => {
+    if (!loading) return;
+    let ok = true;
+    generatePatterns(profile, activePlan)
+      .then(data => {
+        if (!ok) return;
+        const arr = data.insights || [];
+        setInsights(arr);
+        LS.set(cacheKey, { insights: arr, ts: Date.now() });
+        setLoading(false);
+      })
+      .catch(err => { console.error('Patterns failed:', err); if (ok) setLoading(false); });
+    return () => { ok = false; };
+  }, []);
+
+  return (
+    <div className="su" style={{ animationDelay: '.10s' }}>
+      <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Your Patterns</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {loading ? (
+          [1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 64, borderRadius: 14 }} />)
+        ) : insights?.length ? (
+          insights.map((ins, i) => (
+            <div key={i} style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: 20, flexShrink: 0 }}>{ins.icon}</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.white, lineHeight: 1.4, marginBottom: 4 }}>{ins.pattern}</div>
+                  {ins.action && <div style={{ fontSize: 12, color: C.green, lineHeight: 1.4 }}>→ {ins.action}</div>}
+                </div>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ textAlign: 'center', padding: '24px 0', color: C.muted, fontSize: 13 }}>
+            Log meals for a week to see your patterns.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showToast }) {
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
   const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
   const [confirmReset, setConfirmReset] = useState(false);
+
+  const aiMissions = LS.get('massiq:missions', null);
+  const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
 
   /* Health score from last scan or profile defaults */
   const lastScan = scanHistory[scanHistory.length - 1];
@@ -1465,9 +1754,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
 
   /* Unlock logic */
-  const isUnlocked = (m) => m.requires.every(r => completed.includes(r));
+  const isUnlocked = (m) => !m.requires || m.requires.every(r => completed.includes(r));
   const isDone     = (id) => completed.includes(id);
-  const totalXP    = MISSIONS.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
+  const totalXP    = activeMissions.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
 
   const completeMission = (m) => {
     if (isDone(m.id) || !isUnlocked(m)) return;
@@ -1480,9 +1769,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   };
 
   /* Tier progress */
-  const bronzeDone = MISSIONS.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
-  const silverDone = MISSIONS.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
-  const goldDone   = MISSIONS.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
+  const bronzeDone = activeMissions.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
+  const silverDone = activeMissions.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
+  const goldDone   = activeMissions.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
   const tierFilled = bronzeDone === 4 ? (silverDone === 2 ? (goldDone === 2 ? 3 : 2) : 1) : 0;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
@@ -1584,7 +1873,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
             {[
               { label: 'Total XP',   value: totalXP },
               { label: 'Day Streak', value: LS.get(LS_KEYS.streak, 0) },
-              { label: 'Done',       value: `${completed.length}/${MISSIONS.length}` },
+              { label: 'Done',       value: `${completed.length}/${activeMissions.length}` },
             ].map(s => (
               <div key={s.label}>
                 <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{s.value}</div>
@@ -1614,7 +1903,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
 
         {/* Mission cards */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {MISSIONS.map(m => {
+          {activeMissions.map(m => {
             const done     = isDone(m.id);
             const unlocked = isUnlocked(m);
             const tc       = TIER_COLORS[m.tier];
@@ -1648,6 +1937,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
           })}
         </div>
       </div>
+
+      {/* 3.5 ── AI Patterns ── */}
+      <AIPatterns profile={profile} activePlan={activePlan} />
 
       {/* 4 ── Profile Info ── */}
       <Card className="su" style={{ animationDelay: '.12s' }}>
@@ -1785,7 +2077,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
     setScanning(false);
   };
 
-  const applyPlan = () => {
+  const applyPlan = async () => {
     if (!result) return;
     const today = new Date().toISOString().slice(0, 10);
     const plan = {
@@ -1818,7 +2110,11 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
     LS.set(LS_KEYS.scanHistory, history);
     setScanHistory(history);
     onPlanApplied(plan);
-    showToast('✓ Plan applied. Targets updated.');
+    // Regenerate meal plan with scan data in background
+    generateMealPlan(profile, plan, result)
+      .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
+      .catch(err => console.error('Meal plan regen failed:', err));
+    showToast('✓ Plan applied. Generating your meal plan...');
     setTab('plan');
   };
 
@@ -2191,9 +2487,20 @@ export default function MassIQ() {
     setEditing(true);
   };
 
-  const handleOnboardingComplete = (p) => {
+  const handleOnboardingComplete = (p, plan) => {
     setProfile(p);
     setEditing(false);
+    if (plan) {
+      LS.set(LS_KEYS.activePlan, plan);
+      setActivePlan(plan);
+      // Background: generate meal plan + missions
+      generateMealPlan(p, plan)
+        .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
+        .catch(console.error);
+      generateMissions(p, plan)
+        .then(missions => { LS.set('massiq:missions', missions); })
+        .catch(console.error);
+    }
   };
 
   const showToast = (msg) => setToast(msg);
