@@ -1536,6 +1536,353 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   );
 }
 
+/* ─── Scan Tab ───────────────────────────────────────────────────────────── */
+
+const PHASE_LABEL_COLORS = { Cut: C.orange, Build: C.blue, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
+const MG_COLOR = { underdeveloped: C.red, average: C.gold, 'well-developed': C.green };
+
+function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
+  const photoRef  = useRef(null);
+  const uploadRef = useRef(null);
+
+  const [scanning,  setScanning]  = useState(false);
+  const [result,    setResult]    = useState(null);
+  const [error,     setError]     = useState('');
+  const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
+  const [viewOld,   setViewOld]   = useState(null); // index of old scan being viewed
+
+  const handleFile = (file) => {
+    if (!file) return;
+    setError('');
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target.result.split(',')[1];
+      const mediaType = file.type || 'image/jpeg';
+      await runScan(base64, mediaType);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const runScan = async (base64, mediaType) => {
+    setScanning(true); setResult(null);
+    try {
+      const age    = profile?.age    || 25;
+      const gender = profile?.gender || 'Male';
+      const height = profile?.heightIn || 70;
+      const weight = profile?.weightLbs || 170;
+
+      const res = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+              { type: 'text', text: `Analyze this physique photo. Person is ${age} years old, ${gender}, ${height} inches, ${weight} lbs. Return ONLY a raw JSON object with NO markdown, NO code blocks, just the JSON: {"bodyFatPct":0,"leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"muscleGroups":{"chest":"average","shoulders":"average","back":"average","arms":"average","core":"average","legs":"average"},"weakestGroups":["core","legs"],"asymmetries":[],"strengths":["back","shoulders"],"diagnosis":"...","phase":{"name":"...","label":"Maintain","durationWeeks":12,"objective":"..."},"dailyTargets":{"calories":0,"protein":0,"carbs":0,"fat":0,"steps":0,"sleepHours":0,"waterLiters":0,"trainingDaysPerWeek":0},"weeklyMissions":["...","...","..."],"trainingFocus":{"primary":"...","secondary":"...","frequency":"..."},"nutritionKeyChange":"...","whyThisWorks":"...","nextScanDate":"...","recommendation":"...","disclaimer":"..."}` },
+            ],
+          }],
+          max_tokens: 2000,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const { text, error: apiErr } = await res.json();
+      if (apiErr) throw new Error(apiErr);
+
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('Could not parse scan result');
+      const data = JSON.parse(match[0]);
+      setResult(data);
+    } catch (err) {
+      setError(err.message || 'Scan failed. Please try again.');
+    }
+    setScanning(false);
+  };
+
+  const applyPlan = () => {
+    if (!result) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const plan = {
+      phase:         result.phase?.label || 'Maintain',
+      phaseName:     result.phase?.name  || 'Maintenance Phase',
+      objective:     result.phase?.objective || '',
+      week:          1,
+      startDate:     today,
+      nextScanDate:  result.nextScanDate || (() => { const d = new Date(); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10); })(),
+      macros:        result.dailyTargets,
+      trainDays:     result.dailyTargets?.trainingDaysPerWeek || 4,
+      sleepHrs:      result.dailyTargets?.sleepHours || 8,
+      waterL:        result.dailyTargets?.waterLiters || 3,
+      steps:         result.dailyTargets?.steps || 8000,
+      bodyFat:       result.bodyFatPct,
+      leanMass:      result.leanMass,
+      startBF:       result.bodyFatPct,
+      targetBF:      result.phase?.label === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct,
+      weeklyMissions: result.weeklyMissions || [],
+      whyThisWorks:  result.whyThisWorks || '',
+      cardioDays:    2,
+    };
+    const entry = {
+      date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
+      physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore,
+    };
+    const history = [...LS.get(LS_KEYS.scanHistory, []), entry];
+    LS.set(LS_KEYS.activePlan, plan);
+    LS.set(LS_KEYS.stats, { calories: 0, protein: 0 });
+    LS.set(LS_KEYS.scanHistory, history);
+    setScanHistory(history);
+    onPlanApplied(plan);
+    showToast('✓ Plan applied. Targets updated.');
+    setTab('plan');
+  };
+
+  /* ── Scanning spinner ── */
+  if (scanning) return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '80dvh', gap: 24, padding: 24 }}>
+      <div style={{ position: 'relative', width: 100, height: 100 }}>
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}` }} />
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>📸</div>
+      </div>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Analyzing your physique…</div>
+        <div style={{ fontSize: 14, color: C.muted }}>Estimating body composition, muscle development, and symmetry</div>
+      </div>
+    </div>
+  );
+
+  /* ── Results view ── */
+  if (result) {
+    const ph      = result.phase || {};
+    const phColor = PHASE_LABEL_COLORS[ph.label] || C.green;
+    const dt      = result.dailyTargets || {};
+    const mg      = result.muscleGroups || {};
+
+    return (
+      <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800 }}>Scan Results</h1>
+          <button className="bp" onClick={() => setResult(null)} style={{ background: C.cardElevated, border: 'none', color: C.muted, padding: '6px 14px', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Retake</button>
+        </div>
+
+        {/* 1 – Phase Hero */}
+        <Card className="su" style={{ background: '#1A2E1A', border: `1.5px solid ${phColor}` }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: `${phColor}22`, color: phColor, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${phColor}55`, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            ✓ {ph.label || 'Maintain'}
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{ph.name || 'Maintenance Phase'}</div>
+          <p style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>{ph.objective}</p>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: C.green, fontWeight: 600, marginBottom: 6 }}>0% complete · Week 1 of 12</div>
+            <ProgressBar value={0} max={12} color={phColor} height={8} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 12, color: C.muted }}>Target: <span style={{ color: C.white }}>{result.nextScanDate}</span></span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99 }}>On Track ✓</span>
+          </div>
+        </Card>
+
+        {/* 2 – Why this works */}
+        <Card className="su" style={{ animationDelay: '.03s' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <span style={{ fontSize: 18 }}>✨</span>
+            <span style={{ fontWeight: 700 }}>Why this plan works</span>
+          </div>
+          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7 }}>{result.whyThisWorks}</p>
+        </Card>
+
+        {/* 3 – Daily Targets */}
+        <div className="su" style={{ animationDelay: '.06s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Daily Targets</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {[
+              { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
+              { icon: '⚡', label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
+              { icon: '🚶', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
+              { icon: '🌙', label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
+              { icon: '💧', label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
+              { icon: '🏋️', label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
+            ].map(t => (
+              <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>{t.icon}</div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
+                <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 4 – Physique Metrics */}
+        <div className="su" style={{ animationDelay: '.09s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {[
+              { label: 'Body Fat',  value: `${result.bodyFatPct}%`,       color: C.orange },
+              { label: 'Lean Mass', value: `${result.leanMass} lbs`,      color: C.blue },
+              { label: 'Score',     value: `${result.physiqueScore}/100`,  color: C.green },
+              { label: 'Symmetry',  value: `${result.symmetryScore}/100`,  color: C.purple },
+            ].map(m => (
+              <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 5 – Muscle Groups */}
+        <Card className="su" style={{ animationDelay: '.12s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Groups</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {Object.entries(mg).map(([name, level]) => {
+              const color    = MG_COLOR[level] || C.muted;
+              const pct      = level === 'well-developed' ? 85 : level === 'average' ? 55 : 28;
+              const isPriority = result.weakestGroups?.includes(name);
+              return (
+                <div key={name}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize' }}>{name}</span>
+                      {isPriority && <span style={{ fontSize: 9, fontWeight: 700, color: C.red, background: `${C.red}22`, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase' }}>Priority</span>}
+                    </div>
+                    <span style={{ fontSize: 12, color, fontWeight: 600 }}>{level}</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 99 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        {/* 6 – Asymmetries */}
+        {result.asymmetries?.length > 0 && (
+          <Card className="su" style={{ animationDelay: '.14s', background: `${C.gold}18`, border: `1px solid ${C.gold}44` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold }}>⚠️ Asymmetries Detected</div>
+            <ul style={{ paddingLeft: 18 }}>
+              {result.asymmetries.map((a, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a}</li>)}
+            </ul>
+          </Card>
+        )}
+
+        {/* 7 – Strengths */}
+        {result.strengths?.length > 0 && (
+          <Card className="su" style={{ animationDelay: '.15s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>💪 Strengths</div>
+            <ul style={{ paddingLeft: 18 }}>
+              {result.strengths.map((s, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, textTransform: 'capitalize' }}>{s}</li>)}
+            </ul>
+          </Card>
+        )}
+
+        {/* 8 – Diagnosis */}
+        <Card className="su" style={{ animationDelay: '.16s', background: C.card }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>🧬 Diagnosis</div>
+          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, fontStyle: 'italic' }}>{result.diagnosis}</p>
+        </Card>
+
+        {/* 9 – Milestones strip */}
+        <div className="su" style={{ animationDelay: '.17s', display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+          {[
+            { w: 'W3',  label: 'Baseline set' },
+            { w: 'W6',  label: 'Habits established' },
+            { w: 'W9',  label: 'Check-in' },
+            { w: 'W12', label: 'Final scan' },
+          ].map((m, i) => (
+            <div key={m.w} style={{ flexShrink: 0, background: i === 0 ? C.greenBg : C.cardElevated, border: `1px solid ${i === 0 ? C.green : C.border}`, borderRadius: 12, padding: '10px 14px', textAlign: 'center', minWidth: 90 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: i === 0 ? C.green : C.dimmed }}>{m.w}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{m.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 10 – Apply button */}
+        <Btn onClick={applyPlan} style={{ width: '100%', marginTop: 4 }}>Apply This Plan →</Btn>
+        <div style={{ textAlign: 'center', marginTop: -4 }}>
+          <button className="bp" onClick={() => setResult(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 14, cursor: 'pointer' }}>Retake Scan</button>
+        </div>
+
+        {/* Disclaimer */}
+        {result.disclaimer && (
+          <p style={{ fontSize: 11, color: C.dimmed, textAlign: 'center', lineHeight: 1.6, padding: '0 8px' }}>{result.disclaimer}</p>
+        )}
+      </div>
+    );
+  }
+
+  /* ── Pre-scan state ── */
+  return (
+    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div>
+        <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white, marginBottom: 6 }}>Scan</h1>
+        <p style={{ fontSize: 14, color: C.muted }}>AI physique analysis from a single photo</p>
+      </div>
+
+      {/* What you'll get */}
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>What you&apos;ll get</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          {[
+            { icon: '📊', label: 'Body Fat Range' },
+            { icon: '💪', label: 'Muscle Assessment' },
+            { icon: '⚖️', label: 'Lean Mass Estimate' },
+            { icon: '🔄', label: 'Symmetry Score' },
+            { icon: '🎯', label: 'Training Focus' },
+            { icon: '🍽', label: 'Nutrition Adjustment' },
+          ].map(t => (
+            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
+              <span style={{ fontSize: 24 }}>{t.icon}</span>
+              <span style={{ fontSize: 11, color: C.muted, fontWeight: 500, lineHeight: 1.3 }}>{t.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Instructions */}
+      <Card style={{ background: C.cardElevated }}>
+        <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.7 }}>
+          💡 <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
+        </div>
+      </Card>
+
+      {error && (
+        <div style={{ background: `${C.red}18`, border: `1px solid ${C.red}44`, borderRadius: 14, padding: '12px 16px', fontSize: 13, color: C.red }}>{error}</div>
+      )}
+
+      {/* Buttons */}
+      <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
+      <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%' }}>📸 Take Photo</Btn>
+        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%' }}>🖼 Upload Photo</Btn>
+      </div>
+
+      {/* Scan History */}
+      {scanHistory.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Previous Scans</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[...scanHistory].reverse().map((s, i) => (
+              <div key={i} className="bp" onClick={() => setViewOld(i)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{s.date}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>BF {s.bodyFat}% · Lean {s.leanMass} lbs</div>
+                </div>
+                <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
+                  {s.physiqueScore}/100
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -1629,7 +1976,7 @@ export default function MassIQ() {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} />;
-      case 'scan':      return <PlaceholderTab label="Body Scan" icon="📸" />;
+      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={p => setActivePlan(p)} />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'profile':   return (
         <ProfileTab
