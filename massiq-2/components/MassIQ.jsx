@@ -161,6 +161,25 @@ function calcMacros(profile) {
   return { calories: Math.round(calories), protein, fat, carbs };
 }
 
+/* ─── Macro sanity clamp ─────────────────────────────────────────────────
+   Hard physiological ceilings — prevents absurd Claude-generated or stale
+   localStorage values from showing in the UI.
+   Protein: max 3.5g/kg LBM ≈ 350g for ~100 kg person (well above any guideline)
+   Calories: 800–6000 kcal absolute range
+─────────────────────────────────────────────────────────────────────────── */
+function clampMacros(macros, profile) {
+  if (!macros) return macros;
+  const kg = (profile?.weightLbs || 180) * 0.453592;
+  const maxProtein  = Math.round(kg * 3.5);
+  const minCalories = 800;
+  const maxCalories = 6000;
+  return {
+    ...macros,
+    protein:  Math.min(macros.protein  || 0, maxProtein),
+    calories: Math.max(minCalories, Math.min(macros.calories || 2000, maxCalories)),
+  };
+}
+
 /* ─── Engine API caller ─────────────────────────────────────────────────── */
 async function callEngine(profile, scanHistory = []) {
   try {
@@ -171,8 +190,8 @@ async function callEngine(profile, scanHistory = []) {
       headers: { 'content-type': 'application/json' },
       body:    JSON.stringify({
         profile,
-        current_scan:    currentScan,
-        previous_scans:  previousScans,
+        currentScan,
+        previousScans,
         include_claude_context: true,
       }),
     });
@@ -303,7 +322,16 @@ async function generateDailyTip(profile, activePlan, todayMeals) {
   const text = await callClaude([{ role: 'user', content:
     `Give ${profile.name} ONE specific actionable tip right now. Goal: ${profile.goal}. Time: ${new Date().getHours()}:00. Calories: ${eaten.cal}/${m.calories||2000}. Protein: ${eaten.prot}g/${m.protein||150}g. Write one sentence max 20 words with their actual numbers. No fluff. Return ONLY the tip text.`
   }], 80);
-  return text.trim().replace(/^["']|["']$/g, '');
+  const raw = text.trim().replace(/^["']|["']$/g, '');
+  // Claude sometimes wraps the tip in JSON e.g. {"tip":"..."}
+  try {
+    const parsed = JSON.parse(raw);
+    return (typeof parsed === 'object' && parsed !== null)
+      ? String(parsed.tip || parsed.text || parsed.message || Object.values(parsed)[0] || raw)
+      : raw;
+  } catch {
+    return raw;
+  }
 }
 
 async function generatePatterns(profile, activePlan) {
@@ -540,7 +568,7 @@ function Onboarding({ onComplete }) {
     try {
       // 1. Run the deterministic engine first — this is the source of truth for all numbers
       const engineOutput = await callEngine(profile, []);
-      const macros = engineOutput?.macro_targets || calcMacros(profile);
+      const macros = clampMacros(engineOutput?.macro_targets || calcMacros(profile), profile);
 
       // 2. Claude generates narrative/missions/tips constrained by engine output
       const planData = await generateInitialPlan(profile, macros, engineOutput);
@@ -986,7 +1014,7 @@ function HomeTab({ profile, activePlan, setTab }) {
             {/* 3 inline stats */}
             <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
               {[
-                { label: 'Lean Mass', value: activePlan?.leanMass ?? '—', unit: 'kg' },
+                { label: 'Lean Mass', value: activePlan?.leanMass ?? '—', unit: 'lbs' },
                 { label: 'Calories',  value: todayStats.calories,          unit: 'kcal' },
                 { label: 'Protein',   value: todayStats.protein,           unit: 'g' },
               ].map((s, i) => (
@@ -2957,7 +2985,7 @@ Return ONLY a valid JSON object — no markdown, no code blocks, no explanation 
     if (!result) return;
     const today  = new Date().toISOString().slice(0, 10);
     const eng    = result.engineOutput;          // engine output attached by runScan
-    const m      = eng?.macro_targets || result.dailyTargets || calcMacros(profile);
+    const m      = clampMacros(eng?.macro_targets || result.dailyTargets || calcMacros(profile), profile);
 
     const plan = {
       phase:          profile.goal,
@@ -3410,8 +3438,13 @@ export default function MassIQ() {
   const [editing,    setEditing]    = useState(false);
 
   useEffect(() => {
-    setProfile(LS.get(LS_KEYS.profile));
-    setActivePlan(LS.get(LS_KEYS.activePlan));
+    const p = LS.get(LS_KEYS.profile);
+    const rawPlan = LS.get(LS_KEYS.activePlan);
+    // Clamp any stale macro values from localStorage (e.g. old Claude-generated extremes)
+    if (rawPlan && rawPlan.macros) rawPlan.macros = clampMacros(rawPlan.macros, p);
+    if (rawPlan && rawPlan.dailyTargets) rawPlan.dailyTargets = clampMacros(rawPlan.dailyTargets, p);
+    setProfile(p);
+    setActivePlan(rawPlan);
     setReady(true);
   }, []);
 
