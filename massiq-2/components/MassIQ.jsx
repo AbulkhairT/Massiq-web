@@ -1009,13 +1009,14 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
     setAnalyzing(false);
   };
 
-  const analyzePhoto = async (file) => {
+  const analyzePhoto = (file) => {
     if (!file) return;
     setAnalyzing(true); setError('');
-    try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64 = (e.target.result).split(',')[1];
+    const reader = new FileReader();
+    reader.onerror = () => { setError('Could not read image file.'); setAnalyzing(false); };
+    reader.onload = async (e) => {
+      try {
+        const base64 = e.target.result.split(',')[1];
         const res = await fetch('/api/claude', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1030,17 +1031,23 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
             max_tokens: 200,
           }),
         });
-        const { text } = await res.json();
+        if (!res.ok) throw new Error(`API error ${res.status}`);
+        const { text, error: apiErr } = await res.json();
+        if (apiErr) throw new Error(apiErr);
         const match = text.match(/\{[\s\S]*\}/);
         if (match) {
           const d = JSON.parse(match[0]);
           setForm({ name: d.name || 'Food', calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
           setComment(d.comment || '');
         }
+      } catch (err) {
+        console.error('Photo analysis error:', err);
+        setError('Photo analysis failed — fill in manually.');
+      } finally {
         setAnalyzing(false);
-      };
-      reader.readAsDataURL(file);
-    } catch { setError('Photo analysis failed — fill in manually.'); setAnalyzing(false); }
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleAdd = () => {

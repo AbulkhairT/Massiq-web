@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-// Allow up to 10 MB bodies for base64 image uploads
-export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
+// NOTE: The Pages Router `config` export does nothing in Next.js App Router.
+// Body size for Node.js runtime route handlers is not limited by Next.js itself.
+// Large base64 image payloads (up to ~10 MB) are handled fine without extra config.
 
 function bad(msg, status = 400) {
   return NextResponse.json({ error: msg }, { status });
@@ -31,7 +32,7 @@ export async function POST(req) {
   // Allow up to 4000 tokens; default 1000
   const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4000, +max_tokens)) : 1000;
 
-  // Rough payload size guard (base64 images can be large)
+  // Rough payload size guard (base64 images can be large — allow up to 10 MB)
   const approxSize = JSON.stringify({ messages, system }).length;
   if (approxSize > 10_000_000) return bad("Payload too large", 413);
 
