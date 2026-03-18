@@ -121,21 +121,67 @@ const LS_KEYS = {
 };
 
 /* ─── Macro Calculator ───────────────────────────────────────────────────── */
+/* ─── Physiological macro calculator (Mifflin-St Jeor / ISSN guidelines) ── */
 function calcMacros(profile) {
   if (!profile) return null;
-  const { weightLbs, heightIn, age, gender, activity, goal } = profile;
-  const kg = weightLbs * 0.453592;
-  const cm = heightIn * 2.54;
-  const bmr = gender === 'Female'
-    ? 447.593 + (9.247 * kg) - (3.098 * cm) + (4.330 * age)
-    : 88.362 + (13.397 * kg) + (4.799 * cm) - (5.677 * age);
-  const mult = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 }[activity] || 1.375;
-  const tdee = bmr * mult;
-  const calories = goal === 'Cut' ? tdee - 400 : goal === 'Bulk' ? tdee + 300 : tdee;
-  const protein  = Math.round(weightLbs * (goal === 'Cut' ? 1.1 : goal === 'Bulk' ? 1.0 : 0.9));
-  const fat      = Math.round((calories * 0.25) / 9);
-  const carbs    = Math.round((calories - protein * 4 - fat * 9) / 4);
+  const { weightLbs, heightIn, heightCm, age, gender, activity, goal } = profile;
+  const kg  = weightLbs * 0.453592;
+  const cm  = heightCm  || (heightIn * 2.54);
+
+  // Mifflin-St Jeor BMR (more accurate than Harris-Benedict, ±10% for 82% of adults)
+  const bmrBase = 10 * kg + 6.25 * cm - 5 * age;
+  const bmr     = gender === 'Female' ? bmrBase - 161 : bmrBase + 5;
+
+  const mult     = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 }[activity] || 1.55;
+  const tdee     = Math.round(bmr * mult);
+
+  // Phase deficit: target 0.6% BW/week fat loss for cuts (sustainable, muscle-safe)
+  // Bulk: +300 kcal lean surplus. Recomp: -100 kcal mild deficit.
+  const deficitMap = {
+    Cut:      Math.min(500, Math.max(250, Math.round(weightLbs * 0.006 * 3500 / 7))),
+    Bulk:     -300,    // negative = surplus added below
+    Recomp:   100,
+    Maintain: 0,
+  };
+  const adj      = deficitMap[goal] || 0;
+  const calories = goal === 'Bulk' ? tdee + 300 : tdee - adj;
+
+  // ISSN protein: 2.2g/kg LBM for cuts, 1.8g/kg BW for bulk
+  const bfEst    = gender === 'Female' ? 27 : 20;   // conservative estimate without scan
+  const lbmKg    = kg * (1 - bfEst / 100);
+  const protein  = Math.round(goal === 'Bulk' ? kg * 1.8 : lbmKg * 2.2 / 5) * 5;
+
+  // Fat: max(0.8g/kg BW, 25% of calories) — hormonal floor
+  const fatFromPct = Math.round((calories * 0.25) / 9);
+  const fatMin     = Math.round(kg * 0.8);
+  const fat        = Math.round(Math.max(fatFromPct, fatMin) / 5) * 5;
+
+  const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4 / 5) * 5);
+
   return { calories: Math.round(calories), protein, fat, carbs };
+}
+
+/* ─── Engine API caller ─────────────────────────────────────────────────── */
+async function callEngine(profile, scanHistory = []) {
+  try {
+    const currentScan    = scanHistory.length > 0 ? scanHistory[scanHistory.length - 1] : undefined;
+    const previousScans  = scanHistory.length > 1 ? scanHistory.slice(0, -1) : [];
+    const res = await fetch('/api/engine', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({
+        profile,
+        current_scan:    currentScan,
+        previous_scans:  previousScans,
+        include_claude_context: true,
+      }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn('[engine] call failed, falling back to calcMacros:', err);
+    return null;
+  }
 }
 
 /* ─── Session Storage ───────────────────────────────────────────────────── */
@@ -179,20 +225,39 @@ function weekKey2() {
 }
 
 /* ─── AI Plan Generators ─────────────────────────────────────────────────── */
-async function generateInitialPlan(profile, macros) {
-  const in4weeks = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+async function generateInitialPlan(profile, macros, engineOutput = null) {
+  const in4weeks    = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+  const m           = engineOutput?.macro_targets || macros;
+  const tl          = engineOutput?.trajectory;
+  const diag        = engineOutput?.diagnosis?.primary;
+  const claudeCtx   = engineOutput?.claude_context || '';
+  const startBF     = engineOutput?.start_bf ?? 20;
+  const targetBF    = engineOutput?.target_bf ?? (profile.goal === 'Cut' ? startBF - 4 : startBF);
+  const weeksToGoal = tl?.timeline_weeks ?? 12;
+
+  // Claude's role: generate narrative, missions, tips, and training focus.
+  // The numbers are provided by the engine and must not be changed.
   const text = await callClaude([{ role: 'user', content:
-    `You are an elite physique coach. Generate a complete personalized plan:
-Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
-Weight: ${profile.weightLbs} lbs, Height: ${profile.heightCm} cm
-Goal: ${profile.goal}, Activity: ${profile.activity}
-Dietary Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
-Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
-Avoid: ${(profile.avoid||[]).join(', ')||'none'}
-Calculated: ${macros.calories} kcal, ${macros.protein}g protein, ${macros.carbs}g carbs, ${macros.fat}g fat
+    `You are an elite physique coach. The physiological targets below were computed by a deterministic calculation engine. Your job is to generate the NARRATIVE, MISSIONS, and TIPS — not the numbers.
+
+${claudeCtx || `TARGETS: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`}
+
+User profile:
+- Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
+- Weight: ${profile.weightLbs} lbs, Goal: ${profile.goal}, Activity: ${profile.activity}
+- Dietary prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
+- Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+- Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+${diag ? `- Primary diagnosis: ${diag.primary_issue}` : ''}
+
+Rules:
+1. Use the exact calorie/macro numbers above — do not change them
+2. Weekly missions must reference the exact protein/calorie targets
+3. Daily tips must be specific (include actual numbers from the targets)
+4. whyThisWorks must explain the diagnosis and the science behind the plan
 
 Return ONLY raw JSON (no markdown, no code blocks):
-{"phase":{"name":"string","label":"Cut|Bulk|Recomp|Maintain","objective":"string","durationWeeks":12},"dailyTargets":{"calories":${macros.calories},"protein":${macros.protein},"carbs":${macros.carbs},"fat":${macros.fat},"steps":8000,"sleepHours":8,"waterLiters":3,"trainingDaysPerWeek":4},"whyThisWorks":"3-4 sentence explanation specific to this person","weeklyMissions":["mission1 with exact target","mission2","mission3"],"trainingFocus":{"primary":"muscle group","secondary":"muscle group","frequency":"X times per week","reasoning":"why"},"nutritionKeyChange":"one specific change","dailyTips":["Monday tip referencing their goal","Tuesday tip","Wednesday tip","Thursday tip","Friday tip","Saturday tip","Sunday tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":20,"targetBF":16,"weeksToGoal":12}}`
+{"phase":{"name":"string","label":"${profile.goal}","objective":"specific 2-sentence objective referencing their diagnosis","durationWeeks":12},"dailyTargets":{"calories":${m.calories},"protein":${m.protein},"carbs":${m.carbs},"fat":${m.fat},"steps":${m.steps||9000},"sleepHours":${m.sleepHours||8},"waterLiters":${m.waterLiters||3},"trainingDaysPerWeek":${m.trainingDaysPerWeek||4}},"whyThisWorks":"3-4 sentences — reference the diagnosis and explain the science","weeklyMissions":["Hit ${m.protein}g protein every day this week","Complete ${m.trainingDaysPerWeek||4} resistance sessions","Reach ${m.steps||9000} steps daily"],"trainingFocus":{"primary":"specific muscle group or movement pattern","secondary":"secondary focus","frequency":"${m.trainingDaysPerWeek||4}x per week","reasoning":"why this training split serves the ${profile.goal} goal"},"nutritionKeyChange":"one specific, numerical change from their current habits","dailyTips":["Monday: specific tip with a number","Tuesday: specific tip","Wednesday: specific tip","Thursday: specific tip","Friday: specific tip","Saturday: specific tip","Sunday: specific tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":${startBF},"targetBF":${targetBF},"weeksToGoal":${weeksToGoal}}}`
   }], 2000);
   return parseJSON(text);
 }
@@ -473,35 +538,54 @@ function Onboarding({ onComplete }) {
 
     setGenerating(true);
     try {
-      const macros = calcMacros(profile);
-      const planData = await generateInitialPlan(profile, macros);
+      // 1. Run the deterministic engine first — this is the source of truth for all numbers
+      const engineOutput = await callEngine(profile, []);
+      const macros = engineOutput?.macro_targets || calcMacros(profile);
+
+      // 2. Claude generates narrative/missions/tips constrained by engine output
+      const planData = await generateInitialPlan(profile, macros, engineOutput);
       const td = todayStr();
+
+      // 3. Assemble plan — engine targets take priority over Claude's returned numbers
       const plan = {
-        phase:          planData.phase?.label       || profile.goal,
+        phase:          profile.goal,
         phaseName:      planData.phase?.name        || `${profile.goal} Phase`,
         objective:      planData.phase?.objective   || '',
         week:           1,
         startDate:      td,
         nextScanDate:   planData.nextScanDate       || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
         macros: {
-          calories: planData.dailyTargets?.calories || macros.calories,
-          protein:  planData.dailyTargets?.protein  || macros.protein,
-          carbs:    planData.dailyTargets?.carbs    || macros.carbs,
-          fat:      planData.dailyTargets?.fat      || macros.fat,
+          calories: macros.calories,
+          protein:  macros.protein,
+          carbs:    macros.carbs,
+          fat:      macros.fat,
         },
-        dailyTargets:       planData.dailyTargets        || {},
-        trainDays:          planData.dailyTargets?.trainingDaysPerWeek || 4,
-        sleepHrs:           planData.dailyTargets?.sleepHours          || 8,
-        waterL:             planData.dailyTargets?.waterLiters         || 3,
-        steps:              planData.dailyTargets?.steps               || 8000,
-        weeklyMissions:     planData.weeklyMissions   || [],
-        whyThisWorks:       planData.whyThisWorks     || '',
-        dailyTips:          planData.dailyTips        || [],
-        trainingFocus:      planData.trainingFocus    || {},
-        nutritionKeyChange: planData.nutritionKeyChange|| '',
-        startBF:            planData.transformationTimeline?.startBF  || 20,
-        targetBF:           planData.transformationTimeline?.targetBF || (profile.goal === 'Cut' ? 16 : 20),
-        cardioDays: 2,
+        dailyTargets: {
+          calories:            macros.calories,
+          protein:             macros.protein,
+          carbs:               macros.carbs,
+          fat:                 macros.fat,
+          steps:               macros.steps               || 9000,
+          sleepHours:          macros.sleepHours          || 8,
+          waterLiters:         macros.waterLiters         || 3,
+          trainingDaysPerWeek: macros.trainingDaysPerWeek || 4,
+        },
+        trainDays:          macros.trainingDaysPerWeek || 4,
+        sleepHrs:           macros.sleepHours          || 8,
+        waterL:             macros.waterLiters         || 3,
+        steps:              macros.steps               || 9000,
+        weeklyMissions:     planData.weeklyMissions    || [],
+        whyThisWorks:       planData.whyThisWorks      || '',
+        dailyTips:          planData.dailyTips         || [],
+        trainingFocus:      planData.trainingFocus     || {},
+        nutritionKeyChange: planData.nutritionKeyChange || '',
+        startBF:            engineOutput?.start_bf     ?? planData.transformationTimeline?.startBF ?? 20,
+        targetBF:           engineOutput?.target_bf    ?? planData.transformationTimeline?.targetBF ?? (profile.goal === 'Cut' ? 16 : 20),
+        cardioDays:         macros.cardioDays           || 2,
+        // Attach engine output for downstream use (scan feedback, diagnosis display)
+        engineDiagnosis:    engineOutput?.diagnosis     || null,
+        engineTrajectory:   engineOutput?.trajectory    || null,
+        tdee:               engineOutput?.physio?.tdee  || null,
       };
       onComplete(profile, plan);
     } catch (err) {
@@ -2726,11 +2810,12 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null);
     try {
-      const age    = profile?.age    || 25;
-      const gender = profile?.gender || 'Male';
+      const age    = profile?.age      || 25;
+      const gender = profile?.gender   || 'Male';
       const height = profile?.heightIn || 70;
       const weight = profile?.weightLbs || 170;
 
+      // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
       const res = await fetch('/api/claude', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -2739,10 +2824,15 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Analyze this physique photo. Person is ${age} years old, ${gender}, ${height} inches, ${weight} lbs. Return ONLY a raw JSON object with NO markdown, NO code blocks, just the JSON: {"bodyFatPct":0,"leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"muscleGroups":{"chest":"average","shoulders":"average","back":"average","arms":"average","core":"average","legs":"average"},"weakestGroups":["core","legs"],"asymmetries":[],"strengths":["back","shoulders"],"diagnosis":"...","phase":{"name":"...","label":"Maintain","durationWeeks":12,"objective":"..."},"dailyTargets":{"calories":0,"protein":0,"carbs":0,"fat":0,"steps":0,"sleepHours":0,"waterLiters":0,"trainingDaysPerWeek":0},"weeklyMissions":["...","...","..."],"trainingFocus":{"primary":"...","secondary":"...","frequency":"..."},"nutritionKeyChange":"...","whyThisWorks":"...","nextScanDate":"...","recommendation":"...","disclaimer":"..."}` },
+              { type: 'text', text: `Analyze this physique photo. Person is ${age} years old, ${gender}, ${height} inches, ${weight} lbs.
+
+Your job: visually estimate body composition and muscle development. Do NOT generate nutrition targets or macros — those will be calculated by a separate system.
+
+Return ONLY a raw JSON object with NO markdown, NO code blocks:
+{"bodyFatPct":0,"leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"muscleGroups":{"chest":"underdeveloped|average|well-developed","shoulders":"...","back":"...","arms":"...","core":"...","legs":"..."},"weakestGroups":["core","legs"],"asymmetries":[],"strengths":["back","shoulders"],"diagnosis":"2-3 sentence specific assessment of what you see","recommendation":"most important single change based on visual assessment","disclaimer":"AI visual estimate — scan accuracy improves with multiple scans over time"}` },
             ],
           }],
-          max_tokens: 2000,
+          max_tokens: 800,
         }),
       });
 
@@ -2752,7 +2842,24 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
       const match = text.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not parse scan result');
-      const data = JSON.parse(match[0]);
+      const visualData = JSON.parse(match[0]);
+
+      // Step 2: Run the engine with this scan data to get precise targets
+      const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+      const scanForEngine  = { date: new Date().toISOString().slice(0, 10), bodyFat: visualData.bodyFatPct, weight, leanMass: visualData.leanMass };
+      const engineOutput   = await callEngine(profile, [...currentHistory, scanForEngine]);
+
+      // Step 3: Merge — visual assessment from Claude, targets from engine
+      const data = {
+        ...visualData,
+        // Engine-calculated targets (authoritative)
+        dailyTargets:    engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal }),
+        phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+        whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || visualData.diagnosis,
+        weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+        nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+        engineOutput,    // attach full engine output for applyPlan to use
+      };
       setResult(data);
     } catch (err) {
       setError(err.message || 'Scan failed. Please try again.');
@@ -2762,26 +2869,33 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
   const applyPlan = async () => {
     if (!result) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today  = new Date().toISOString().slice(0, 10);
+    const eng    = result.engineOutput;          // engine output attached by runScan
+    const m      = eng?.macro_targets || result.dailyTargets || calcMacros(profile);
+
     const plan = {
-      phase:         result.phase?.label || 'Maintain',
-      phaseName:     result.phase?.name  || 'Maintenance Phase',
-      objective:     result.phase?.objective || '',
-      week:          1,
-      startDate:     today,
-      nextScanDate:  result.nextScanDate || (() => { const d = new Date(); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10); })(),
-      macros:        result.dailyTargets,
-      trainDays:     result.dailyTargets?.trainingDaysPerWeek || 4,
-      sleepHrs:      result.dailyTargets?.sleepHours || 8,
-      waterL:        result.dailyTargets?.waterLiters || 3,
-      steps:         result.dailyTargets?.steps || 8000,
-      bodyFat:       result.bodyFatPct,
-      leanMass:      result.leanMass,
-      startBF:       result.bodyFatPct,
-      targetBF:      result.phase?.label === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct,
-      weeklyMissions: result.weeklyMissions || [],
-      whyThisWorks:  result.whyThisWorks || '',
-      cardioDays:    2,
+      phase:          profile.goal,
+      phaseName:      `${profile.goal} Phase`,
+      objective:      eng?.diagnosis?.primary?.recommended_action || '',
+      week:           1,
+      startDate:      today,
+      nextScanDate:   result.nextScanDate || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+      macros:         { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat },
+      dailyTargets:   m,
+      trainDays:      m.trainingDaysPerWeek || 4,
+      sleepHrs:       m.sleepHours          || 8,
+      waterL:         m.waterLiters         || 3,
+      steps:          m.steps               || 9000,
+      bodyFat:        result.bodyFatPct,
+      leanMass:       result.leanMass,
+      startBF:        eng?.start_bf         ?? result.bodyFatPct,
+      targetBF:       eng?.target_bf        ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct),
+      weeklyMissions: result.weeklyMissions  || [],
+      whyThisWorks:   result.whyThisWorks    || '',
+      cardioDays:     m.cardioDays           || 2,
+      engineDiagnosis: eng?.diagnosis        || null,
+      engineTrajectory: eng?.trajectory      || null,
+      tdee:           eng?.physio?.tdee      || null,
     };
     const entry = {
       date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
