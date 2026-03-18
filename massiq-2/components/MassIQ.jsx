@@ -116,6 +116,8 @@ const LS_KEYS = {
   xp:          'massiq:xp',
   streak:      'massiq:streak',
   meals:       (d) => `massiq:meals:${d}`,
+  workoutplan: 'massiq:workoutplan',
+  logged:      (d) => `massiq:logged:${d}`,
 };
 
 /* ─── Macro Calculator ───────────────────────────────────────────────────── */
@@ -259,6 +261,47 @@ async function generateMissions(profile, activePlan) {
 Each specific to their numbers. Return ONLY raw JSON array:
 [{"id":"unique_id","tier":"Bronze|Silver|Gold|Platinum","emoji":"emoji","title":"short title","description":"specific with their numbers","xp":100}]`
   }], 600);
+  return parseJSON(text);
+}
+
+async function generateWorkoutPlan(profile, activePlan) {
+  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const focus = activePlan?.trainingFocus || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Generate a 7-day workout split for ${profile.name}:
+Goal: ${profile.goal}, Training: ${trainDays}x/week
+Primary focus: ${focus.primary || 'overall strength'}, Secondary: ${focus.secondary || 'conditioning'}
+Activity: ${profile.activity}
+Rules: Include rest days. Compound movements first. 4-6 exercises per training day. Progressive overload.
+Return ONLY raw JSON array of 7 (Monday-Sunday):
+[{"day":"Monday","isTrainingDay":true,"workoutType":"Push","focus":["Chest","Shoulders","Triceps"],"duration":"50-60 min","warmup":"5 min light cardio + arm circles, shoulder rotations","cooldown":"5 min static stretching targeting worked muscles","exercises":[{"name":"Bench Press","sets":4,"reps":"8-10","rest":"90s","weight":"70-80% 1RM","technique":"Lower bar to lower chest, elbows at 45°. Drive feet into floor. Press explosively."}]}]`
+  }], 3000);
+  return parseJSON(text);
+}
+
+async function generateRecipeDetails(meal, profile) {
+  const text = await callClaude([{ role: 'user', content:
+    `Detailed recipe for: ${meal.name}
+Macros: ${meal.calories || 0} kcal, ${meal.protein || 0}g protein, ${meal.carbs || 0}g carbs, ${meal.fat || 0}g fat
+Prep time: ${meal.prepTime || '15-20 min'}, Goal: ${profile?.goal || 'fitness'}
+Return ONLY raw JSON:
+{"ingredients":["200g chicken breast","100g brown rice","1 tbsp olive oil","salt and pepper to taste"],"steps":[{"text":"Season chicken breast with salt, pepper, and garlic powder","timerSeconds":null},{"text":"Heat olive oil in pan over medium-high heat","timerSeconds":null},{"text":"Cook chicken 6 minutes per side until golden","timerSeconds":360},{"text":"Rest chicken 3 minutes before slicing","timerSeconds":180}]}`
+  }], 600);
+  return parseJSON(text);
+}
+
+async function swapMealAPI(currentMeal, profile, activePlan) {
+  const mealType = currentMeal.mealType || currentMeal.time || currentMeal.category || 'Meal';
+  const text = await callClaude([{ role: 'user', content:
+    `Replace this meal with a completely different one:
+Current: ${currentMeal.name} (${currentMeal.calories} kcal, ${currentMeal.protein}g protein)
+Type: ${mealType}, Goal: ${profile?.goal}
+Prefs: ${(profile?.dietPrefs||[]).join(', ')||'none'}, Cuisines: ${(profile?.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile?.avoid||[]).join(', ')||'none'}
+Must be different cuisine/style. Hit similar macros.
+Return ONLY raw JSON single object:
+{"name":"string","description":"string","icon":"emoji","calories":${currentMeal.calories},"protein":${currentMeal.protein},"carbs":${currentMeal.carbs||0},"fat":${currentMeal.fat||0},"prepTime":"string","whyThisMeal":"why this is a great swap"}`
+  }], 400);
   return parseJSON(text);
 }
 
@@ -911,6 +954,9 @@ function HomeTab({ profile, activePlan, setTab }) {
               <TargetTile icon="🌙" label="Sleep"    current={activePlan?.sleepHrs  || 8} target={activePlan?.sleepHrs  || 8} unit="hrs"  color={C.purple} />
             </div>
           </Card>
+
+          {/* ── Today's Workout ── */}
+          <TodayWorkoutCard />
         </>
       )}
     </div>
@@ -1169,12 +1215,448 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
   );
 }
 
+/* ─── Countdown Timer ────────────────────────────────────────────────────── */
+function CountdownTimer({ seconds, onComplete }) {
+  const [remaining, setRemaining] = useState(seconds);
+  const [running, setRunning] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!running) return;
+    ref.current = setInterval(() => {
+      setRemaining(r => {
+        if (r <= 1) {
+          clearInterval(ref.current);
+          setRunning(false);
+          try { navigator.vibrate(200); } catch {}
+          onComplete?.();
+          return 0;
+        }
+        return r - 1;
+      });
+    }, 1000);
+    return () => clearInterval(ref.current);
+  }, [running]);
+
+  const mins = Math.floor(remaining / 60);
+  const secs = remaining % 60;
+  const pct = seconds > 0 ? remaining / seconds : 0;
+  const deg = Math.round(pct * 360);
+
+  const handleTap = () => {
+    if (remaining === 0) { setRemaining(seconds); setRunning(false); }
+    else setRunning(r => !r);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <div className="bp" onClick={handleTap} style={{
+        width: 58, height: 58, borderRadius: '50%', position: 'relative', cursor: 'pointer',
+        background: `conic-gradient(${remaining === 0 ? C.green : running ? C.orange : C.blue} ${deg}deg, rgba(255,255,255,0.07) ${deg}deg)`,
+      }}>
+        <div style={{
+          position: 'absolute', inset: 6, borderRadius: '50%', background: C.card,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: remaining === 0 ? C.green : C.white }}>
+            {String(mins).padStart(2,'0')}:{String(secs).padStart(2,'0')}
+          </span>
+        </div>
+      </div>
+      <span style={{ fontSize: 9, color: C.muted }}>
+        {remaining === 0 ? '✓ done' : running ? 'pause' : 'start'}
+      </span>
+    </div>
+  );
+}
+
+/* ─── Exercise Card ──────────────────────────────────────────────────────── */
+function ExerciseCard({ ex, exIdx, completedSets, onToggleSet }) {
+  const [showTips, setShowTips] = useState(false);
+  const sets = ex.sets || 3;
+  const doneSets = Array.from({ length: sets }).filter((_, si) => completedSets[`${exIdx}-${si}`]).length;
+  const allDone = doneSets === sets;
+
+  return (
+    <div style={{ background: C.card, borderRadius: 16, padding: 16, border: `1px solid ${allDone ? C.greenDim : C.border}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 3, color: allDone ? C.muted : C.white }}>{ex.name}</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: C.green, lineHeight: 1 }}>
+            {ex.sets}×{ex.reps}
+          </div>
+        </div>
+        {ex.rest && (
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.04em' }}>Rest</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.muted }}>{ex.rest}</div>
+          </div>
+        )}
+      </div>
+      {ex.weight && (
+        <div style={{ fontSize: 12, color: C.blue, marginBottom: 10 }}>⚖️ {ex.weight}</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: ex.technique ? 10 : 0 }}>
+        {Array.from({ length: sets }).map((_, si) => {
+          const done = completedSets[`${exIdx}-${si}`];
+          return (
+            <div key={si} className="bp" onClick={() => onToggleSet(exIdx, si)} style={{
+              width: 36, height: 36, borderRadius: '50%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: `2px solid ${done ? C.green : C.dimmed}`,
+              background: done ? C.greenBg : 'transparent',
+              cursor: 'pointer', fontSize: 12, fontWeight: 700,
+              color: done ? C.green : C.dimmed,
+            }}>
+              {done ? '✓' : si + 1}
+            </div>
+          );
+        })}
+      </div>
+      {ex.technique && (
+        <>
+          <button className="bp" onClick={() => setShowTips(s => !s)} style={{
+            background: 'none', border: 'none', color: C.dimmed, fontSize: 11, cursor: 'pointer', padding: '4px 0',
+          }}>
+            {showTips ? '▲ Hide form tips' : '▼ Show form tips'}
+          </button>
+          {showTips && (
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginTop: 6, padding: '8px 10px', background: C.cardElevated, borderRadius: 8 }}>
+              {ex.technique}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─── Recipe Detail Modal ────────────────────────────────────────────────── */
+function RecipeModal({ meal, profile, onClose, onLog, onSwap }) {
+  const [details, setDetails] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [checked, setChecked] = useState({});
+  const mealType = meal.mealType || meal.time || meal.category || 'Meal';
+
+  useEffect(() => {
+    const key = `massiq:recipe:${meal.name}`;
+    const cached = SS.get(key, null);
+    if (cached) { setDetails(cached); setLoading(false); return; }
+    let ok = true;
+    generateRecipeDetails(meal, profile)
+      .then(d => { if (ok) { setDetails(d); SS.set(key, d); setLoading(false); } })
+      .catch(() => { if (ok) setLoading(false); });
+    return () => { ok = false; };
+  }, [meal.name]);
+
+  return (
+    <div className="fi" onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.8)',
+      display: 'flex', alignItems: 'flex-end',
+    }}>
+      <div className="su" onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 480, margin: '0 auto',
+        background: C.bg, borderRadius: '24px 24px 0 0',
+        maxHeight: '92dvh', overflowY: 'auto',
+        border: `1px solid ${C.border}`,
+        paddingBottom: 'max(24px, env(safe-area-inset-bottom))',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 40, height: 4, borderRadius: 99, background: C.border }} />
+        </div>
+        <div style={{ padding: '8px 20px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}`, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+              {mealType}
+            </span>
+            <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer' }}>×</button>
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{meal.name}</h2>
+          {(meal.description || meal.whyNow || meal.whyThisMeal) && (
+            <p style={{ fontSize: 14, color: C.muted, marginBottom: 18, lineHeight: 1.6 }}>
+              {meal.description || meal.whyNow || meal.whyThisMeal}
+            </p>
+          )}
+          {/* 2×2 macro grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+            {[
+              { label: 'Calories', value: meal.calories || 0, unit: 'kcal', color: C.orange },
+              { label: 'Protein',  value: meal.protein  || 0, unit: 'g',    color: C.blue },
+              { label: 'Carbs',    value: meal.carbs    || 0, unit: 'g',    color: C.gold },
+              { label: 'Fat',      value: meal.fat      || 0, unit: 'g',    color: C.muted },
+            ].map(t => (
+              <div key={t.label} style={{ background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600 }}>{t.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: t.color, lineHeight: 1.2 }}>{t.value}</div>
+                <div style={{ fontSize: 11, color: C.dimmed }}>{t.unit}</div>
+              </div>
+            ))}
+          </div>
+          {meal.prepTime && (
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>⏱ {meal.prepTime}</div>
+          )}
+          {loading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+              <div style={{ fontSize: 13, color: C.muted, fontWeight: 600, marginBottom: 4 }}>Loading recipe details...</div>
+              {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 44, borderRadius: 10 }} />)}
+            </div>
+          ) : details ? (
+            <>
+              {details.ingredients?.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Ingredients</div>
+                  {details.ingredients.map((ing, i) => (
+                    <div key={i} className="bp" onClick={() => setChecked(p => ({...p, [i]: !p[i]}))} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 4px',
+                      borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
+                    }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+                        border: `2px solid ${checked[i] ? C.green : C.dimmed}`,
+                        background: checked[i] ? C.greenBg : 'transparent',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {checked[i] && <span style={{ fontSize: 12, color: C.green }}>✓</span>}
+                      </div>
+                      <span style={{ fontSize: 14, color: checked[i] ? C.dimmed : C.white, textDecoration: checked[i] ? 'line-through' : 'none' }}>
+                        {ing}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {details.steps?.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Instructions</div>
+                  {details.steps.map((step, i) => (
+                    <div key={i} style={{
+                      display: 'flex', gap: 12, marginBottom: 12, padding: '12px 14px',
+                      background: C.card, borderRadius: 14, border: `1px solid ${C.border}`,
+                    }}>
+                      <div style={{
+                        width: 26, height: 26, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+                        background: C.greenBg, border: `1px solid ${C.greenDim}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 12, fontWeight: 700, color: C.green,
+                      }}>{i + 1}</div>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: 14, lineHeight: 1.5, color: C.white, marginBottom: step.timerSeconds > 0 ? 12 : 0 }}>
+                          {step.text}
+                        </p>
+                        {step.timerSeconds > 0 && (
+                          <CountdownTimer seconds={step.timerSeconds} />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '20px 0 24px', color: C.muted, fontSize: 13 }}>
+              Could not load recipe details.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10, paddingBottom: 8 }}>
+            <Btn onClick={onLog} style={{ flex: 1 }}>✓ Log This Meal</Btn>
+            <Btn onClick={onSwap} variant="outline" style={{ flex: 1 }}>↺ Swap</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Workout Detail Modal ───────────────────────────────────────────────── */
+function WorkoutModal({ workout, onClose, onFinish }) {
+  const [completedSets, setCompletedSets] = useState({});
+  const [restTimer, setRestTimer] = useState(null);
+  const [showWarmup, setShowWarmup] = useState(false);
+
+  const parseRestSecs = (s) => {
+    if (!s) return 0;
+    const m = s.match(/(\d+)\s*s/i); if (m) return parseInt(m[1]);
+    const m2 = s.match(/(\d+)\s*min/i); if (m2) return parseInt(m2[1]) * 60;
+    return 90;
+  };
+
+  const handleToggleSet = (exIdx, setIdx) => {
+    const key = `${exIdx}-${setIdx}`;
+    const isNowDone = !completedSets[key];
+    setCompletedSets(p => ({ ...p, [key]: isNowDone }));
+    if (isNowDone) {
+      const ex = workout.exercises?.[exIdx];
+      const secs = parseRestSecs(ex?.rest);
+      if (secs > 0) setRestTimer({ exIdx, restSeconds: secs });
+    }
+  };
+
+  const totalSets = (workout.exercises || []).reduce((a, ex) => a + (ex.sets || 3), 0);
+  const doneSets = Object.values(completedSets).filter(Boolean).length;
+  const pct = totalSets > 0 ? Math.round((doneSets / totalSets) * 100) : 0;
+
+  return (
+    <div className="fi" onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.8)',
+      display: 'flex', alignItems: 'flex-end',
+    }}>
+      <div className="su" onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 480, margin: '0 auto',
+        background: C.bg, borderRadius: '24px 24px 0 0',
+        maxHeight: '92dvh', overflowY: 'auto',
+        border: `1px solid ${C.border}`,
+        paddingBottom: 'max(24px, env(safe-area-inset-bottom))',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 40, height: 4, borderRadius: 99, background: C.border }} />
+        </div>
+        <div style={{ padding: '8px 20px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+              <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}`, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                {workout.workoutType || 'Workout'}
+              </span>
+              {(workout.focus || []).slice(0, 3).map(f => (
+                <span key={f} style={{ background: 'rgba(74,158,255,0.1)', color: C.blue, fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 99, border: `1px solid rgba(74,158,255,0.2)` }}>
+                  {f}
+                </span>
+              ))}
+            </div>
+            <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer', flexShrink: 0 }}>×</button>
+          </div>
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{workout.day}'s Workout</h2>
+          {workout.duration && <p style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>⏱ {workout.duration}</p>}
+          {totalSets > 0 && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.muted, marginBottom: 6 }}>
+                <span>{doneSets}/{totalSets} sets</span>
+                <span style={{ color: C.green, fontWeight: 600 }}>{pct}%</span>
+              </div>
+              <ProgressBar value={doneSets} max={totalSets} color={C.green} />
+            </div>
+          )}
+          {workout.warmup && (
+            <div style={{ marginBottom: 14 }}>
+              <button className="bp" onClick={() => setShowWarmup(s => !s)} style={{
+                width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, cursor: 'pointer',
+              }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>🔥 Warmup</span>
+                <span style={{ fontSize: 11, color: C.muted }}>{showWarmup ? '▲' : '▼'}</span>
+              </button>
+              {showWarmup && (
+                <div style={{ background: C.card, borderRadius: '0 0 12px 12px', padding: '8px 14px 14px', border: `1px solid ${C.border}`, borderTop: 'none', fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
+                  {workout.warmup}
+                </div>
+              )}
+            </div>
+          )}
+          {restTimer && (
+            <div style={{ background: '#1A2E1A', border: `1px solid ${C.greenDim}`, borderRadius: 14, padding: '12px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 14 }}>
+              <CountdownTimer seconds={restTimer.restSeconds} onComplete={() => setRestTimer(null)} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Rest Period</div>
+                <div style={{ fontSize: 12, color: C.muted }}>
+                  Next: {workout.exercises?.[restTimer.exIdx + 1]?.name || 'you\'re done!'}
+                </div>
+              </div>
+              <button className="bp" onClick={() => setRestTimer(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', padding: 4 }}>×</button>
+            </div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+            {(workout.exercises || []).map((ex, exIdx) => (
+              <ExerciseCard key={exIdx} ex={ex} exIdx={exIdx} completedSets={completedSets} onToggleSet={handleToggleSet} />
+            ))}
+          </div>
+          {workout.cooldown && (
+            <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, marginBottom: 18, fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
+              ❄️ <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
+            </div>
+          )}
+          <Btn onClick={() => { onFinish?.(); onClose(); }} style={{ width: '100%' }}>
+            {pct === 100 ? '🏆 Workout Complete!' : `Finish Workout (${pct}% done)`}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Today's Workout Card (used in HomeTab) ─────────────────────────────── */
+function TodayWorkoutCard() {
+  const [showModal, setShowModal] = useState(false);
+  const workoutPlan = LS.get(LS_KEYS.workoutplan, null);
+  const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  const todayWorkout = Array.isArray(workoutPlan) ? workoutPlan.find(w => w.day === dayName) : null;
+
+  if (!todayWorkout) return null;
+
+  if (!todayWorkout.isTrainingDay) {
+    return (
+      <Card className="su" style={{ animationDelay: '.15s', opacity: 0.75 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ fontSize: 24 }}>😴</div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Rest Day</div>
+            <div style={{ fontSize: 13, color: C.muted }}>Recovery is part of the process.</div>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const exCount = todayWorkout.exercises?.length || 0;
+  return (
+    <>
+      <div className="su bp" onClick={() => setShowModal(true)} style={{ animationDelay: '.15s', cursor: 'pointer' }}>
+        <Card style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '14px 16px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Today's Workout
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 800 }}>{todayWorkout.workoutType}</div>
+              </div>
+              <span style={{ background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`, borderRadius: 10, padding: '6px 14px', fontSize: 13, fontWeight: 600 }}>
+                Start →
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {(todayWorkout.focus || []).map(f => (
+                <span key={f} style={{ background: 'rgba(74,158,255,0.1)', color: C.blue, fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, border: `1px solid rgba(74,158,255,0.2)` }}>
+                  {f}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 20, padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.muted }}>
+            {exCount > 0 && <span>🏋️ {exCount} exercises</span>}
+            {todayWorkout.duration && <span>⏱ {todayWorkout.duration}</span>}
+          </div>
+        </Card>
+      </div>
+      {showModal && (
+        <WorkoutModal
+          workout={todayWorkout}
+          onClose={() => setShowModal(false)}
+          onFinish={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
 /* Main Nutrition Tab */
-function NutritionTab({ profile, activePlan }) {
+function NutritionTab({ profile, activePlan, showToast }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [meals,      setMeals]      = useState(() => LS.get(LS_KEYS.meals(today), []));
-  const [showModal,  setShowModal]  = useState(false);
-  const { suggestions, loading: suggestionsLoading, error: suggestionsError } = useAISuggestions(profile, activePlan, meals);
+  const [meals,        setMeals]        = useState(() => LS.get(LS_KEYS.meals(today), []));
+  const [showModal,    setShowModal]    = useState(false);
+  const [selectedMeal, setSelectedMeal] = useState(null);
+  const [swappingId,   setSwappingId]   = useState(null);
+  const { suggestions: rawSuggestions, loading: suggestionsLoading, error: suggestionsError } = useAISuggestions(profile, activePlan, meals);
+  const [suggestions, setSuggestions] = useState([]);
+  useEffect(() => { if (rawSuggestions.length > 0) setSuggestions(rawSuggestions); }, [rawSuggestions.length]);
 
   const macros = activePlan?.macros || calcMacros(profile) || { calories: 2000, protein: 150, carbs: 200, fat: 55 };
 
@@ -1194,6 +1676,27 @@ function NutritionTab({ profile, activePlan }) {
     const updated = [...meals, meal];
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
+  };
+
+  const handleLogMeal = (m) => {
+    const meal = { id: Date.now(), name: m.name, category: m.mealType || m.time || m.category || 'Meal', calories: m.calories || 0, protein: m.protein || 0, carbs: m.carbs || 0, fat: m.fat || 0 };
+    const updated = [...meals, meal];
+    setMeals(updated);
+    LS.set(LS_KEYS.meals(today), updated);
+    setSelectedMeal(null);
+    showToast?.('✓ Meal logged');
+  };
+
+  const handleSwapSuggestion = async (s) => {
+    setSwappingId(s.id);
+    try {
+      const newMeal = await swapMealAPI(s, profile, activePlan);
+      setSuggestions(prev => prev.map(sg => sg.id === s.id ? { ...sg, ...newMeal, id: s.id, icon: newMeal.icon || sg.icon } : sg));
+      showToast?.('✓ Meal swapped');
+    } catch (err) {
+      console.error('Swap failed:', err);
+    }
+    setSwappingId(null);
   };
 
   const remaining = Math.max(0, macros.calories - totals.calories);
@@ -1231,39 +1734,55 @@ function NutritionTab({ profile, activePlan }) {
         <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
           {suggestionsLoading ? (
             [1,2,3].map(i => (
-              <div key={i} className="skeleton" style={{ flexShrink: 0, width: 180, height: 200, borderRadius: 18 }} />
+              <div key={i} className="skeleton" style={{ flexShrink: 0, width: 180, height: 220, borderRadius: 18 }} />
             ))
-          ) : suggestions.map(s => (
-            <div key={s.id} style={{
-              background: C.card, borderRadius: 18, padding: 16,
-              border: `1px solid ${C.border}`, flexShrink: 0, width: 180,
-              display: 'flex', flexDirection: 'column', gap: 8,
-            }}>
-              <div style={{ fontSize: 28 }}>{s.icon}</div>
-              <div>
-                <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 6 }}>{s.name}</div>
-                {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-                  {[
-                    { label: `${s.calories} kcal`, color: C.orange },
-                    { label: `P ${s.protein}g`,    color: C.blue },
-                    { label: `C ${s.carbs}g`,      color: C.gold },
-                    { label: `F ${s.fat}g`,        color: C.muted },
-                  ].map(chip => (
-                    <span key={chip.label} style={{ fontSize: 10, fontWeight: 600, color: chip.color, background: `${chip.color}18`, padding: '3px 7px', borderRadius: 99 }}>
-                      {chip.label}
-                    </span>
-                  ))}
+          ) : suggestions.map(s => {
+            const isSwapping = swappingId === s.id;
+            return (
+              <div key={s.id} style={{
+                background: C.card, borderRadius: 18, padding: 16,
+                border: `1px solid ${isSwapping ? C.greenDim : C.border}`, flexShrink: 0, width: 180,
+                display: 'flex', flexDirection: 'column', gap: 8, position: 'relative',
+                opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
+              }}>
+                {/* swap button */}
+                <button className="bp" onClick={() => !isSwapping && handleSwapSuggestion(s)} style={{
+                  position: 'absolute', top: 10, right: 10, background: C.cardElevated,
+                  border: `1px solid ${C.border}`, color: C.muted, width: 26, height: 26,
+                  borderRadius: '50%', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  zIndex: 1,
+                }}>
+                  {isSwapping ? <span style={{ fontSize: 10, animation: 'spin .8s linear infinite', display: 'inline-block' }}>⟳</span> : '↺'}
+                </button>
+                {/* card body — tap to open recipe */}
+                <div className="bp" onClick={() => setSelectedMeal({ ...s, mealType: s.time })} style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer', flex: 1 }}>
+                  <div style={{ fontSize: 28 }}>{s.icon}</div>
+                  <div>
+                    <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4, paddingRight: 24 }}>{s.name}</div>
+                    {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {[
+                        { label: `${s.calories} kcal`, color: C.orange },
+                        { label: `P ${s.protein}g`,    color: C.blue },
+                        { label: `C ${s.carbs}g`,      color: C.gold },
+                        { label: `F ${s.fat}g`,        color: C.muted },
+                      ].map(chip => (
+                        <span key={chip.label} style={{ fontSize: 10, fontWeight: 600, color: chip.color, background: `${chip.color}18`, padding: '3px 7px', borderRadius: 99 }}>
+                          {chip.label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
+                <button className="bp" onClick={() => logSuggestion(s)} style={{
+                  width: '100%', padding: '8px 0', borderRadius: 10, marginTop: 'auto',
+                  background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
+                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}>+ Log</button>
               </div>
-              <button className="bp" onClick={() => logSuggestion(s)} style={{
-                width: '100%', padding: '8px 0', borderRadius: 10, marginTop: 'auto',
-                background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
-                fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              }}>+ Log</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -1278,10 +1797,10 @@ function NutritionTab({ profile, activePlan }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {meals.map(m => (
-              <div key={m.id} style={{
+              <div key={m.id} className="bp" onClick={() => setSelectedMeal({ ...m, mealType: m.category || 'Meal' })} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
                 background: C.card, borderRadius: 14, padding: '12px 14px',
-                border: `1px solid ${C.border}`,
+                border: `1px solid ${C.border}`, cursor: 'pointer',
               }}>
                 {/* Icon */}
                 <div style={{
@@ -1299,7 +1818,7 @@ function NutritionTab({ profile, activePlan }) {
                 {/* Right: calories + delete */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <span style={{ fontSize: 15, fontWeight: 700, color: C.orange }}>{m.calories}</span>
-                  <button className="bp" onClick={() => deleteMeal(m.id)} style={{
+                  <button className="bp" onClick={e => { e.stopPropagation(); deleteMeal(m.id); }} style={{
                     background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', lineHeight: 1, padding: 2,
                   }}>×</button>
                 </div>
@@ -1325,6 +1844,20 @@ function NutritionTab({ profile, activePlan }) {
           onAdd={(meal) => setMeals(prev => [...prev, meal])}
           macros={macros}
           profile={profile}
+        />
+      )}
+
+      {selectedMeal && (
+        <RecipeModal
+          meal={selectedMeal}
+          profile={profile}
+          onClose={() => setSelectedMeal(null)}
+          onLog={() => handleLogMeal(selectedMeal)}
+          onSwap={() => {
+            const sg = suggestions.find(s => s.name === selectedMeal.name);
+            setSelectedMeal(null);
+            if (sg) handleSwapSuggestion(sg);
+          }}
         />
       )}
     </div>
@@ -1359,8 +1892,21 @@ const DEFAULT_MISSIONS = [
   'Get 7+ hours of sleep at least 5 nights',
 ];
 
-function PlanTab({ profile, activePlan, setTab }) {
+function PlanTab({ profile, activePlan, setTab, showToast }) {
   const weekKey = getWeekKey();
+  const [selectedMeal,  setSelectedMeal]  = useState(null);
+  const [swappingKey,   setSwappingKey]   = useState(null);
+  const [mealPlanDays,  setMealPlanDays]  = useState(() => {
+    const stored = LS.get(LS_KEYS.mealplan, null);
+    return stored?.days || null;
+  });
+  const [activeDayIdx,  setActiveDayIdx]  = useState(() => {
+    const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const idx = (mealPlanDays || []).findIndex(d => d.day === todayName);
+    return idx >= 0 ? idx : 0;
+  });
+  const [loggedMeals,   setLoggedMeals]   = useState(() => LS.get(LS_KEYS.logged(todayStr()), {}));
   const [missions, setMissions] = useState(() => {
     const saved = LS.get(`massiq:missions:${weekKey}`, null);
     const texts = activePlan?.weeklyMissions || DEFAULT_MISSIONS;
@@ -1627,6 +2173,136 @@ function PlanTab({ profile, activePlan, setTab }) {
           Schedule Scan 📸
         </Btn>
       </Card>
+
+      {/* 8 ── Weekly Meal Plan ── */}
+      {mealPlanDays && (
+        <div className="su" style={{ animationDelay: '.28s' }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Weekly Meal Plan</div>
+
+          {/* Day tabs */}
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, marginBottom: 16 }}>
+            {mealPlanDays.map((d, i) => (
+              <button key={i} className="bp" onClick={() => setActiveDayIdx(i)} style={{
+                flexShrink: 0, padding: '6px 14px', borderRadius: 99, border: `1.5px solid ${activeDayIdx === i ? C.green : C.border}`,
+                background: activeDayIdx === i ? C.greenBg : 'transparent',
+                color: activeDayIdx === i ? C.green : C.muted,
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}>
+                {d.day.slice(0, 3)}
+                {d.isTrainingDay && <span style={{ marginLeft: 4, fontSize: 10 }}>💪</span>}
+              </button>
+            ))}
+          </div>
+
+          {/* Active day meals */}
+          {(() => {
+            const day = mealPlanDays[activeDayIdx];
+            if (!day) return null;
+            const today2 = todayStr();
+            const MEAL_KEYS = [
+              { key: 'breakfast', label: 'Breakfast', icon: '🌅' },
+              { key: 'lunch',     label: 'Lunch',     icon: '☀️' },
+              { key: 'dinner',    label: 'Dinner',    icon: '🌙' },
+              { key: 'snack',     label: 'Snack',     icon: '🍎' },
+            ];
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {MEAL_KEYS.map(({ key, label, icon }) => {
+                  const meal = day[key];
+                  if (!meal || !meal.name) return null;
+                  const logKey = `${day.day}-${key}`;
+                  const isLogged = loggedMeals[logKey];
+                  const isSwapping = swappingKey === logKey;
+                  return (
+                    <div key={key} style={{
+                      background: C.card, borderRadius: 16, padding: 14,
+                      border: `1px solid ${isLogged ? C.greenDim : C.border}`,
+                      opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                        <div style={{
+                          width: 36, height: 36, borderRadius: 10, background: C.cardElevated,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
+                        }}>{icon}</div>
+                        <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                          <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>{label}</div>
+                          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4 }}>{meal.name}</div>
+                          <div style={{ display: 'flex', gap: 8, fontSize: 11, color: C.muted }}>
+                            <span style={{ color: C.orange }}>{meal.calories} kcal</span>
+                            <span>P {meal.protein}g</span>
+                            <span>C {meal.carbs}g</span>
+                            <span>F {meal.fat}g</span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                          {/* Swap button */}
+                          <button className="bp" onClick={async () => {
+                            if (isSwapping) return;
+                            setSwappingKey(logKey);
+                            try {
+                              const newMeal = await swapMealAPI({ ...meal, mealType: label }, profile, activePlan);
+                              const updated = mealPlanDays.map((d2, i2) => {
+                                if (i2 !== activeDayIdx) return d2;
+                                return { ...d2, [key]: { ...d2[key], ...newMeal } };
+                              });
+                              setMealPlanDays(updated);
+                              const stored = LS.get(LS_KEYS.mealplan, {});
+                              LS.set(LS_KEYS.mealplan, { ...stored, days: updated });
+                              showToast?.('✓ Meal swapped');
+                            } catch { showToast?.('Swap failed'); }
+                            setSwappingKey(null);
+                          }} style={{
+                            background: C.cardElevated, border: `1px solid ${C.border}`, color: C.muted,
+                            width: 28, height: 28, borderRadius: '50%', fontSize: 13, cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            {isSwapping ? <span style={{ fontSize: 10, animation: 'spin .8s linear infinite', display: 'inline-block' }}>⟳</span> : '↺'}
+                          </button>
+                          {/* Log button */}
+                          <button className="bp" onClick={() => {
+                            if (isLogged) return;
+                            const todayMeals = LS.get(LS_KEYS.meals(today2), []);
+                            const entry = { id: Date.now(), name: meal.name, category: label, calories: meal.calories || 0, protein: meal.protein || 0, carbs: meal.carbs || 0, fat: meal.fat || 0 };
+                            LS.set(LS_KEYS.meals(today2), [...todayMeals, entry]);
+                            const updated = { ...loggedMeals, [logKey]: true };
+                            setLoggedMeals(updated);
+                            LS.set(LS_KEYS.logged(today2), updated);
+                            showToast?.('✓ Logged');
+                          }} style={{
+                            background: isLogged ? C.greenBg : C.cardElevated,
+                            border: `1px solid ${isLogged ? C.greenDim : C.border}`,
+                            color: isLogged ? C.green : C.muted,
+                            padding: '4px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: isLogged ? 'default' : 'pointer',
+                          }}>
+                            {isLogged ? '✓' : 'Log'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {selectedMeal && (
+        <RecipeModal
+          meal={selectedMeal}
+          profile={profile}
+          onClose={() => setSelectedMeal(null)}
+          onLog={() => {
+            const today2 = todayStr();
+            const todayMeals = LS.get(LS_KEYS.meals(today2), []);
+            const entry = { id: Date.now(), name: selectedMeal.name, category: selectedMeal.mealType || 'Meal', calories: selectedMeal.calories || 0, protein: selectedMeal.protein || 0, carbs: selectedMeal.carbs || 0, fat: selectedMeal.fat || 0 };
+            LS.set(LS_KEYS.meals(today2), [...todayMeals, entry]);
+            setSelectedMeal(null);
+            showToast?.('✓ Meal logged');
+          }}
+          onSwap={() => setSelectedMeal(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2500,9 +3176,12 @@ export default function MassIQ() {
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
       setActivePlan(plan);
-      // Background: generate meal plan + missions
+      // Background: generate meal plan, workout plan, missions
       generateMealPlan(p, plan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
+        .catch(console.error);
+      generateWorkoutPlan(p, plan)
+        .then(days => { LS.set(LS_KEYS.workoutplan, days); })
         .catch(console.error);
       generateMissions(p, plan)
         .then(missions => { LS.set('massiq:missions', missions); })
@@ -2524,9 +3203,9 @@ export default function MassIQ() {
   const renderTab = () => {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
-      case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} />;
+      case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
       case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={p => setActivePlan(p)} />;
-      case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} />;
+      case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
       case 'profile':   return (
         <ProfileTab
           profile={profile}
