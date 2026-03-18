@@ -121,21 +121,67 @@ const LS_KEYS = {
 };
 
 /* ─── Macro Calculator ───────────────────────────────────────────────────── */
+/* ─── Physiological macro calculator (Mifflin-St Jeor / ISSN guidelines) ── */
 function calcMacros(profile) {
   if (!profile) return null;
-  const { weightLbs, heightIn, age, gender, activity, goal } = profile;
-  const kg = weightLbs * 0.453592;
-  const cm = heightIn * 2.54;
-  const bmr = gender === 'Female'
-    ? 447.593 + (9.247 * kg) - (3.098 * cm) + (4.330 * age)
-    : 88.362 + (13.397 * kg) + (4.799 * cm) - (5.677 * age);
-  const mult = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 }[activity] || 1.375;
-  const tdee = bmr * mult;
-  const calories = goal === 'Cut' ? tdee - 400 : goal === 'Bulk' ? tdee + 300 : tdee;
-  const protein  = Math.round(weightLbs * (goal === 'Cut' ? 1.1 : goal === 'Bulk' ? 1.0 : 0.9));
-  const fat      = Math.round((calories * 0.25) / 9);
-  const carbs    = Math.round((calories - protein * 4 - fat * 9) / 4);
+  const { weightLbs, heightIn, heightCm, age, gender, activity, goal } = profile;
+  const kg  = weightLbs * 0.453592;
+  const cm  = heightCm  || (heightIn * 2.54);
+
+  // Mifflin-St Jeor BMR (more accurate than Harris-Benedict, ±10% for 82% of adults)
+  const bmrBase = 10 * kg + 6.25 * cm - 5 * age;
+  const bmr     = gender === 'Female' ? bmrBase - 161 : bmrBase + 5;
+
+  const mult     = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 }[activity] || 1.55;
+  const tdee     = Math.round(bmr * mult);
+
+  // Phase deficit: target 0.6% BW/week fat loss for cuts (sustainable, muscle-safe)
+  // Bulk: +300 kcal lean surplus. Recomp: -100 kcal mild deficit.
+  const deficitMap = {
+    Cut:      Math.min(500, Math.max(250, Math.round(weightLbs * 0.006 * 3500 / 7))),
+    Bulk:     -300,    // negative = surplus added below
+    Recomp:   100,
+    Maintain: 0,
+  };
+  const adj      = deficitMap[goal] || 0;
+  const calories = goal === 'Bulk' ? tdee + 300 : tdee - adj;
+
+  // ISSN protein: 2.2g/kg LBM for cuts, 1.8g/kg BW for bulk
+  const bfEst    = gender === 'Female' ? 27 : 20;   // conservative estimate without scan
+  const lbmKg    = kg * (1 - bfEst / 100);
+  const protein  = Math.round(goal === 'Bulk' ? kg * 1.8 : lbmKg * 2.2 / 5) * 5;
+
+  // Fat: max(0.8g/kg BW, 25% of calories) — hormonal floor
+  const fatFromPct = Math.round((calories * 0.25) / 9);
+  const fatMin     = Math.round(kg * 0.8);
+  const fat        = Math.round(Math.max(fatFromPct, fatMin) / 5) * 5;
+
+  const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4 / 5) * 5);
+
   return { calories: Math.round(calories), protein, fat, carbs };
+}
+
+/* ─── Engine API caller ─────────────────────────────────────────────────── */
+async function callEngine(profile, scanHistory = []) {
+  try {
+    const currentScan    = scanHistory.length > 0 ? scanHistory[scanHistory.length - 1] : undefined;
+    const previousScans  = scanHistory.length > 1 ? scanHistory.slice(0, -1) : [];
+    const res = await fetch('/api/engine', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({
+        profile,
+        current_scan:    currentScan,
+        previous_scans:  previousScans,
+        include_claude_context: true,
+      }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn('[engine] call failed, falling back to calcMacros:', err);
+    return null;
+  }
 }
 
 /* ─── Session Storage ───────────────────────────────────────────────────── */
@@ -179,20 +225,39 @@ function weekKey2() {
 }
 
 /* ─── AI Plan Generators ─────────────────────────────────────────────────── */
-async function generateInitialPlan(profile, macros) {
-  const in4weeks = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+async function generateInitialPlan(profile, macros, engineOutput = null) {
+  const in4weeks    = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+  const m           = engineOutput?.macro_targets || macros;
+  const tl          = engineOutput?.trajectory;
+  const diag        = engineOutput?.diagnosis?.primary;
+  const claudeCtx   = engineOutput?.claude_context || '';
+  const startBF     = engineOutput?.start_bf ?? 20;
+  const targetBF    = engineOutput?.target_bf ?? (profile.goal === 'Cut' ? startBF - 4 : startBF);
+  const weeksToGoal = tl?.timeline_weeks ?? 12;
+
+  // Claude's role: generate narrative, missions, tips, and training focus.
+  // The numbers are provided by the engine and must not be changed.
   const text = await callClaude([{ role: 'user', content:
-    `You are an elite physique coach. Generate a complete personalized plan:
-Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
-Weight: ${profile.weightLbs} lbs, Height: ${profile.heightCm} cm
-Goal: ${profile.goal}, Activity: ${profile.activity}
-Dietary Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
-Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
-Avoid: ${(profile.avoid||[]).join(', ')||'none'}
-Calculated: ${macros.calories} kcal, ${macros.protein}g protein, ${macros.carbs}g carbs, ${macros.fat}g fat
+    `You are an elite physique coach. The physiological targets below were computed by a deterministic calculation engine. Your job is to generate the NARRATIVE, MISSIONS, and TIPS — not the numbers.
+
+${claudeCtx || `TARGETS: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`}
+
+User profile:
+- Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
+- Weight: ${profile.weightLbs} lbs, Goal: ${profile.goal}, Activity: ${profile.activity}
+- Dietary prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
+- Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+- Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+${diag ? `- Primary diagnosis: ${diag.primary_issue}` : ''}
+
+Rules:
+1. Use the exact calorie/macro numbers above — do not change them
+2. Weekly missions must reference the exact protein/calorie targets
+3. Daily tips must be specific (include actual numbers from the targets)
+4. whyThisWorks must explain the diagnosis and the science behind the plan
 
 Return ONLY raw JSON (no markdown, no code blocks):
-{"phase":{"name":"string","label":"Cut|Bulk|Recomp|Maintain","objective":"string","durationWeeks":12},"dailyTargets":{"calories":${macros.calories},"protein":${macros.protein},"carbs":${macros.carbs},"fat":${macros.fat},"steps":8000,"sleepHours":8,"waterLiters":3,"trainingDaysPerWeek":4},"whyThisWorks":"3-4 sentence explanation specific to this person","weeklyMissions":["mission1 with exact target","mission2","mission3"],"trainingFocus":{"primary":"muscle group","secondary":"muscle group","frequency":"X times per week","reasoning":"why"},"nutritionKeyChange":"one specific change","dailyTips":["Monday tip referencing their goal","Tuesday tip","Wednesday tip","Thursday tip","Friday tip","Saturday tip","Sunday tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":20,"targetBF":16,"weeksToGoal":12}}`
+{"phase":{"name":"string","label":"${profile.goal}","objective":"specific 2-sentence objective referencing their diagnosis","durationWeeks":12},"dailyTargets":{"calories":${m.calories},"protein":${m.protein},"carbs":${m.carbs},"fat":${m.fat},"steps":${m.steps||9000},"sleepHours":${m.sleepHours||8},"waterLiters":${m.waterLiters||3},"trainingDaysPerWeek":${m.trainingDaysPerWeek||4}},"whyThisWorks":"3-4 sentences — reference the diagnosis and explain the science","weeklyMissions":["Hit ${m.protein}g protein every day this week","Complete ${m.trainingDaysPerWeek||4} resistance sessions","Reach ${m.steps||9000} steps daily"],"trainingFocus":{"primary":"specific muscle group or movement pattern","secondary":"secondary focus","frequency":"${m.trainingDaysPerWeek||4}x per week","reasoning":"why this training split serves the ${profile.goal} goal"},"nutritionKeyChange":"one specific, numerical change from their current habits","dailyTips":["Monday: specific tip with a number","Tuesday: specific tip","Wednesday: specific tip","Thursday: specific tip","Friday: specific tip","Saturday: specific tip","Sunday: specific tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":${startBF},"targetBF":${targetBF},"weeksToGoal":${weeksToGoal}}}`
   }], 2000);
   return parseJSON(text);
 }
@@ -473,35 +538,54 @@ function Onboarding({ onComplete }) {
 
     setGenerating(true);
     try {
-      const macros = calcMacros(profile);
-      const planData = await generateInitialPlan(profile, macros);
+      // 1. Run the deterministic engine first — this is the source of truth for all numbers
+      const engineOutput = await callEngine(profile, []);
+      const macros = engineOutput?.macro_targets || calcMacros(profile);
+
+      // 2. Claude generates narrative/missions/tips constrained by engine output
+      const planData = await generateInitialPlan(profile, macros, engineOutput);
       const td = todayStr();
+
+      // 3. Assemble plan — engine targets take priority over Claude's returned numbers
       const plan = {
-        phase:          planData.phase?.label       || profile.goal,
+        phase:          profile.goal,
         phaseName:      planData.phase?.name        || `${profile.goal} Phase`,
         objective:      planData.phase?.objective   || '',
         week:           1,
         startDate:      td,
         nextScanDate:   planData.nextScanDate       || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
         macros: {
-          calories: planData.dailyTargets?.calories || macros.calories,
-          protein:  planData.dailyTargets?.protein  || macros.protein,
-          carbs:    planData.dailyTargets?.carbs    || macros.carbs,
-          fat:      planData.dailyTargets?.fat      || macros.fat,
+          calories: macros.calories,
+          protein:  macros.protein,
+          carbs:    macros.carbs,
+          fat:      macros.fat,
         },
-        dailyTargets:       planData.dailyTargets        || {},
-        trainDays:          planData.dailyTargets?.trainingDaysPerWeek || 4,
-        sleepHrs:           planData.dailyTargets?.sleepHours          || 8,
-        waterL:             planData.dailyTargets?.waterLiters         || 3,
-        steps:              planData.dailyTargets?.steps               || 8000,
-        weeklyMissions:     planData.weeklyMissions   || [],
-        whyThisWorks:       planData.whyThisWorks     || '',
-        dailyTips:          planData.dailyTips        || [],
-        trainingFocus:      planData.trainingFocus    || {},
-        nutritionKeyChange: planData.nutritionKeyChange|| '',
-        startBF:            planData.transformationTimeline?.startBF  || 20,
-        targetBF:           planData.transformationTimeline?.targetBF || (profile.goal === 'Cut' ? 16 : 20),
-        cardioDays: 2,
+        dailyTargets: {
+          calories:            macros.calories,
+          protein:             macros.protein,
+          carbs:               macros.carbs,
+          fat:                 macros.fat,
+          steps:               macros.steps               || 9000,
+          sleepHours:          macros.sleepHours          || 8,
+          waterLiters:         macros.waterLiters         || 3,
+          trainingDaysPerWeek: macros.trainingDaysPerWeek || 4,
+        },
+        trainDays:          macros.trainingDaysPerWeek || 4,
+        sleepHrs:           macros.sleepHours          || 8,
+        waterL:             macros.waterLiters         || 3,
+        steps:              macros.steps               || 9000,
+        weeklyMissions:     planData.weeklyMissions    || [],
+        whyThisWorks:       planData.whyThisWorks      || '',
+        dailyTips:          planData.dailyTips         || [],
+        trainingFocus:      planData.trainingFocus     || {},
+        nutritionKeyChange: planData.nutritionKeyChange || '',
+        startBF:            engineOutput?.start_bf     ?? planData.transformationTimeline?.startBF ?? 20,
+        targetBF:           engineOutput?.target_bf    ?? planData.transformationTimeline?.targetBF ?? (profile.goal === 'Cut' ? 16 : 20),
+        cardioDays:         macros.cardioDays           || 2,
+        // Attach engine output for downstream use (scan feedback, diagnosis display)
+        engineDiagnosis:    engineOutput?.diagnosis     || null,
+        engineTrajectory:   engineOutput?.trajectory    || null,
+        tdee:               engineOutput?.physio?.tdee  || null,
       };
       onComplete(profile, plan);
     } catch (err) {
@@ -2699,7 +2783,18 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
 /* ─── Scan Tab ───────────────────────────────────────────────────────────── */
 
 const PHASE_LABEL_COLORS = { Cut: C.orange, Build: C.blue, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
-const MG_COLOR = { underdeveloped: C.red, average: C.gold, 'well-developed': C.green };
+// Calibrated muscle group display — maps new 5-tier vocab + legacy values
+const MG_META = {
+  'not yet defined': { label: 'Early stage', pct: 20, color: C.red       },
+  'early':           { label: 'Developing',  pct: 32, color: C.orange     },
+  'moderate':        { label: 'Moderate',    pct: 52, color: C.gold       },
+  'solid':           { label: 'Solid',       pct: 72, color: '#00C853AA'  },
+  'well-developed':  { label: 'Strong',      pct: 88, color: C.green      },
+  // legacy values from old prompt — mapped forward
+  'underdeveloped':  { label: 'Early stage', pct: 20, color: C.red       },
+  'average':         { label: 'Moderate',    pct: 52, color: C.gold       },
+};
+const getMG = (level) => MG_META[level?.toLowerCase?.() ?? ''] ?? MG_META['moderate'];
 
 function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const photoRef  = useRef(null);
@@ -2714,35 +2809,116 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const handleFile = (file) => {
     if (!file) return;
     setError('');
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64 = e.target.result.split(',')[1];
-      const mediaType = file.type || 'image/jpeg';
-      await runScan(base64, mediaType);
+
+    // Compress image client-side before sending — Next.js Route Handler body limits
+    // apply before our code runs, so we resize on the client to stay under 1 MB.
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = async () => {
+      URL.revokeObjectURL(objectUrl);
+
+      // Resize to max 1024px on the longest side — enough detail for physique analysis
+      const MAX = 1024;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        if (width >= height) { height = Math.round(height * MAX / width); width = MAX; }
+        else                 { width  = Math.round(width  * MAX / height); height = MAX; }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width  = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+      // JPEG 82% quality → typically 150–400 KB, well within any server limit
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const base64  = dataUrl.split(',')[1];
+      await runScan(base64, 'image/jpeg');
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      setError('Could not load image. Please try a different file.');
+    };
+    img.src = objectUrl;
   };
 
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null);
     try {
-      const age    = profile?.age    || 25;
-      const gender = profile?.gender || 'Male';
+      const age    = profile?.age      || 25;
+      const gender = profile?.gender   || 'Male';
       const height = profile?.heightIn || 70;
       const weight = profile?.weightLbs || 170;
 
-      const res = await fetch('/api/claude', {
+      // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
+      // /api/anthropic supports large image payloads; /api/claude caps at 250 KB
+      const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          system: `You are a physique analysis assistant. Describe visible body composition traits in a measured, professional, non-judgmental way — like an experienced coach reviewing a photo.
+
+CORE RULES:
+1. Describe only what is VISIBLE. Never infer training history, lifestyle, habits, or experience level.
+2. All comparisons must be RELATIVE to this person's own frame — never to external population averages.
+3. Express uncertainty honestly. If a trait is hard to assess from this photo, say so.
+4. Start with what is present and working before noting areas for development.
+
+FORBIDDEN WORDS — never use: underdeveloped, below average, above average, lacks, lacking, weak, limited training, training history, experience level, beginner, poor, concerning, inadequate, subpar, disappointing, unfortunately
+
+MUSCLE DEVELOPMENT — use ONLY these five levels (no others):
+  "not yet defined" | "early" | "moderate" | "solid" | "well-developed"
+
+COMPARISONS — always relative to the person's own body:
+  ✗ "Chest is underdeveloped"  ✓ "Chest appears less pronounced relative to shoulder width"
+  ✗ "Low muscle mass"          ✓ "Muscle development appears moderate overall"
+
+BODY FAT — estimate a 2% range conservatively (photos make people look leaner than they are):
+${gender === 'Male'
+  ? '< 8% very lean | 8–12% lean | 12–15% moderately lean | 15–20% moderate | 20–25% elevated | >25% high'
+  : '< 16% very lean | 16–20% lean | 20–25% moderately lean | 25–30% moderate | 30–35% elevated | >35% high'}
+
+PHYSIQUE SCORE: 30–95. Average physique = 50–62. Only use <45 for very high BF + minimal development.
+SYMMETRY SCORE: 60–95. Most people are 70–85. Below 70 only for obvious structural asymmetries.
+
+DIAGNOSIS TONE — write like a coach, not a critic. Start with what is present, frame gaps as opportunities.`,
           messages: [{
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Analyze this physique photo. Person is ${age} years old, ${gender}, ${height} inches, ${weight} lbs. Return ONLY a raw JSON object with NO markdown, NO code blocks, just the JSON: {"bodyFatPct":0,"leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"muscleGroups":{"chest":"average","shoulders":"average","back":"average","arms":"average","core":"average","legs":"average"},"weakestGroups":["core","legs"],"asymmetries":[],"strengths":["back","shoulders"],"diagnosis":"...","phase":{"name":"...","label":"Maintain","durationWeeks":12,"objective":"..."},"dailyTargets":{"calories":0,"protein":0,"carbs":0,"fat":0,"steps":0,"sleepHours":0,"waterLiters":0,"trainingDaysPerWeek":0},"weeklyMissions":["...","...","..."],"trainingFocus":{"primary":"...","secondary":"...","frequency":"..."},"nutritionKeyChange":"...","whyThisWorks":"...","nextScanDate":"...","recommendation":"...","disclaimer":"..."}` },
+              { type: 'text', text: `Analyze this physique photo. Person: ${age} years old, ${gender}, ${height} inches tall, ${weight} lbs.
+
+Return ONLY a valid JSON object — no markdown, no code blocks, no explanation outside the JSON:
+{
+  "bodyFatPct": <number — midpoint of your estimated 2% range>,
+  "bodyFatRange": "<e.g. 16–18%>",
+  "leanMass": <estimated lean body mass in lbs>,
+  "fatMass": <estimated fat mass in lbs>,
+  "physiqueScore": <30–95>,
+  "symmetryScore": <60–95>,
+  "confidence": "<high|medium|low — based on photo quality and pose clarity>",
+  "muscleGroups": {
+    "chest":     "<not yet defined|early|moderate|solid|well-developed>",
+    "shoulders": "<not yet defined|early|moderate|solid|well-developed>",
+    "back":      "<not yet defined|early|moderate|solid|well-developed>",
+    "arms":      "<not yet defined|early|moderate|solid|well-developed>",
+    "core":      "<not yet defined|early|moderate|solid|well-developed>",
+    "legs":      "<not yet defined|early|moderate|solid|well-developed>"
+  },
+  "weakestGroups": ["<muscle group names where development could be further progressed, relative to the rest of their frame>"],
+  "strengths": ["<muscle group names that show comparatively stronger development>"],
+  "asymmetries": ["<describe only clearly visible left-right differences, or leave empty>"],
+  "bodyFatSummary": "<1–2 sentences: calibrated description of body fat level and distribution — no harsh language>",
+  "muscleSummary": "<1–2 sentences: overall muscle development relative to this person's own frame>",
+  "priorityAreas": ["<specific relative observation per area, e.g. 'Core definition is not yet clearly visible relative to upper body development'>"],
+  "balanceNote": "<1 sentence on upper-lower and left-right proportions>",
+  "diagnosis": "<2–3 sentences: start with what is present/working, then note development opportunities as relative observations — coach tone, no criticism>",
+  "recommendation": "<1 specific, actionable suggestion based only on visible traits — no lifestyle assumptions>",
+  "disclaimer": "Visual AI estimate — accuracy improves with consistent lighting, a straight-on pose, and multiple scans over time."
+}` },
             ],
           }],
-          max_tokens: 2000,
+          max_tokens: 1000,
         }),
       });
 
@@ -2752,7 +2928,24 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
       const match = text.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not parse scan result');
-      const data = JSON.parse(match[0]);
+      const visualData = JSON.parse(match[0]);
+
+      // Step 2: Run the engine with this scan data to get precise targets
+      const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+      const scanForEngine  = { date: new Date().toISOString().slice(0, 10), bodyFat: visualData.bodyFatPct, weight, leanMass: visualData.leanMass };
+      const engineOutput   = await callEngine(profile, [...currentHistory, scanForEngine]);
+
+      // Step 3: Merge — visual assessment from Claude, targets from engine
+      const data = {
+        ...visualData,
+        // Engine-calculated targets (authoritative)
+        dailyTargets:    engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal }),
+        phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+        whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || visualData.diagnosis,
+        weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+        nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+        engineOutput,    // attach full engine output for applyPlan to use
+      };
       setResult(data);
     } catch (err) {
       setError(err.message || 'Scan failed. Please try again.');
@@ -2762,26 +2955,33 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
   const applyPlan = async () => {
     if (!result) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today  = new Date().toISOString().slice(0, 10);
+    const eng    = result.engineOutput;          // engine output attached by runScan
+    const m      = eng?.macro_targets || result.dailyTargets || calcMacros(profile);
+
     const plan = {
-      phase:         result.phase?.label || 'Maintain',
-      phaseName:     result.phase?.name  || 'Maintenance Phase',
-      objective:     result.phase?.objective || '',
-      week:          1,
-      startDate:     today,
-      nextScanDate:  result.nextScanDate || (() => { const d = new Date(); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10); })(),
-      macros:        result.dailyTargets,
-      trainDays:     result.dailyTargets?.trainingDaysPerWeek || 4,
-      sleepHrs:      result.dailyTargets?.sleepHours || 8,
-      waterL:        result.dailyTargets?.waterLiters || 3,
-      steps:         result.dailyTargets?.steps || 8000,
-      bodyFat:       result.bodyFatPct,
-      leanMass:      result.leanMass,
-      startBF:       result.bodyFatPct,
-      targetBF:      result.phase?.label === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct,
-      weeklyMissions: result.weeklyMissions || [],
-      whyThisWorks:  result.whyThisWorks || '',
-      cardioDays:    2,
+      phase:          profile.goal,
+      phaseName:      `${profile.goal} Phase`,
+      objective:      eng?.diagnosis?.primary?.recommended_action || '',
+      week:           1,
+      startDate:      today,
+      nextScanDate:   result.nextScanDate || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+      macros:         { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat },
+      dailyTargets:   m,
+      trainDays:      m.trainingDaysPerWeek || 4,
+      sleepHrs:       m.sleepHours          || 8,
+      waterL:         m.waterLiters         || 3,
+      steps:          m.steps               || 9000,
+      bodyFat:        result.bodyFatPct,
+      leanMass:       result.leanMass,
+      startBF:        eng?.start_bf         ?? result.bodyFatPct,
+      targetBF:       eng?.target_bf        ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct),
+      weeklyMissions: result.weeklyMissions  || [],
+      whyThisWorks:   result.whyThisWorks    || '',
+      cardioDays:     m.cardioDays           || 2,
+      engineDiagnosis: eng?.diagnosis        || null,
+      engineTrajectory: eng?.trajectory      || null,
+      tdee:           eng?.physio?.tdee      || null,
     };
     const entry = {
       date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
@@ -2898,23 +3098,22 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
         {/* 5 – Muscle Groups */}
         <Card className="su" style={{ animationDelay: '.12s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Groups</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Development</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {Object.entries(mg).map(([name, level]) => {
-              const color    = MG_COLOR[level] || C.muted;
-              const pct      = level === 'well-developed' ? 85 : level === 'average' ? 55 : 28;
+              const meta       = getMG(level);
               const isPriority = result.weakestGroups?.includes(name);
               return (
                 <div key={name}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize' }}>{name}</span>
-                      {isPriority && <span style={{ fontSize: 9, fontWeight: 700, color: C.red, background: `${C.red}22`, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase' }}>Priority</span>}
+                      {isPriority && <span style={{ fontSize: 9, fontWeight: 700, color: C.green, background: C.greenBg, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '.04em' }}>Focus area</span>}
                     </div>
-                    <span style={{ fontSize: 12, color, fontWeight: 600 }}>{level}</span>
+                    <span style={{ fontSize: 12, color: meta.color, fontWeight: 600 }}>{meta.label}</span>
                   </div>
                   <div style={{ height: 6, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 99 }} />
+                    <div style={{ width: `${meta.pct}%`, height: '100%', background: meta.color, borderRadius: 99, transition: 'width .6s ease' }} />
                   </div>
                 </div>
               );
@@ -2922,31 +3121,86 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
           </div>
         </Card>
 
-        {/* 6 – Asymmetries */}
+        {/* 6 – Assessment */}
+        <Card className="su" style={{ animationDelay: '.14s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Assessment</div>
+
+          {/* Body composition summary */}
+          {result.bodyFatSummary && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Body Composition</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
+            </div>
+          )}
+
+          {/* Muscle summary */}
+          {result.muscleSummary && (
+            <div style={{ marginBottom: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Muscle Development</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
+            </div>
+          )}
+
+          {/* Balance */}
+          {result.balanceNote && (
+            <div style={{ paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Balance</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.balanceNote}</p>
+            </div>
+          )}
+
+          {/* Fallback to old diagnosis field if new fields absent */}
+          {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
+          )}
+        </Card>
+
+        {/* 7 – Focus areas (replaces "Priority" badge — coach framing) */}
+        {result.priorityAreas?.length > 0 && (
+          <Card className="su" style={{ animationDelay: '.15s' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Focus Areas</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {result.priorityAreas.map((area, i) => (
+                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, border: `1px solid ${C.green}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                    <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>{i + 1}</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{area}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* 8 – Recommendation */}
+        {result.recommendation && (
+          <Card className="su" style={{ animationDelay: '.155s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>→ Next Move</div>
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.recommendation}</p>
+          </Card>
+        )}
+
+        {/* Asymmetries — shown only when flagged */}
         {result.asymmetries?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.14s', background: `${C.gold}18`, border: `1px solid ${C.gold}44` }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold }}>⚠️ Asymmetries Detected</div>
-            <ul style={{ paddingLeft: 18 }}>
+          <Card className="su" style={{ animationDelay: '.16s', background: `${C.gold}12`, border: `1px solid ${C.gold}33` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold, fontSize: 13 }}>Balance note</div>
+            <ul style={{ paddingLeft: 18, margin: 0 }}>
               {result.asymmetries.map((a, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a}</li>)}
             </ul>
           </Card>
         )}
 
-        {/* 7 – Strengths */}
-        {result.strengths?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.15s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>💪 Strengths</div>
-            <ul style={{ paddingLeft: 18 }}>
-              {result.strengths.map((s, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, textTransform: 'capitalize' }}>{s}</li>)}
-            </ul>
-          </Card>
+        {/* Confidence indicator */}
+        {result.confidence && result.confidence !== 'high' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 14 }}>ℹ️</span>
+            <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
+              {result.confidence === 'medium'
+                ? 'Assessment confidence: moderate — a clearer, straight-on photo will improve accuracy.'
+                : 'Assessment confidence: limited — photo lighting or angle reduced precision. Retake for better results.'}
+            </span>
+          </div>
         )}
-
-        {/* 8 – Diagnosis */}
-        <Card className="su" style={{ animationDelay: '.16s', background: C.card }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>🧬 Diagnosis</div>
-          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, fontStyle: 'italic' }}>{result.diagnosis}</p>
-        </Card>
 
         {/* 9 – Milestones strip */}
         <div className="su" style={{ animationDelay: '.17s', display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
