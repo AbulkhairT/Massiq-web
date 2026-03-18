@@ -2798,13 +2798,37 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const handleFile = (file) => {
     if (!file) return;
     setError('');
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64 = e.target.result.split(',')[1];
-      const mediaType = file.type || 'image/jpeg';
-      await runScan(base64, mediaType);
+
+    // Compress image client-side before sending — Next.js Route Handler body limits
+    // apply before our code runs, so we resize on the client to stay under 1 MB.
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = async () => {
+      URL.revokeObjectURL(objectUrl);
+
+      // Resize to max 1024px on the longest side — enough detail for physique analysis
+      const MAX = 1024;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        if (width >= height) { height = Math.round(height * MAX / width); width = MAX; }
+        else                 { width  = Math.round(width  * MAX / height); height = MAX; }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width  = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+      // JPEG 82% quality → typically 150–400 KB, well within any server limit
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const base64  = dataUrl.split(',')[1];
+      await runScan(base64, 'image/jpeg');
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      setError('Could not load image. Please try a different file.');
+    };
+    img.src = objectUrl;
   };
 
   const runScan = async (base64, mediaType) => {
