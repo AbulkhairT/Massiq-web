@@ -857,12 +857,28 @@ function getGreeting() {
   return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
 }
 
+// Unwrap tip strings that were stored as JSON from the old Claude-based system.
+// e.g. '{"tip":"Adam, eat 800..."}' → 'Adam, eat 800...'
+function safeTip(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+  try {
+    const p = JSON.parse(trimmed);
+    if (typeof p === 'object' && p !== null) {
+      return String(p.tip || p.text || p.message || Object.values(p)[0] || raw);
+    }
+  } catch {}
+  return trimmed;
+}
+
 function AIDailyTip({ profile, activePlan, todayMeals }) {
-  const dayIdx = new Date().getDay();
-  const planTip = activePlan?.dailyTips?.[dayIdx] || activePlan?.dailyTips?.[0] || null;
+  const dayIdx  = new Date().getDay();
+  // safeTip handles old cached JSON strings from the previous Claude-based system
+  const planTip = safeTip(activePlan?.dailyTips?.[dayIdx] || activePlan?.dailyTips?.[0] || null);
   const cacheKey = `massiq:dailytip:${todayStr()}`;
-  const [tip, setTip] = useState(() => planTip || LS.get(cacheKey, null));
-  const [loading, setLoading] = useState(!planTip && !LS.get(cacheKey, null));
+  const [tip, setTip] = useState(() => planTip || safeTip(LS.get(cacheKey, null)));
+  const [loading, setLoading] = useState(!planTip && !safeTip(LS.get(cacheKey, null)));
   useEffect(() => {
     if (!loading) return;
     let ok = true;
@@ -2814,73 +2830,33 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
       // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
       // /api/anthropic supports large image payloads; /api/claude caps at 250 KB
+      // Use Haiku for vision — explicitly pass model to override any ANTHROPIC_MODEL env var.
+      // Haiku has full vision capability at ~10x lower cost than Sonnet for this task.
+      const BF_RANGES = gender === 'Male'
+        ? '<8% very lean|8-12% lean|12-15% mod.lean|15-20% moderate|20-25% elevated|>25% high'
+        : '<16% very lean|16-20% lean|20-25% mod.lean|25-30% moderate|30-35% elevated|>35% high';
+
       const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          system: `You are a physique analysis assistant. Describe visible body composition traits in a measured, professional, non-judgmental way — like an experienced coach reviewing a photo.
+          model: 'claude-haiku-4-5-20251001',
+          system: `Physique analyst. Professional coach tone, non-judgmental. Return JSON only.
 
-CORE RULES:
-1. Describe only what is VISIBLE. Never infer training history, lifestyle, habits, or experience level.
-2. All comparisons must be RELATIVE to this person's own frame — never to external population averages.
-3. Express uncertainty honestly. If a trait is hard to assess from this photo, say so.
-4. Start with what is present and working before noting areas for development.
-
-FORBIDDEN WORDS — never use: underdeveloped, below average, above average, lacks, lacking, weak, limited training, training history, experience level, beginner, poor, concerning, inadequate, subpar, disappointing, unfortunately
-
-MUSCLE DEVELOPMENT — use ONLY these five levels (no others):
-  "not yet defined" | "early" | "moderate" | "solid" | "well-developed"
-
-COMPARISONS — always relative to the person's own body:
-  ✗ "Chest is underdeveloped"  ✓ "Chest appears less pronounced relative to shoulder width"
-  ✗ "Low muscle mass"          ✓ "Muscle development appears moderate overall"
-
-BODY FAT — estimate a 2% range conservatively (photos make people look leaner than they are):
-${gender === 'Male'
-  ? '< 8% very lean | 8–12% lean | 12–15% moderately lean | 15–20% moderate | 20–25% elevated | >25% high'
-  : '< 16% very lean | 16–20% lean | 20–25% moderately lean | 25–30% moderate | 30–35% elevated | >35% high'}
-
-PHYSIQUE SCORE: 30–95. Average physique = 50–62. Only use <45 for very high BF + minimal development.
-SYMMETRY SCORE: 60–95. Most people are 70–85. Below 70 only for obvious structural asymmetries.
-
-DIAGNOSIS TONE — write like a coach, not a critic. Start with what is present, frame gaps as opportunities.`,
+RULES: Describe visible traits only. All comparisons relative to this person's own frame. Start with strengths.
+BANNED: underdeveloped, below average, above average, lacks, lacking, weak, beginner, poor, inadequate, unfortunately
+MUSCLE (5 levels only): "not yet defined"|"early"|"moderate"|"solid"|"well-developed"
+BF (${gender==='Male'?'M':'F'}): ${BF_RANGES}. Estimate conservatively — photos make people look leaner.
+SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, not generous.`,
           messages: [{
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Analyze this physique photo. Person: ${age} years old, ${gender}, ${height} inches tall, ${weight} lbs.
-
-Return ONLY a valid JSON object — no markdown, no code blocks, no explanation outside the JSON:
-{
-  "bodyFatPct": <number — midpoint of your estimated 2% range>,
-  "bodyFatRange": "<e.g. 16–18%>",
-  "leanMass": <estimated lean body mass in lbs>,
-  "fatMass": <estimated fat mass in lbs>,
-  "physiqueScore": <30–95>,
-  "symmetryScore": <60–95>,
-  "confidence": "<high|medium|low — based on photo quality and pose clarity>",
-  "muscleGroups": {
-    "chest":     "<not yet defined|early|moderate|solid|well-developed>",
-    "shoulders": "<not yet defined|early|moderate|solid|well-developed>",
-    "back":      "<not yet defined|early|moderate|solid|well-developed>",
-    "arms":      "<not yet defined|early|moderate|solid|well-developed>",
-    "core":      "<not yet defined|early|moderate|solid|well-developed>",
-    "legs":      "<not yet defined|early|moderate|solid|well-developed>"
-  },
-  "weakestGroups": ["<muscle group names where development could be further progressed, relative to the rest of their frame>"],
-  "strengths": ["<muscle group names that show comparatively stronger development>"],
-  "asymmetries": ["<describe only clearly visible left-right differences, or leave empty>"],
-  "bodyFatSummary": "<1–2 sentences: calibrated description of body fat level and distribution — no harsh language>",
-  "muscleSummary": "<1–2 sentences: overall muscle development relative to this person's own frame>",
-  "priorityAreas": ["<specific relative observation per area, e.g. 'Core definition is not yet clearly visible relative to upper body development'>"],
-  "balanceNote": "<1 sentence on upper-lower and left-right proportions>",
-  "diagnosis": "<2–3 sentences: start with what is present/working, then note development opportunities as relative observations — coach tone, no criticism>",
-  "recommendation": "<1 specific, actionable suggestion based only on visible traits — no lifestyle assumptions>",
-  "disclaimer": "Visual AI estimate — accuracy improves with consistent lighting, a straight-on pose, and multiple scans over time."
-}` },
+              { type: 'text', text: `Physique photo. ${age}yo ${gender}, ${height}in, ${weight}lbs. Return ONLY valid JSON:
+{"bodyFatPct":0,"bodyFatRange":"","leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"confidence":"medium","muscleGroups":{"chest":"","shoulders":"","back":"","arms":"","core":"","legs":""},"weakestGroups":[],"strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"","recommendation":"","disclaimer":"Visual AI estimate — accuracy improves with consistent lighting and pose."}` },
             ],
           }],
-          max_tokens: 1000,
+          max_tokens: 800,
         }),
       });
 
