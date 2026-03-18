@@ -21,10 +21,11 @@ export async function POST(req){
   const approxSize = JSON.stringify({messages, system}).length;
   if(approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  // Prefer Haiku for vision (12x cheaper, adequate for structured physique JSON output).
-  // Override with ANTHROPIC_SCAN_MODEL env var, or pass model in request body.
-  const defaultScanModel = process.env.ANTHROPIC_SCAN_MODEL || process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
-  const chosenModel = model || defaultScanModel;
+  // Haiku has full vision capability at ~10x lower cost than Sonnet.
+  // Body: model field always wins (runScan passes it explicitly).
+  // ANTHROPIC_SCAN_MODEL env var overrides for special deployments.
+  // ANTHROPIC_MODEL is intentionally NOT in the fallback — it targets general text routes.
+  const chosenModel = model || process.env.ANTHROPIC_SCAN_MODEL || "claude-haiku-4-5-20251001";
 
   const upstreamBody = { model: chosenModel, max_tokens: maxTokens, messages };
   if(system) upstreamBody.system = system;
