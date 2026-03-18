@@ -86,13 +86,13 @@ function whyThisWorks(
   const proteinReason = `${protein}g protein (${protPerLbm}g/kg lean mass) is above the ISSN threshold for muscle protein retention during ${goal === 'Bulk' ? 'a caloric surplus' : 'a deficit'}.`
 
   const diagReason: Record<string, string> = {
-    PHASE_MISMATCH:         'The current body fat level is outside the optimal range for this phase, so targets have been adjusted to move you into the correct zone first.',
-    AGGRESSIVE_DEFICIT:     'The deficit has been moderated to prevent metabolic adaptation and lean mass loss.',
-    INSUFFICIENT_DEFICIT:   'The deficit has been increased to ensure measurable fat loss progress.',
-    PROTEIN_INSUFFICIENT:   'Protein has been elevated to the minimum effective dose for muscle retention.',
-    RECOVERY_DEFICIT:       'Recovery targets have been included — insufficient sleep directly suppresses muscle protein synthesis by 18–24%.',
-    STALLED_PROGRESS:       'A planned caloric refeed cycle (±200 kcal every 2 weeks) prevents leptin suppression, which is the primary driver of stalls.',
-    default:                'All targets are within optimal physiological ranges for your goal.',
+    phase_mismatch:           'The current body fat level is outside the optimal range for this phase, so targets have been adjusted to move you into the correct zone first.',
+    aggressive_deficit:       'The deficit has been moderated to prevent metabolic adaptation and lean mass loss.',
+    insufficient_deficit:     'The deficit has been increased to ensure measurable fat loss progress.',
+    protein_insufficiency:    'Protein has been elevated to the minimum effective dose for muscle retention.',
+    recovery_deficit:         'Recovery targets have been included — insufficient sleep directly suppresses muscle protein synthesis by 18–24%.',
+    stalled_progress:         'A planned caloric refeed cycle (±200 kcal every 2 weeks) prevents leptin suppression, which is the primary driver of stalls.',
+    default:                  'All targets are within optimal physiological ranges for your goal.',
   }
 
   return [
@@ -140,13 +140,13 @@ function nutritionKeyChange(
   calories: number,
   diagnosisCode: string,
 ): string {
-  if (diagnosisCode === 'PROTEIN_INSUFFICIENT') {
+  if (diagnosisCode === 'protein_insufficiency') {
     return `Increase daily protein to ${protein}g — distribute across 4–5 meals (${Math.round(protein / 4)}–${Math.round(protein / 5)}g per meal) to maximise muscle protein synthesis.`
   }
-  if (diagnosisCode === 'AGGRESSIVE_DEFICIT') {
+  if (diagnosisCode === 'aggressive_deficit') {
     return `Raise daily intake to ${calories} kcal — a more moderate deficit improves adherence and prevents the metabolic slowdown that stalls progress.`
   }
-  if (diagnosisCode === 'INSUFFICIENT_DEFICIT') {
+  if (diagnosisCode === 'insufficient_deficit') {
     return `Reduce daily intake to ${calories} kcal — the current intake is too close to TDEE for measurable fat loss progress.`
   }
   switch (goal) {
@@ -254,7 +254,7 @@ export function buildPlanContent(
   const weeksToGoal = engineOutput?.trajectory?.timeline_weeks ?? 12
   const tdee        = engineOutput?.physio?.tdee  ?? macros.calories + 300
   const lbmKg       = engineOutput?.physio?.lbmKg ?? (profile.weightLbs * 0.453592 * 0.8)
-  const diagCode    = engineOutput?.diagnosis?.primary?.code ?? 'default'
+  const diagCode    = (engineOutput?.diagnosis?.primary?.code as string) ?? 'default'
 
   // Scan-derived weak groups (if available via run context — otherwise empty)
   const weakGroups: string[] = []
@@ -267,7 +267,7 @@ export function buildPlanContent(
       durationWeeks: weeksToGoal,
     },
     dailyTargets: {
-      calories,
+      calories:            macros.calories,
       protein:             macros.protein,
       carbs:               macros.carbs,
       fat:                 macros.fat,
@@ -373,26 +373,26 @@ export function buildInsights(
 ): Insight[] {
   const { goal } = profile
   const { calories, protein } = macros
-  const diagCode = engineOutput?.diagnosis?.primary?.code
+  const diagCode = engineOutput?.diagnosis?.primary?.code as string | undefined
   const tdee     = engineOutput?.physio?.tdee
 
   const insights: Insight[] = []
 
   // Insight 1: based on primary diagnosis
-  if (diagCode === 'PROTEIN_INSUFFICIENT') {
+  if (diagCode === 'protein_insufficiency') {
     insights.push({
       icon: '🥩',
       pattern: `Your protein target of ${protein}g is critical — under-eating protein during ${goal === 'Bulk' ? 'a surplus' : 'a deficit'} causes muscle loss.`,
       action: `Distribute ${protein}g across ${Math.ceil(protein / 40)} meals/snacks — ${Math.round(protein / Math.ceil(protein / 40))}g each.`,
     })
-  } else if (diagCode === 'AGGRESSIVE_DEFICIT' && tdee) {
+  } else if (diagCode === 'aggressive_deficit' && tdee) {
     const pct = Math.round((1 - calories / tdee) * 100)
     insights.push({
       icon: '⚠️',
       pattern: `A ${pct}% deficit is above the safe threshold — deficits over 25% trigger significant muscle catabolism within 2–3 weeks.`,
       action: `Increase intake to ${calories} kcal — the engine target accounts for metabolic adaptation over the full ${engineOutput?.trajectory?.timeline_weeks ?? 12}-week period.`,
     })
-  } else if (diagCode === 'PHASE_MISMATCH') {
+  } else if (diagCode === 'phase_mismatch') {
     insights.push({
       icon: '🎯',
       pattern: `Your current body fat is outside the optimal range for a ${goal} phase — the engine has adjusted targets to address this first.`,

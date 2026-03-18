@@ -115,7 +115,7 @@ function upperLowerSplit(goal: string): WorkoutDay[] {
       day: 'Monday', isTrainingDay: true, workoutType: 'Upper A — Strength',
       focus: ['Chest', 'Back', 'Shoulders'],
       duration: '55–65 min', warmup: '5 min light cardio + arm circles, band pull-aparts',
-      cooldown: '5 min pec stretch, lat stretch, child's pose',
+      cooldown: '5 min pec stretch, lat stretch, child pose',
       exercises: [ex('benchPress'), ex('bentOverRow'), ex('ohPress'), ex('latPulldown'), ex('cableFly'), ex('lateralRaise')],
       cardio,
     },
