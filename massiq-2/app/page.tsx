@@ -220,7 +220,7 @@ export default function LandingPage() {
         <div className="loop-row" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
           {[
             { n: '01', label: 'SCAN',           desc: 'Upload a photo. AI analyzes body composition, muscle groups, and symmetry.' },
-            { n: '02', label: 'DIAGNOSIS',       desc: 'Get a specific assessment — body fat %, lean mass, physique score, what's lagging.' },
+            { n: '02', label: 'DIAGNOSIS',       desc: "Get a specific assessment — body fat %, lean mass, physique score, what's lagging." },
             { n: '03', label: 'PLAN',            desc: 'Receive a 12-week program with exact calorie, protein, and training targets.' },
             { n: '04', label: 'DAILY GUIDANCE',  desc: 'Log meals, complete missions, get AI coaching every single day.' },
             { n: '05', label: 'NEXT SCAN',       desc: 'Rescan to measure real progress. Your plan updates. The loop continues.' },

@@ -1,4 +1,4 @@
-import MassIQ from '@/components/MassIQ'
+import MassIQ from '../../components/MassIQ'
 
 export default function AppPage() {
   return <MassIQ />
