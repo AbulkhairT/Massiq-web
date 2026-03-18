@@ -81,6 +81,8 @@ const CSS = `
   }
   .ob-activity-row:hover{border-color:rgba(0,200,83,0.3)}
   .ob-activity-row.selected{border-color:${C.green};border-left:4px solid ${C.green};background:rgba(0,200,83,0.08)}
+  @keyframes skeleton{0%,100%{opacity:.5}50%{opacity:.9}}
+  .skeleton{animation:skeleton 1.4s ease-in-out infinite;background:rgba(255,255,255,0.08);border-radius:8px}
   .pulse-dot{
     width:10px;height:10px;border-radius:50%;background:${C.green};
     animation:pulse 2s ease-in-out infinite;
@@ -132,6 +134,132 @@ function calcMacros(profile) {
   const fat      = Math.round((calories * 0.25) / 9);
   const carbs    = Math.round((calories - protein * 4 - fat * 9) / 4);
   return { calories: Math.round(calories), protein, fat, carbs };
+}
+
+/* ─── Session Storage ───────────────────────────────────────────────────── */
+const SS = {
+  get: (k, fb = null) => { try { const v = sessionStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
+  set: (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+/* ─── AI Helpers ─────────────────────────────────────────────────────────── */
+async function callClaude(messages, maxTokens = 2000) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages, max_tokens: maxTokens }),
+      });
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const { text, error } = await res.json();
+      if (error) throw new Error(error);
+      return text;
+    } catch (err) {
+      console.error(`Claude call attempt ${attempt + 1} failed:`, err);
+      if (attempt === 1) throw err;
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+}
+
+function parseJSON(text) {
+  const m = text.match(/[\[\{][\s\S]*[\]\}]/);
+  if (!m) throw new Error('No JSON in response');
+  return JSON.parse(m[0]);
+}
+
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function hourKey()  { const d = new Date(); return `${todayStr()}:${d.getHours()}`; }
+function weekKey2() {
+  const d = new Date(), jan1 = new Date(d.getFullYear(), 0, 1);
+  return `${d.getFullYear()}-W${Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7)}`;
+}
+
+/* ─── AI Plan Generators ─────────────────────────────────────────────────── */
+async function generateInitialPlan(profile, macros) {
+  const in4weeks = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
+  const text = await callClaude([{ role: 'user', content:
+    `You are an elite physique coach. Generate a complete personalized plan:
+Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
+Weight: ${profile.weightLbs} lbs, Height: ${profile.heightCm} cm
+Goal: ${profile.goal}, Activity: ${profile.activity}
+Dietary Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
+Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Calculated: ${macros.calories} kcal, ${macros.protein}g protein, ${macros.carbs}g carbs, ${macros.fat}g fat
+
+Return ONLY raw JSON (no markdown, no code blocks):
+{"phase":{"name":"string","label":"Cut|Bulk|Recomp|Maintain","objective":"string","durationWeeks":12},"dailyTargets":{"calories":${macros.calories},"protein":${macros.protein},"carbs":${macros.carbs},"fat":${macros.fat},"steps":8000,"sleepHours":8,"waterLiters":3,"trainingDaysPerWeek":4},"whyThisWorks":"3-4 sentence explanation specific to this person","weeklyMissions":["mission1 with exact target","mission2","mission3"],"trainingFocus":{"primary":"muscle group","secondary":"muscle group","frequency":"X times per week","reasoning":"why"},"nutritionKeyChange":"one specific change","dailyTips":["Monday tip referencing their goal","Tuesday tip","Wednesday tip","Thursday tip","Friday tip","Saturday tip","Sunday tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":20,"targetBF":16,"weeksToGoal":12}}`
+  }], 2000);
+  return parseJSON(text);
+}
+
+async function generateMealPlan(profile, activePlan, scanResults = null) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Generate a 7-day meal plan for ${profile.name}:
+Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, ${m.carbs||200}g carbs, ${m.fat||55}g fat
+Restrictions: ${(profile.dietPrefs||[]).join(', ')||'none'}
+Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
+${scanResults ? `Scan: BF ${scanResults.bodyFatPct}%, weak: ${(scanResults.weakestGroups||[]).join(', ')}` : ''}
+Rules: Hit macros daily. Vary cuisines. Never include avoided foods. Training days more carbs.
+Return ONLY raw JSON array of 7:
+[{"day":"Monday","isTrainingDay":true,"totalCalories":0,"totalProtein":0,"breakfast":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"lunch":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"dinner":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"snack":{"name":"string","calories":0,"protein":0,"description":"string"}}]`
+  }], 4000);
+  return parseJSON(text);
+}
+
+async function generateSuggestions(profile, activePlan, todayMeals) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
+  const h = new Date().getHours();
+  const timeOfDay = h < 11 ? 'morning (breakfast)' : h < 15 ? 'midday (lunch)' : 'evening (dinner)';
+  const text = await callClaude([{ role: 'user', content:
+    `Suggest 3 meals for ${profile.name} right now:
+Goal: ${profile.goal}, Time: ${timeOfDay}
+Remaining: ${Math.max(0,(m.calories||2000)-eaten.cal)} kcal, ${Math.max(0,(m.protein||150)-eaten.prot)}g protein
+Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}, Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
+Avoid: ${(profile.avoid||[]).join(', ')||'none'}
+Already eaten: ${todayMeals.map(x=>x.name).join(', ')||'nothing yet'}
+Return ONLY raw JSON array of 3:
+[{"id":"s1","name":"string","mealType":"breakfast|lunch|dinner|snack","time":"Breakfast|Lunch|Dinner|Snack","icon":"emoji","calories":0,"protein":0,"carbs":0,"fat":0,"description":"string","whyNow":"one sentence why this is right for right now"}]`
+  }], 800);
+  return parseJSON(text);
+}
+
+async function generateDailyTip(profile, activePlan, todayMeals) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
+  const text = await callClaude([{ role: 'user', content:
+    `Give ${profile.name} ONE specific actionable tip right now. Goal: ${profile.goal}. Time: ${new Date().getHours()}:00. Calories: ${eaten.cal}/${m.calories||2000}. Protein: ${eaten.prot}g/${m.protein||150}g. Write one sentence max 20 words with their actual numbers. No fluff. Return ONLY the tip text.`
+  }], 80);
+  return text.trim().replace(/^["']|["']$/g, '');
+}
+
+async function generatePatterns(profile, activePlan) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Analyze ${profile.name}'s fitness profile and generate 3 specific actionable insights:
+Goal: ${profile.goal}, Activity: ${profile.activity}
+Daily targets: ${m.calories||2000} kcal, ${m.protein||150}g protein
+Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
+Return ONLY raw JSON: {"insights":[{"icon":"emoji","pattern":"specific insight with numbers","action":"specific thing to do"}]}`
+  }], 400);
+  return parseJSON(text);
+}
+
+async function generateMissions(profile, activePlan) {
+  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const text = await callClaude([{ role: 'user', content:
+    `Generate 8 progressive missions for ${profile.name} (Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, training ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week).
+2 Bronze (easy, 100 XP), 2 Silver (medium, 250 XP), 2 Gold (hard, 500 XP), 2 Platinum (elite, 1000 XP).
+Each specific to their numbers. Return ONLY raw JSON array:
+[{"id":"unique_id","tier":"Bronze|Silver|Gold|Platinum","emoji":"emoji","title":"short title","description":"specific with their numbers","xp":100}]`
+  }], 600);
+  return parseJSON(text);
 }
 
 /* ─── Tiny UI Primitives ─────────────────────────────────────────────────── */
