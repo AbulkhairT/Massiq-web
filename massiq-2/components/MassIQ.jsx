@@ -2485,13 +2485,24 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
 
   /* Health score from last scan or profile defaults */
-  const lastScan = scanHistory[scanHistory.length - 1];
-  const bf        = lastScan?.bodyFat  || 20;
-  const leanKg    = lastScan?.leanMass || (profile ? Number((profile.weightLbs * 0.453592 * 0.82).toFixed(1)) : 65);
-  const bfScore   = Math.max(0, Math.min(100, Math.round(100 - (bf - 8) * 2.8)));
-  const leanScore = Math.min(100, Math.round((leanKg / 75) * 100));
+  const lastScan    = scanHistory[scanHistory.length - 1];
+  const bf          = lastScan?.bodyFat || 20;
+
+  // leanMass is stored in lbs (from Claude scan). Convert to kg for display and scoring.
+  const leanMassLbs = lastScan?.leanMass;
+  const leanKg      = leanMassLbs
+    ? Number((leanMassLbs / 2.2046).toFixed(1))
+    : (profile ? Number((profile.weightLbs * 0.453592 * 0.82).toFixed(1)) : 65);
+
+  // Fat mass in lbs — calculated from current weight × BF% (scan doesn't store fatMass)
+  const fatMassLbs  = Math.round((profile?.weightLbs || 170) * (bf / 100));
+
+  // bfScore: 100 at 8% BF, ~66 at 20%, ~38 at 30%
+  const bfScore     = Math.max(0, Math.min(100, Math.round(100 - (bf - 8) * 2.8)));
+  // leanScore: 75 kg lean mass = 100 (well-built male athlete benchmark)
+  const leanScore   = Math.min(100, Math.round((leanKg / 75) * 100));
   const healthScore = Math.round(bfScore * 0.6 + leanScore * 0.4);
-  const healthLabel = healthScore >= 80 ? 'Elite' : healthScore >= 60 ? 'Great' : 'Good';
+  const healthLabel = healthScore >= 80 ? 'Elite' : healthScore >= 65 ? 'Great' : healthScore >= 50 ? 'Good' : 'Building';
 
   /* Delta summary for scan history */
   const firstScan = scanHistory[0];
@@ -2593,9 +2604,12 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
           </div>
         </div>
         {[
-          { icon: '💧', label: 'Body Fat',     sub: bf < 18 ? 'In healthy range' : 'Room to improve', value: `${bf}%`,       color: bf < 18 ? C.green : C.orange },
-          { icon: '🏋️', label: 'Muscle Mass',  sub: leanKg < 70 ? 'Room to grow' : 'Well developed',  value: `${leanKg} kg`, color: C.blue },
-          { icon: '❤️', label: 'Visceral Fat', sub: 'Healthy level',                                   value: '3/20',         color: C.green },
+          { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
+            value: `${bf}%`,         color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
+          { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
+            value: `${leanKg} kg`,   color: C.blue },
+          { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
+            value: `${fatMassLbs} lbs`, color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
         ].map(row => (
           <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
