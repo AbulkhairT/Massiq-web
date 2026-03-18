@@ -58,16 +58,17 @@ const CSS = `
   .nav-inner {
     max-width: 1120px; margin: 0 auto;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 24px;
+    padding: 16px 20px;
   }
-  .nav-logo { font-size: 13px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase; color: ${C.white}; }
+  .nav-logo { font-size: 18px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase; color: ${C.white}; }
+  .nav-sign-in { display: none; }
   .nav-actions { display: flex; align-items: center; gap: 12px; }
   .nav-link { font-size: 13px; color: ${C.muted}; font-weight: 500; transition: color .15s; }
   .nav-link:hover { color: ${C.white}; }
   .nav-btn {
     display: inline-flex; align-items: center;
     background: ${C.green}; color: #000; font-weight: 700;
-    font-size: 13px; padding: 9px 22px; border-radius: 99px;
+    font-size: 13px; padding: 8px 16px; border-radius: 99px;
     transition: opacity .15s ease, transform .15s ease;
   }
   .nav-btn:hover { opacity: .88; transform: scale(1.02); }
@@ -90,14 +91,14 @@ const CSS = `
 
   /* ── Hero ── */
   .hero-sec { padding: 88px 20px 80px; position: relative; overflow: hidden; }
-  .hero-grid { display: grid; grid-template-columns: 1fr; gap: 56px; align-items: center; }
+  .hero-grid { display: grid; grid-template-columns: 1fr; gap: 40px; align-items: center; }
   .hero-h1 {
     font-size: 46px; font-weight: 800; line-height: 1.07;
     letter-spacing: -2px; color: ${C.white}; margin-bottom: 22px;
     position: relative; z-index: 1;
   }
   .hero-sub { font-size: 17px; color: ${C.muted}; line-height: 1.68; max-width: 500px; }
-  .hero-ctas { display: flex; flex-direction: column; gap: 12px; margin-top: 36px; }
+  .hero-ctas { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 36px; }
   .btn-primary {
     display: inline-flex; align-items: center; justify-content: center;
     background: ${C.green}; color: #000; font-weight: 700;
@@ -118,21 +119,25 @@ const CSS = `
   .btn-ghost:hover { background: rgba(255,255,255,0.1); color: ${C.white}; }
   .hero-trust { font-size: 12px; color: ${C.dim}; margin-top: 14px; }
 
-  /* ── Intelligence panel (desktop only) ── */
-  .panel-wrap { display: none; }
+  /* ── Intelligence panel ── */
+  .panel-wrap { display: flex; justify-content: center; align-items: center; }
 
   /* ── Proof strip ── */
   .proof-strip {
     border-top: 1px solid ${C.border};
     border-bottom: 1px solid ${C.border};
     background: rgba(0,200,83,0.03);
-    padding: 22px 20px;
+    padding: 16px 20px;
   }
   .proof-inner {
     max-width: 1120px; margin: 0 auto;
-    display: flex; flex-direction: column; align-items: center;
-    gap: 16px; text-align: center;
+    display: flex; flex-direction: row; align-items: center;
+    gap: 0; justify-content: space-evenly;
+    overflow: hidden; text-align: center;
   }
+  .proof-item { min-width: 0; flex: 1; padding: 0 6px; }
+  .proof-item-stat { font-size: 11px; font-weight: 700; color: ${C.white}; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .proof-item-sub { font-size: 10px; color: ${C.dim}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .proof-divider { display: none; width: 1px; height: 28px; background: ${C.border}; flex-shrink: 0; }
 
   /* ── Problem contrast ── */
@@ -192,14 +197,20 @@ const CSS = `
 
   /* ── Desktop overrides (768px+) ── */
   @media (min-width: 768px) {
+    .nav-sign-in { display: inline; }
+    .nav-inner { padding: 16px 24px; }
+    .nav-btn { padding: 9px 22px; }
     .sec { padding: 120px 60px; }
     .hero-sec { padding: 112px 60px 100px; }
     .hero-grid { grid-template-columns: 1fr 1fr; gap: 80px; }
     .hero-h1 { font-size: 76px; letter-spacing: -3px; }
     .hero-sub { font-size: 18px; }
     .hero-ctas { flex-direction: row; align-items: center; }
-    .panel-wrap { display: flex; justify-content: flex-end; align-items: center; }
-    .proof-inner { flex-direction: row; justify-content: center; gap: 52px; }
+    .panel-wrap { justify-content: flex-end; }
+    .proof-inner { justify-content: center; gap: 52px; }
+    .proof-item { padding: 0; }
+    .proof-item-stat { font-size: 14px; margin-bottom: 3px; white-space: normal; overflow: visible; text-overflow: clip; }
+    .proof-item-sub { font-size: 12px; white-space: normal; overflow: visible; text-overflow: clip; }
     .proof-divider { display: block; }
     .contrast-pair { grid-template-columns: 1fr 1fr; gap: 24px; }
     .steps-mobile { display: none; }
@@ -251,7 +262,7 @@ function IntelPanel() {
       borderRadius: 20,
       overflow: 'hidden',
       width: '100%',
-      maxWidth: 348,
+      maxWidth: 380,
       boxShadow: `0 0 80px rgba(0,200,83,0.07), 0 32px 64px rgba(0,0,0,0.5)`,
     }}>
       {/* Header */}
@@ -386,7 +397,7 @@ export default function LandingPage() {
         <div className="nav-inner">
           <div className="nav-logo">MassIQ</div>
           <div className="nav-actions">
-            <a href="/app" className="nav-link">Sign in</a>
+            <a href="/app" className="nav-link nav-sign-in">Sign in</a>
             <a href="/app" className="nav-btn">Get started</a>
           </div>
         </div>
@@ -472,9 +483,9 @@ export default function LandingPage() {
           ].map((p, i) => (
             <>
               {i > 0 && <div key={`div-${i}`} className="proof-divider" />}
-              <div key={p.stat} style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 3 }}>{p.stat}</div>
-                <div style={{ fontSize: 12, color: C.dim }}>{p.sub}</div>
+              <div key={p.stat} className="proof-item">
+                <div className="proof-item-stat">{p.stat}</div>
+                <div className="proof-item-sub">{p.sub}</div>
               </div>
             </>
           ))}
