@@ -2,8 +2,19 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
+// Allow up to 10 MB bodies for base64 image uploads
+export const config = { api: { bodyParser: { sizeLimit: "10mb" } } };
+
 function bad(msg, status = 400) {
   return NextResponse.json({ error: msg }, { status });
+}
+
+// Derive system prompt based on max_tokens (request type)
+function getSystemPrompt(max_tokens, providedSystem) {
+  if (providedSystem) return providedSystem;
+  if (max_tokens >= 4000) return "You are an elite sports nutritionist. Return only valid JSON arrays.";
+  if (max_tokens >= 2000) return "You are an expert physique analyst. Return only valid JSON.";
+  return "You are a nutrition expert. Return only valid JSON.";
 }
 
 export async function POST(req) {
@@ -14,27 +25,40 @@ export async function POST(req) {
   try { body = await req.json(); } catch { return bad("Invalid JSON body"); }
 
   const { messages, system, max_tokens, model } = body || {};
-  if (!Array.isArray(messages) || messages.length === 0) return bad("messages must be a non-empty array");
-  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4096, +max_tokens)) : 1000;
+  if (!Array.isArray(messages) || messages.length === 0)
+    return bad("messages must be a non-empty array");
 
-  // Very lightweight validation to avoid accidental huge payloads
+  // Allow up to 4000 tokens; default 1000
+  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4000, +max_tokens)) : 1000;
+
+  // Rough payload size guard (base64 images can be large)
   const approxSize = JSON.stringify({ messages, system }).length;
-  if (approxSize > 500_000) return bad("Payload too large", 413);
+  if (approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  const chosenModel = (model || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
+  const chosenModel = model || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  const systemPrompt = getSystemPrompt(maxTokens, system);
 
-  const upstreamBody = { model: chosenModel, max_tokens: maxTokens, messages };
-  if (system) upstreamBody.system = system;
+  const upstreamBody = {
+    model: chosenModel,
+    max_tokens: maxTokens,
+    messages,
+    system: systemPrompt,
+  };
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(upstreamBody),
-  });
+  let res;
+  try {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(upstreamBody),
+    });
+  } catch (err) {
+    return bad(`Network error: ${err.message}`, 502);
+  }
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {

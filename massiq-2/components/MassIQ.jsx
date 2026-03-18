@@ -31,6 +31,10 @@ const CSS = `
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes prog{from{width:0}}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.85)}}
+  @keyframes countUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes stepFadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes stepFadeOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-20px)}}
   .su{animation:slideUp .3s ease both}
   .fi{animation:fadeIn .25s ease both}
   .bp{cursor:pointer;transition:transform .12s ease,opacity .12s ease}
@@ -38,6 +42,57 @@ const CSS = `
   input,textarea,select{outline:none;font-family:inherit;color:${C.white}}
   input::placeholder,textarea::placeholder{color:${C.muted}}
   .prog-bar{animation:prog .6s ease both}
+  .ob-step{animation:stepFadeIn .3s ease both}
+  .ob-step-out{animation:stepFadeOut .25s ease both}
+  .ob-input{
+    background:transparent;border:none;border-bottom:2px solid rgba(255,255,255,0.15);
+    font-size:28px;font-weight:700;color:#fff;width:100%;text-align:center;
+    padding:12px 0;transition:border-color .2s ease;font-family:'Inter',monospace;
+    caret-color:${C.green};
+  }
+  .ob-input:focus{border-bottom-color:${C.green}}
+  .ob-num-input{
+    background:transparent;border:2px solid rgba(255,255,255,0.12);border-radius:16px;
+    font-size:26px;font-weight:700;color:#fff;width:100%;text-align:center;
+    padding:16px 12px;transition:border-color .2s ease;font-family:'Inter',monospace;
+    caret-color:${C.green};
+  }
+  .ob-num-input:focus{border-color:${C.green}}
+  .ob-card{
+    border:2px solid rgba(255,255,255,0.08);border-radius:20px;padding:22px 18px;
+    background:#141A14;cursor:pointer;transition:all .18s ease;
+  }
+  .ob-card:hover{transform:scale(1.02);border-color:rgba(0,200,83,0.4)}
+  .ob-card.selected{border-color:${C.green};background:rgba(0,200,83,0.12)}
+  .ob-chip{
+    padding:10px 20px;border-radius:50px;border:1.5px solid rgba(255,255,255,0.12);
+    background:transparent;color:#8A9A8A;font-size:14px;font-weight:500;cursor:pointer;
+    transition:all .15s ease;font-family:inherit;
+  }
+  .ob-chip.selected{border-color:${C.green};background:rgba(0,200,83,0.15);color:${C.green}}
+  .ob-chip:hover{border-color:rgba(0,200,83,0.4);color:#fff}
+  .ob-activity-row{
+    padding:18px 20px;border-radius:16px;border:2px solid rgba(255,255,255,0.08);
+    background:#141A14;cursor:pointer;transition:all .18s ease;display:flex;
+    align-items:center;justify-content:space-between;
+  }
+  .ob-activity-row:hover{border-color:rgba(0,200,83,0.3)}
+  .ob-activity-row.selected{border-color:${C.green};border-left:4px solid ${C.green};background:rgba(0,200,83,0.08)}
+  .pulse-dot{
+    width:10px;height:10px;border-radius:50%;background:${C.green};
+    animation:pulse 2s ease-in-out infinite;
+  }
+  /* ── Desktop layout ── */
+  @media(min-width:769px){
+    .mobile-tabbar{display:none!important}
+    .desktop-sidebar{display:flex!important}
+    .app-layout{display:grid!important;grid-template-columns:220px 1fr}
+    .app-content{max-width:800px;margin:0 auto;padding:32px 24px 40px}
+    .ob-wrap{max-width:600px;margin:0 auto}
+  }
+  @media(max-width:768px){
+    .desktop-sidebar{display:none!important}
+  }
 `;
 
 /* ─── LocalStorage helpers ───────────────────────────────────────────────── */
@@ -115,42 +170,85 @@ const ProgressBar = ({ value, max, color = C.green, height = 6 }) => {
 };
 
 /* ─── Onboarding ─────────────────────────────────────────────────────────── */
-const DIET_PREFS = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Free', 'Dairy-Free', 'Halal', 'Kosher'];
-const CUISINES   = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
+const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Free', 'Dairy-Free', 'Halal', 'Kosher'];
+const CUISINES    = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
 const AVOID_FOODS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Soy', 'Eggs', 'Red Meat', 'Processed Sugar'];
 const GOALS = [
-  { key: 'Cut',      label: '📉 Cut',      desc: 'Lose fat, preserve muscle' },
-  { key: 'Bulk',     label: '📈 Bulk',     desc: 'Gain muscle mass' },
-  { key: 'Recomp',   label: '🔄 Recomp',  desc: 'Lose fat & gain muscle' },
-  { key: 'Maintain', label: '⚖️ Maintain', desc: 'Stay at current weight' },
+  { key: 'Cut',      emoji: '📉', label: 'Cut',      desc: 'Lose fat, preserve muscle' },
+  { key: 'Bulk',     emoji: '📈', label: 'Bulk',     desc: 'Build maximum muscle mass' },
+  { key: 'Recomp',   emoji: '🔄', label: 'Recomp',  desc: 'Lose fat & gain muscle simultaneously' },
+  { key: 'Maintain', emoji: '⚖️', label: 'Maintain', desc: 'Stay lean at current weight' },
 ];
 const ACTIVITIES = [
-  { key: 'Sedentary', label: 'Sedentary', desc: 'Desk job, minimal movement' },
-  { key: 'Light',     label: 'Light',     desc: 'Light exercise 1–3x/week' },
-  { key: 'Moderate',  label: 'Moderate',  desc: 'Exercise 3–5x/week' },
-  { key: 'Active',    label: 'Active',    desc: 'Hard training 6–7x/week' },
+  { key: 'Sedentary', label: 'Sedentary',      desc: 'Desk job, minimal movement',    mult: '×1.2' },
+  { key: 'Light',     label: 'Lightly Active', desc: 'Light exercise 1–3x per week',  mult: '×1.375' },
+  { key: 'Moderate',  label: 'Moderately Active', desc: 'Exercise 3–5x per week',     mult: '×1.55' },
+  { key: 'Active',    label: 'Very Active',    desc: 'Hard training 6–7x per week',   mult: '×1.725' },
 ];
 
+/* Animated counter used on ready screen */
+function CountUp({ target, unit }) {
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const dur   = 900;
+    const tick  = () => {
+      const pct = Math.min(1, (Date.now() - start) / dur);
+      setVal(Math.round(target * pct));
+      if (pct < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [target]);
+  return <span>{val}<span style={{ fontSize: 14, color: C.muted, marginLeft: 4 }}>{unit}</span></span>;
+}
+
 function Onboarding({ onComplete }) {
-  const [step, setStep] = useState(0);
+  const [step,     setStep]     = useState(0);
+  const [visible,  setVisible]  = useState(true);   // for fade animation
+  const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
   const [data, setData] = useState({
     name: '', age: '', gender: 'Male', weightLbs: '', heightIn: '',
     goal: '', activity: '', dietPrefs: [], cuisines: [], avoid: [],
   });
 
-  const set = (k, v) => setData(p => ({ ...p, [k]: v }));
+  const set       = (k, v) => setData(p => ({ ...p, [k]: v }));
   const toggleArr = (k, v) => setData(p => ({
     ...p, [k]: p[k].includes(v) ? p[k].filter(x => x !== v) : [...p[k], v],
   }));
 
+  const TOTAL = 9; // steps 0-8
+
   const canNext = [
-    !!data.name.trim(),
-    !!(data.age && data.gender),
-    !!(data.weightLbs && data.heightIn),
-    !!data.goal,
-    !!data.activity,
-    true, true, true, true,
-  ][step];
+    !!data.name.trim(),                        // 0 name
+    !!data.goal,                               // 1 goal
+    !!(data.weightLbs && data.heightIn && data.age && data.gender), // 2 stats
+    !!data.activity,                           // 3 activity
+    true,                                      // 4 dietary (skippable)
+    true,                                      // 5 cuisine (skippable)
+    true,                                      // 6 avoid (skippable)
+    false,                                     // 7 calculating (auto)
+    true,                                      // 8 ready
+  ][step] ?? true;
+
+  const goNext = () => {
+    setVisible(false);
+    setTimeout(() => { setStep(s => s + 1); setVisible(true); }, 280);
+  };
+  const goBack = () => {
+    setVisible(false);
+    setTimeout(() => { setStep(s => s - 1); setVisible(true); }, 280);
+  };
+
+  // Step 7: auto-advance after 3 s
+  useEffect(() => {
+    if (step !== 7) return;
+    const t = setTimeout(() => {
+      setCalcDone(false);
+      setVisible(false);
+      setTimeout(() => { setStep(8); setVisible(true); }, 280);
+    }, 3200);
+    return () => clearTimeout(t);
+  }, [step]);
 
   const finish = () => {
     const profile = {
@@ -163,199 +261,282 @@ function Onboarding({ onComplete }) {
     onComplete(profile);
   };
 
-  const inputStyle = {
-    width: '100%', padding: '14px 16px', borderRadius: 14,
-    background: C.cardElevated, border: `1.5px solid ${C.border}`,
-    fontSize: 16, color: C.white, marginTop: 8,
-  };
-  const labelStyle = {
-    fontSize: 13, color: C.muted, fontWeight: 500,
-    textTransform: 'uppercase', letterSpacing: '.06em',
-  };
+  const macros = calcMacros({
+    ...data, age: Number(data.age),
+    weightLbs: Number(data.weightLbs), heightIn: Number(data.heightIn),
+  });
 
-  const SelectRow = ({ keys, active, field, items }) => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {items.map(item => {
-        const isActive = active === item.key;
-        return (
-          <div key={item.key} className="bp" onClick={() => set(field, item.key)} style={{
-            padding: '16px 18px', borderRadius: 16,
-            background: isActive ? C.greenBg : C.cardElevated,
-            border: `1.5px solid ${isActive ? C.green : C.border}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          }}>
-            <div>
-              <div style={{ fontWeight: 600, color: isActive ? C.green : C.white }}>{item.label}</div>
-              <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{item.desc}</div>
-            </div>
-            {isActive && <div style={{ color: C.green, fontSize: 18 }}>✓</div>}
-          </div>
-        );
-      })}
+  /* ── Dot progress ── */
+  const Dots = () => (
+    <div style={{ display: 'flex', gap: 7, justifyContent: 'center', marginBottom: 40 }}>
+      {Array.from({ length: TOTAL }).map((_, i) => (
+        <div key={i} style={{
+          width: i === step ? 20 : 7, height: 7, borderRadius: 99,
+          background: i <= step ? C.green : 'rgba(255,255,255,0.15)',
+          transition: 'all .3s ease',
+        }} />
+      ))}
     </div>
   );
 
-  const TOTAL = 9;
-  const steps = [
-    /* 0 – Name */
-    <div key={0} className="su">
-      <div style={{ textAlign: 'center', marginBottom: 36 }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>🧬</div>
-        <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Welcome to MassIQ</h1>
-        <p style={{ color: C.muted, fontSize: 15 }}>The operating system for your physique</p>
-      </div>
-      <label style={labelStyle}>Your name</label>
-      <input style={inputStyle} placeholder="Enter your name" value={data.name}
-        onChange={e => set('name', e.target.value)} autoFocus />
-    </div>,
+  /* ── AI label ── */
+  const AILabel = () => (
+    <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 28, textAlign: 'center' }}>
+      MASSIQ AI
+    </div>
+  );
 
-    /* 1 – Age + Gender */
-    <div key={1} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Age & Gender</h2>
-      <p style={{ color: C.muted, marginBottom: 28 }}>Used to calculate your metabolic rate</p>
-      <label style={labelStyle}>Age</label>
-      <input type="number" style={inputStyle} placeholder="e.g. 28" value={data.age}
-        onChange={e => set('age', e.target.value)} />
-      <div style={{ marginTop: 24 }}>
-        <label style={labelStyle}>Gender</label>
-        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-          {['Male', 'Female'].map(g => (
-            <Chip key={g} label={g} active={data.gender === g} onClick={() => set('gender', g)} />
-          ))}
+  /* ── Shared question heading ── */
+  const Q = ({ children }) => (
+    <h1 style={{ fontSize: 28, fontWeight: 800, color: C.white, textAlign: 'center', lineHeight: 1.25, marginBottom: 40 }}>
+      {children}
+    </h1>
+  );
+
+  /* ── Shared AI "message" heading ── */
+  const AiMsg = ({ children }) => (
+    <h1 style={{ fontSize: 24, fontWeight: 700, color: C.white, textAlign: 'center', lineHeight: 1.35, marginBottom: 36 }}>
+      {children}
+    </h1>
+  );
+
+  const stepContent = () => {
+    switch (step) {
+
+      /* ── 0: Name ── */
+      case 0: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <Q>What should I call you?</Q>
+          <input
+            className="ob-input"
+            autoFocus
+            value={data.name}
+            onChange={e => set('name', e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && data.name.trim() && goNext()}
+          />
         </div>
-      </div>
-    </div>,
+      );
 
-    /* 2 – Weight + Height */
-    <div key={2} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Body Stats</h2>
-      <p style={{ color: C.muted, marginBottom: 28 }}>We'll update these after your first scan</p>
-      <label style={labelStyle}>Weight (lbs)</label>
-      <input type="number" style={inputStyle} placeholder="e.g. 185" value={data.weightLbs}
-        onChange={e => set('weightLbs', e.target.value)} />
-      <div style={{ marginTop: 20 }}>
-        <label style={labelStyle}>Height (inches)</label>
-        <input type="number" style={inputStyle} placeholder="e.g. 70" value={data.heightIn}
-          onChange={e => set('heightIn', e.target.value)} />
-      </div>
-    </div>,
-
-    /* 3 – Goal */
-    <div key={3} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Your Goal</h2>
-      <p style={{ color: C.muted, marginBottom: 24 }}>This shapes every recommendation we make</p>
-      <SelectRow field="goal" active={data.goal} items={GOALS} />
-    </div>,
-
-    /* 4 – Activity */
-    <div key={4} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Activity Level</h2>
-      <p style={{ color: C.muted, marginBottom: 24 }}>Be honest — this affects your calorie targets</p>
-      <SelectRow field="activity" active={data.activity} items={ACTIVITIES} />
-    </div>,
-
-    /* 5 – Diet prefs */
-    <div key={5} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Dietary Preferences</h2>
-      <p style={{ color: C.muted, marginBottom: 24 }}>Select all that apply</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-        {DIET_PREFS.map(d => (
-          <Chip key={d} label={d} active={data.dietPrefs.includes(d)} onClick={() => toggleArr('dietPrefs', d)} />
-        ))}
-      </div>
-    </div>,
-
-    /* 6 – Cuisines */
-    <div key={6} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Cuisine Preferences</h2>
-      <p style={{ color: C.muted, marginBottom: 24 }}>We'll use these to personalize your meal plan</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-        {CUISINES.map(c => (
-          <Chip key={c} label={c} active={data.cuisines.includes(c)} onClick={() => toggleArr('cuisines', c)} />
-        ))}
-      </div>
-    </div>,
-
-    /* 7 – Foods to avoid */
-    <div key={7} className="su">
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Foods to Avoid</h2>
-      <p style={{ color: C.muted, marginBottom: 24 }}>Allergies, intolerances, preferences</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-        {AVOID_FOODS.map(a => (
-          <Chip key={a} label={a} active={data.avoid.includes(a)} onClick={() => toggleArr('avoid', a)} />
-        ))}
-      </div>
-    </div>,
-
-    /* 8 – Summary */
-    <div key={8} className="su">
-      <div style={{ textAlign: 'center', marginBottom: 28 }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>🚀</div>
-        <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 6 }}>You're all set, {data.name}.</h2>
-        <p style={{ color: C.muted, fontSize: 15 }}>Here's what we'll build your plan around</p>
-      </div>
-      {(() => {
-        const macros = calcMacros({
-          ...data,
-          age: Number(data.age),
-          weightLbs: Number(data.weightLbs),
-          heightIn: Number(data.heightIn),
-        });
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[
-              ['Goal',           data.goal],
-              ['Activity',       data.activity],
-              ['Daily Calories', macros ? `${macros.calories} kcal` : '—'],
-              ['Daily Protein',  macros ? `${macros.protein}g` : '—'],
-            ].map(([k, v]) => (
-              <div key={k} style={{
-                display: 'flex', justifyContent: 'space-between',
-                padding: '12px 16px', background: C.cardElevated, borderRadius: 12,
-              }}>
-                <span style={{ color: C.muted, fontSize: 14 }}>{k}</span>
-                <span style={{ fontWeight: 600, fontSize: 14, color: C.green }}>{v}</span>
+      /* ── 1: Goal ── */
+      case 1: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>Nice to meet you, {data.name}.<br />What are you trying to achieve?</AiMsg>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            {GOALS.map(g => (
+              <div key={g.key} className={`ob-card${data.goal === g.key ? ' selected' : ''}`}
+                onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
+                style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 48, marginBottom: 10 }}>{g.emoji}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 6 }}>{g.label}</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
               </div>
             ))}
           </div>
-        );
-      })()}
-    </div>,
-  ];
+        </div>
+      );
+
+      /* ── 2: Body Stats ── */
+      case 2: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>To calculate your exact targets,<br />I need a few numbers.</AiMsg>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Weight (lbs)</div>
+              <input type="number" className="ob-num-input" placeholder="185" value={data.weightLbs} onChange={e => set('weightLbs', e.target.value)} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (in)</div>
+              <input type="number" className="ob-num-input" placeholder="70" value={data.heightIn} onChange={e => set('heightIn', e.target.value)} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Age</div>
+            <input type="number" className="ob-num-input" placeholder="28" value={data.age} onChange={e => set('age', e.target.value)} />
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            {['Male', 'Female'].map(g => (
+              <button key={g} className={`ob-chip${data.gender === g ? ' selected' : ''}`}
+                style={{ fontSize: 15, padding: '12px 28px' }}
+                onClick={() => set('gender', g)}>{g}</button>
+            ))}
+          </div>
+        </div>
+      );
+
+      /* ── 3: Activity ── */
+      case 3: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>How active are you<br />on a typical week?</AiMsg>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {ACTIVITIES.map(a => (
+              <div key={a.key} className={`ob-activity-row${data.activity === a.key ? ' selected' : ''}`}
+                onClick={() => { set('activity', a.key); setTimeout(goNext, 180); }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 16, color: data.activity === a.key ? C.green : C.white }}>{a.label}</div>
+                  <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>{a.desc}</div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.green, fontFamily: 'monospace', background: C.greenBg, padding: '4px 10px', borderRadius: 8 }}>{a.mult}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+      /* ── 4: Dietary ── */
+      case 4: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>Any dietary restrictions<br />I should know about?</AiMsg>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginBottom: 20 }}>
+            {DIET_PREFS.map(d => (
+              <button key={d} className={`ob-chip${data.dietPrefs.includes(d) ? ' selected' : ''}`}
+                onClick={() => toggleArr('dietPrefs', d)}>{d}</button>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <button className="ob-chip" onClick={goNext} style={{ color: C.muted, fontSize: 13 }}>Skip →</button>
+          </div>
+        </div>
+      );
+
+      /* ── 5: Cuisine ── */
+      case 5: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>What cuisines do you enjoy?</AiMsg>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginBottom: 20 }}>
+            {CUISINES.map(c => (
+              <button key={c} className={`ob-chip${data.cuisines.includes(c) ? ' selected' : ''}`}
+                onClick={() => toggleArr('cuisines', c)}>{c}</button>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <button className="ob-chip" onClick={goNext} style={{ color: C.muted, fontSize: 13 }}>Skip →</button>
+          </div>
+        </div>
+      );
+
+      /* ── 6: Foods to avoid ── */
+      case 6: return (
+        <div style={{ width: '100%' }}>
+          <AILabel />
+          <AiMsg>Anything you absolutely<br />don&apos;t eat?</AiMsg>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginBottom: 16 }}>
+            {AVOID_FOODS.map(a => (
+              <button key={a} className={`ob-chip${data.avoid.includes(a) ? ' selected' : ''}`}
+                onClick={() => toggleArr('avoid', a)}>{a}</button>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <button className="ob-chip" onClick={goNext} style={{ color: C.muted, fontSize: 13 }}>Skip →</button>
+          </div>
+        </div>
+      );
+
+      /* ── 7: Calculating (auto) ── */
+      case 7: return <CalcScreen />;
+
+      /* ── 8: Ready ── */
+      case 8: return (
+        <div style={{ width: '100%', textAlign: 'center' }}>
+          <AILabel />
+          <div style={{ fontSize: 52, marginBottom: 20 }}>🚀</div>
+          <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
+            Your profile is ready,<br />{data.name}.
+          </h1>
+          <p style={{ color: C.muted, marginBottom: 36, fontSize: 15 }}>Here&apos;s your baseline — we refine everything after your first scan.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 36, textAlign: 'left' }}>
+            {[
+              { label: 'Goal',          value: data.goal,     unit: '' },
+              { label: 'Daily Calories', value: macros?.calories, unit: 'kcal' },
+              { label: 'Daily Protein',  value: macros?.protein,  unit: 'g' },
+            ].map(row => (
+              <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.cardElevated, borderRadius: 14, padding: '14px 18px' }}>
+                <span style={{ color: C.muted, fontSize: 14 }}>{row.label}</span>
+                <span style={{ fontWeight: 700, fontSize: 18, color: C.green }}>
+                  {typeof row.value === 'number'
+                    ? <CountUp target={row.value} unit={row.unit} />
+                    : row.value}
+                </span>
+              </div>
+            ))}
+          </div>
+          <Btn onClick={() => { finish(); }} style={{ width: '100%', marginBottom: 14 }}>
+            Start Your First Scan →
+          </Btn>
+          <Btn variant="ghost" onClick={finish} style={{ width: '100%' }}>
+            Go to Home →
+          </Btn>
+        </div>
+      );
+
+      default: return null;
+    }
+  };
 
   return (
-    <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', flexDirection: 'column' }}>
-      {/* Progress bar */}
-      <div style={{ padding: '20px 20px 0' }}>
-        <div style={{ display: 'flex', gap: 5 }}>
-          {Array.from({ length: TOTAL }).map((_, i) => (
-            <div key={i} style={{
-              flex: 1, height: 4, borderRadius: 99,
-              background: i <= step ? C.green : C.border,
-              transition: 'background .3s ease',
-            }} />
-          ))}
+    <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* Pulsing dot */}
+      <div style={{ position: 'fixed', top: 24, right: 24, zIndex: 10 }}>
+        <div className="pulse-dot" />
+      </div>
+
+      <div className="ob-wrap" style={{ width: '100%', padding: '80px 24px 100px' }}>
+        {step < 7 && <Dots />}
+
+        <div className={visible ? 'ob-step' : 'ob-step-out'} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          {stepContent()}
         </div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Step {step + 1} of {TOTAL}</div>
-      </div>
 
-      {/* Content */}
-      <div style={{ flex: 1, padding: '28px 20px 20px', overflowY: 'auto' }}>
-        {steps[step]}
+        {/* Bottom actions (not shown on auto-calc or goal/activity tap-to-advance) */}
+        {step !== 7 && ![1, 3].includes(step) && (
+          <div style={{ display: 'flex', gap: 10, marginTop: 40, maxWidth: 440, marginLeft: 'auto', marginRight: 'auto' }}>
+            {step > 0 && (
+              <Btn variant="ghost" onClick={goBack} style={{ flex: 1 }}>← Back</Btn>
+            )}
+            {step < 8 && step !== 4 && step !== 5 && step !== 6 && (
+              <Btn onClick={goNext} disabled={!canNext} style={{ flex: 1 }}>
+                Continue →
+              </Btn>
+            )}
+            {step === 4 || step === 5 || step === 6 ? (
+              <Btn onClick={goNext} style={{ flex: 1 }}>Continue →</Btn>
+            ) : null}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
 
-      {/* Actions */}
-      <div style={{ padding: '16px 20px 32px', display: 'flex', gap: 10 }}>
-        {step > 0 && (
-          <Btn variant="ghost" onClick={() => setStep(s => s - 1)} style={{ flex: 1 }}>Back</Btn>
-        )}
-        {step < steps.length - 1 ? (
-          <Btn onClick={() => setStep(s => s + 1)} style={{ flex: 1 }} disabled={!canNext}>
-            Continue →
-          </Btn>
-        ) : (
-          <Btn onClick={finish} style={{ flex: 1 }}>Let's Go 🚀</Btn>
-        )}
+/* Calculating screen (step 7) */
+function CalcScreen() {
+  const lines = [
+    'Calculating your TDEE...',
+    'Analyzing your goals...',
+    'Building your baseline...',
+    'Setting up your profile...',
+  ];
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setShown(s => Math.min(s + 1, lines.length)), 700);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ textAlign: 'center', width: '100%' }}>
+      <div style={{ position: 'relative', width: 90, height: 90, margin: '0 auto 32px' }}>
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.greenBg}` }} />
+        <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+        <div style={{ position: 'absolute', inset: 10, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center' }}>
+        {lines.slice(0, shown).map((l, i) => (
+          <div key={i} className="fi" style={{ fontSize: 15, color: i === shown - 1 ? C.white : C.muted, fontWeight: i === shown - 1 ? 600 : 400 }}>{l}</div>
+        ))}
       </div>
     </div>
   );
@@ -1895,7 +2076,7 @@ const PlaceholderTab = ({ label, icon }) => (
   </div>
 );
 
-/* ─── Tab Bar ────────────────────────────────────────────────────────────── */
+/* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
   { key: 'home',      label: 'Home',      icon: '🏠' },
   { key: 'nutrition', label: 'Nutrition', icon: '🥗' },
@@ -1904,9 +2085,10 @@ const TABS = [
   { key: 'profile',   label: 'Profile',   icon: '👤' },
 ];
 
+/* ─── Mobile Tab Bar ─────────────────────────────────────────────────────── */
 function TabBar({ active, setTab }) {
   return (
-    <div style={{
+    <div className="mobile-tabbar" style={{
       position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 100,
       background: '#0D130D', borderTop: `1px solid ${C.border}`,
       display: 'flex', padding: '8px 0 max(8px, env(safe-area-inset-bottom))',
@@ -1928,6 +2110,55 @@ function TabBar({ active, setTab }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/* ─── Desktop Sidebar ────────────────────────────────────────────────────── */
+function Sidebar({ active, setTab, profile }) {
+  const goalEmoji = { Cut: '📉', Bulk: '📈', Recomp: '🔄', Maintain: '⚖️' }[profile?.goal] || '🎯';
+  return (
+    <div className="desktop-sidebar" style={{
+      width: 220, minHeight: '100dvh', background: '#0D130D',
+      borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column',
+      position: 'fixed', top: 0, left: 0, zIndex: 50,
+    }}>
+      {/* Logo */}
+      <div style={{ padding: '28px 20px 24px', borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase' }}>MASSIQ</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>AI Physique OS</div>
+      </div>
+
+      {/* Nav */}
+      <nav style={{ flex: 1, padding: '16px 12px' }}>
+        {TABS.map(t => {
+          const isActive = active === t.key;
+          return (
+            <button key={t.key} className="bp" onClick={() => setTab(t.key)} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+              padding: '10px 12px', borderRadius: 12, border: 'none', cursor: 'pointer', marginBottom: 4,
+              background: isActive ? C.greenBg : 'transparent',
+              color: isActive ? C.green : C.muted,
+              fontFamily: 'inherit', fontSize: 14, fontWeight: isActive ? 700 : 500,
+              transition: 'all .15s ease',
+            }}>
+              <span style={{ fontSize: 18 }}>{t.icon}</span>
+              {t.label}
+              {isActive && <div style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: '50%', background: C.green }} />}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* User footer */}
+      {profile && (
+        <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name}</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
+            {goalEmoji} {profile.goal}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1995,11 +2226,22 @@ export default function MassIQ() {
   return (
     <>
       <style>{CSS}</style>
-      <div style={{ background: C.bg, minHeight: '100dvh', paddingBottom: 80 }}>
-        <div style={{ maxWidth: 480, margin: '0 auto' }}>
-          {renderTab()}
+      {/* Desktop sidebar */}
+      <Sidebar active={tab} setTab={setTab} profile={profile} />
+
+      {/* Main content — offset by sidebar on desktop */}
+      <div className="app-layout" style={{ background: C.bg, minHeight: '100dvh' }}>
+        {/* Spacer column for sidebar (grid col 1 on desktop, 0px on mobile) */}
+        <div className="desktop-sidebar" style={{ width: 220, flexShrink: 0 }} />
+
+        {/* Content */}
+        <div style={{ flex: 1, paddingBottom: 80, minWidth: 0 }}>
+          <div className="app-content" style={{ maxWidth: 480, margin: '0 auto' }}>
+            {renderTab()}
+          </div>
         </div>
       </div>
+
       <TabBar active={tab} setTab={setTab} />
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
     </>
