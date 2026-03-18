@@ -52,11 +52,14 @@ const CSS = `
   }
   .ob-input:focus{border-bottom-color:${C.green}}
   .ob-num-input{
-    background:transparent;border:2px solid rgba(255,255,255,0.12);border-radius:16px;
-    font-size:26px;font-weight:700;color:#fff;width:100%;text-align:center;
-    padding:16px 12px;transition:border-color .2s ease;font-family:'Inter',monospace;
+    background:#141A14;border:1px solid rgba(255,255,255,0.15);border-radius:16px;
+    font-size:32px;font-weight:600;color:#fff;width:100%;text-align:center;
+    padding:20px 24px;transition:border-color .2s ease;font-family:'Inter',monospace;
     caret-color:${C.green};
+    -webkit-appearance:none;-moz-appearance:textfield;appearance:none;
   }
+  .ob-num-input::-webkit-outer-spin-button,
+  .ob-num-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
   .ob-num-input:focus{border-color:${C.green}}
   .ob-card{
     border:2px solid rgba(255,255,255,0.08);border-radius:20px;padding:22px 18px;
@@ -207,7 +210,7 @@ function Onboarding({ onComplete }) {
   const [visible,  setVisible]  = useState(true);   // for fade animation
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
   const [data, setData] = useState({
-    name: '', age: '', gender: 'Male', weightLbs: '', heightIn: '',
+    name: '', age: '', gender: 'Male', weightLbs: '', heightCm: '',
     goal: '', activity: '', dietPrefs: [], cuisines: [], avoid: [],
   });
 
@@ -221,7 +224,7 @@ function Onboarding({ onComplete }) {
   const canNext = [
     !!data.name.trim(),                        // 0 name
     !!data.goal,                               // 1 goal
-    !!(data.weightLbs && data.heightIn && data.age && data.gender), // 2 stats
+    !!(data.weightLbs && data.heightCm && data.age && data.gender), // 2 stats
     !!data.activity,                           // 3 activity
     true,                                      // 4 dietary (skippable)
     true,                                      // 5 cuisine (skippable)
@@ -255,7 +258,8 @@ function Onboarding({ onComplete }) {
       ...data,
       age: Number(data.age),
       weightLbs: Number(data.weightLbs),
-      heightIn: Number(data.heightIn),
+      heightCm: Number(data.heightCm),
+      heightIn: Number(data.heightCm) / 2.54,
     };
     LS.set(LS_KEYS.profile, profile);
     onComplete(profile);
@@ -263,7 +267,7 @@ function Onboarding({ onComplete }) {
 
   const macros = calcMacros({
     ...data, age: Number(data.age),
-    weightLbs: Number(data.weightLbs), heightIn: Number(data.heightIn),
+    weightLbs: Number(data.weightLbs), heightIn: Number(data.heightCm) / 2.54,
   });
 
   /* ── Dot progress ── */
@@ -348,8 +352,8 @@ function Onboarding({ onComplete }) {
               <input type="number" className="ob-num-input" placeholder="185" value={data.weightLbs} onChange={e => set('weightLbs', e.target.value)} />
             </div>
             <div>
-              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (in)</div>
-              <input type="number" className="ob-num-input" placeholder="70" value={data.heightIn} onChange={e => set('heightIn', e.target.value)} />
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (cm)</div>
+              <input type="number" className="ob-num-input" placeholder="178" value={data.heightCm} onChange={e => set('heightCm', e.target.value)} />
             </div>
           </div>
           <div style={{ marginBottom: 16 }}>
@@ -1656,7 +1660,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
             ['Name',     profile?.name],
             ['Age',      profile?.age ? `${profile.age} years` : '—'],
             ['Weight',   profile?.weightLbs ? `${profile.weightLbs} lbs` : '—'],
-            ['Height',   profile?.heightIn  ? `${profile.heightIn} in`  : '—'],
+            ['Height',   profile?.heightCm  ? `${profile.heightCm} cm`  : '—'],
             ['Activity', profile?.activity],
           ].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
