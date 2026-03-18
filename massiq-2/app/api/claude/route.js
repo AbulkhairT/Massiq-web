@@ -10,12 +10,29 @@ function bad(msg, status = 400) {
   return NextResponse.json({ error: msg }, { status });
 }
 
-// Derive system prompt based on max_tokens (request type)
+// ── Model selection ─────────────────────────────────────────────────────────
+// Text-only requests (meal suggestions, recipe details, meal swaps) use Haiku
+// which is ~12x cheaper per token than Sonnet.
+// Vision requests (food photo analysis) must use Sonnet — Haiku lacks vision.
+// Callers can pass model: 'haiku' | 'sonnet' to override.
+const MODEL_HAIKU  = "claude-haiku-4-5-20251001";
+const MODEL_SONNET = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+
+function resolveModel(requestedModel, messages) {
+  if (requestedModel === 'haiku')  return MODEL_HAIKU;
+  if (requestedModel === 'sonnet') return MODEL_SONNET;
+  if (requestedModel) return requestedModel;  // explicit model ID passthrough
+  // Auto-detect: if any message contains an image block, require Sonnet
+  const hasImage = messages.some(m =>
+    Array.isArray(m.content) && m.content.some(b => b?.type === 'image')
+  );
+  // Default to Haiku for text-only (12x cheaper, handles JSON output fine)
+  return hasImage ? MODEL_SONNET : MODEL_HAIKU;
+}
+
 function getSystemPrompt(max_tokens, providedSystem) {
   if (providedSystem) return providedSystem;
-  if (max_tokens >= 4000) return "You are an elite sports nutritionist. Return only valid JSON arrays.";
-  if (max_tokens >= 2000) return "You are an expert physique analyst. Return only valid JSON.";
-  return "You are a nutrition expert. Return only valid JSON.";
+  return "You are a fitness and nutrition assistant. Return only valid JSON unless told otherwise. Be concise.";
 }
 
 export async function POST(req) {
@@ -29,14 +46,14 @@ export async function POST(req) {
   if (!Array.isArray(messages) || messages.length === 0)
     return bad("messages must be a non-empty array");
 
-  // Allow up to 4000 tokens; default 1000
-  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4000, +max_tokens)) : 1000;
+  // Allow up to 4000 tokens; default 600 (Haiku handles short outputs well)
+  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4000, +max_tokens)) : 600;
 
-  // Rough payload size guard (base64 images can be large — allow up to 10 MB)
+  // Rough payload size guard
   const approxSize = JSON.stringify({ messages, system }).length;
   if (approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  const chosenModel = model || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  const chosenModel  = resolveModel(model, messages);
   const systemPrompt = getSystemPrompt(maxTokens, system);
 
   const upstreamBody = {
