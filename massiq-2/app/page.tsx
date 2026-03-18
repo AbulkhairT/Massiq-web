@@ -11,12 +11,10 @@ const C = {
   borderHi:    'rgba(0,200,83,0.22)',
   green:       '#00C853',
   greenBg:     'rgba(0,200,83,0.10)',
-  greenGlow:   'rgba(0,200,83,0.22)',
   white:       '#FFFFFF',
   muted:       'rgba(255,255,255,0.48)',
   dim:         'rgba(255,255,255,0.22)',
   orange:      '#FF6B35',
-  orangeBg:    'rgba(255,107,53,0.12)',
 };
 
 /* ─── CSS ─────────────────────────────────────────────────────────────────── */
@@ -44,9 +42,8 @@ const CSS = `
   .d5 { transition-delay: .44s; }
 
   /* ── Animations ── */
-  @keyframes float    { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-  @keyframes blink    { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.2)} }
-  @keyframes shimmer  { 0%,100%{opacity:.6} 50%{opacity:1} }
+  @keyframes float  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+  @keyframes blink  { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.2)} }
 
   .float { animation: float 5.5s ease-in-out infinite; }
 
@@ -63,10 +60,7 @@ const CSS = `
     display: flex; align-items: center; justify-content: space-between;
     padding: 16px 24px;
   }
-  .nav-logo {
-    font-size: 13px; font-weight: 800; letter-spacing: 4px;
-    text-transform: uppercase; color: ${C.white};
-  }
+  .nav-logo { font-size: 13px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase; color: ${C.white}; }
   .nav-actions { display: flex; align-items: center; gap: 12px; }
   .nav-link { font-size: 13px; color: ${C.muted}; font-weight: 500; transition: color .15s; }
   .nav-link:hover { color: ${C.white}; }
@@ -79,39 +73,37 @@ const CSS = `
   .nav-btn:hover { opacity: .88; transform: scale(1.02); }
 
   /* ── Sections ── */
-  .sec { padding: 80px 24px; }
+  .sec { padding: 80px 20px; }
   .sec-inner { max-width: 1120px; margin: 0 auto; }
 
-  /* ── Section label ── */
+  /* ── Section label — consistent everywhere ── */
   .lbl {
-    font-size: 10px; font-weight: 700; letter-spacing: 3px;
-    text-transform: uppercase; color: ${C.green}; margin-bottom: 14px;
+    font-size: 11px; font-weight: 600; letter-spacing: 3px;
+    text-transform: uppercase; color: ${C.green}; margin-bottom: 16px;
     display: flex; align-items: center; gap: 8px;
   }
-  .lbl-dot { width: 5px; height: 5px; border-radius: 50%; background: ${C.green}; animation: blink 2s ease-in-out infinite; }
+  .lbl-dot { width: 5px; height: 5px; border-radius: 50%; background: ${C.green}; flex-shrink: 0; animation: blink 2s ease-in-out infinite; }
 
   /* ── Section headings ── */
   .sec-h2 { font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -1px; color: ${C.white}; }
   .cta-h2 { font-size: 38px; font-weight: 800; line-height: 1.08; letter-spacing: -1.5px; color: ${C.white}; }
 
   /* ── Hero ── */
-  .hero-sec { padding: 88px 24px 80px; position: relative; overflow: hidden; }
+  .hero-sec { padding: 88px 20px 80px; position: relative; overflow: hidden; }
   .hero-grid { display: grid; grid-template-columns: 1fr; gap: 56px; align-items: center; }
   .hero-h1 {
     font-size: 46px; font-weight: 800; line-height: 1.07;
     letter-spacing: -2px; color: ${C.white}; margin-bottom: 22px;
+    position: relative; z-index: 1;
   }
-  .hero-sub {
-    font-size: 17px; color: ${C.muted}; line-height: 1.68;
-    max-width: 500px; margin-bottom: 0;
-  }
+  .hero-sub { font-size: 17px; color: ${C.muted}; line-height: 1.68; max-width: 500px; }
   .hero-ctas { display: flex; flex-direction: column; gap: 12px; margin-top: 36px; }
   .btn-primary {
     display: inline-flex; align-items: center; justify-content: center;
     background: ${C.green}; color: #000; font-weight: 700;
     font-size: 15px; padding: 16px 32px; border-radius: 99px;
     box-shadow: 0 0 32px rgba(0,200,83,0.28);
-    transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+    transition: transform .15s ease, box-shadow .15s ease;
     width: fit-content;
   }
   .btn-primary:hover { transform: scale(1.03); box-shadow: 0 0 48px rgba(0,200,83,0.42); }
@@ -134,30 +126,35 @@ const CSS = `
     border-top: 1px solid ${C.border};
     border-bottom: 1px solid ${C.border};
     background: rgba(0,200,83,0.03);
-    padding: 22px 24px;
+    padding: 22px 20px;
   }
   .proof-inner {
     max-width: 1120px; margin: 0 auto;
     display: flex; flex-direction: column; align-items: center;
     gap: 16px; text-align: center;
   }
-  .proof-divider { display: none; width: 1px; height: 28px; background: ${C.border}; }
+  .proof-divider { display: none; width: 1px; height: 28px; background: ${C.border}; flex-shrink: 0; }
 
   /* ── Problem contrast ── */
-  .contrast-pair { display: grid; grid-template-columns: 1fr; gap: 16px; }
-
-  /* ── Steps ── */
-  .steps-col { display: flex; flex-direction: column; }
-  .step-row { display: flex; gap: 20px; align-items: flex-start; }
-  .step-spine { display: flex; flex-direction: column; align-items: center; width: 44px; flex-shrink: 0; }
-  .step-num {
-    width: 44px; height: 44px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 800; flex-shrink: 0;
+  .contrast-pair {
+    display: grid; grid-template-columns: 1fr; gap: 20px;
+    align-items: stretch;
   }
-  .step-vl { width: 1px; flex: 1; min-height: 36px; margin: 5px 0; background: ${C.borderHi}; }
-  .step-body { padding: 6px 0 40px; flex: 1; }
-  .step-connector { display: none; }
+
+  /* ── Steps — mobile: vertical list ── */
+  .steps-mobile { display: flex; flex-direction: column; }
+  .step-m-item { display: flex; gap: 20px; align-items: flex-start; }
+  .step-m-left { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+  .step-m-circle {
+    width: 48px; height: 48px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; flex-shrink: 0;
+  }
+  .step-m-vline { width: 1px; flex: 1; min-height: 32px; margin: 6px 0; background: rgba(0,200,83,0.3); }
+  .step-m-body { flex: 1; padding: 7px 0 36px; }
+
+  /* Steps — desktop: grid with single connecting line ── */
+  .steps-desktop { display: none; }
 
   /* ── Diagnosis cards ── */
   .diag-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
@@ -190,7 +187,7 @@ const CSS = `
     max-width: 1120px; margin: 0 auto;
     display: flex; flex-direction: column;
     align-items: center; gap: 10px; text-align: center;
-    padding: 0 24px;
+    padding: 0 20px;
   }
 
   /* ── Desktop overrides (768px+) ── */
@@ -205,15 +202,8 @@ const CSS = `
     .proof-inner { flex-direction: row; justify-content: center; gap: 52px; }
     .proof-divider { display: block; }
     .contrast-pair { grid-template-columns: 1fr 1fr; gap: 24px; }
-    .steps-col {
-      flex-direction: row; justify-content: center; align-items: flex-start;
-    }
-    .step-row { flex-direction: column; align-items: center; text-align: center; flex: 1; padding: 0 8px; }
-    .step-spine { flex-direction: row; width: 100%; justify-content: center; }
-    .step-num { flex-shrink: 0; }
-    .step-vl { width: auto; flex: 1; height: 1px; min-height: unset; margin: 0 0 0 0; background: ${C.borderHi}; }
-    .step-body { padding: 20px 0 0; }
-    .step-connector { display: flex; align-items: center; padding-top: 20px; flex-shrink: 0; color: ${C.borderHi}; font-size: 20px; }
+    .steps-mobile { display: none; }
+    .steps-desktop { display: block; }
     .diag-grid { grid-template-columns: repeat(3, 1fr); gap: 20px; }
     .outcome-grid { grid-template-columns: repeat(3, 1fr); gap: 20px; }
     .footer-row { flex-direction: row; justify-content: space-between; text-align: left; padding: 0 60px; }
@@ -222,7 +212,7 @@ const CSS = `
   }
 `;
 
-/* ─── Fade-up hook ─────────────────────────────────────────────────────────── */
+/* ─── Fade-up hook ────────────────────────────────────────────────────────── */
 function useFadeUp() {
   useEffect(() => {
     const els = document.querySelectorAll(".fu");
@@ -247,25 +237,24 @@ function Lbl({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ─── Intelligence Panel (hero visual) ───────────────────────────────────── */
+/* ─── Intelligence Panel ──────────────────────────────────────────────────── */
 function IntelPanel() {
   const actions = [
-    { arrow: '↑', label: 'Protein', from: '185g', to: '215g',     color: C.green  },
+    { arrow: '↑', label: 'Protein', from: '185g',     to: '215g',     color: C.green  },
     { arrow: '↓', label: 'Deficit', from: '620 kcal', to: '380 kcal', color: C.orange },
-    { arrow: '↑', label: 'Sleep',   from: '6.5 hrs',  to: '8 hrs', color: C.green  },
+    { arrow: '↑', label: 'Sleep',   from: '6.5 hrs',  to: '8 hrs',    color: C.green  },
   ];
   return (
     <div className="float" style={{
       background: '#0C130C',
       border: `1px solid ${C.borderHi}`,
-      borderRadius: 22,
+      borderRadius: 20,
       overflow: 'hidden',
       width: '100%',
       maxWidth: 348,
       boxShadow: `0 0 80px rgba(0,200,83,0.07), 0 32px 64px rgba(0,0,0,0.5)`,
     }}>
-
-      {/* Header bar */}
+      {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '13px 16px',
@@ -273,10 +262,7 @@ function IntelPanel() {
         borderBottom: `1px solid rgba(0,200,83,0.14)`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{
-            width: 7, height: 7, borderRadius: '50%', background: C.green,
-            animation: 'blink 2.5s ease-in-out infinite',
-          }} />
+          <div style={{ width: 7, height: 7, borderRadius: '50%', background: C.green, animation: 'blink 2.5s ease-in-out infinite' }} />
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.5px', color: C.green, textTransform: 'uppercase' }}>
             Body Scan · Mar 15
           </span>
@@ -284,26 +270,21 @@ function IntelPanel() {
         <span style={{ fontSize: 10, fontWeight: 600, color: C.dim }}>Week 4 / 12</span>
       </div>
 
-      {/* Phase + progress */}
+      {/* BF% → target */}
       <div style={{ padding: '16px 16px 14px', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 9, color: C.dim, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 3 }}>Current Body Fat</div>
             <div style={{ fontSize: 32, fontWeight: 800, color: C.white, lineHeight: 1, letterSpacing: '-1px' }}>17.2%</div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'rgba(255,255,255,0.18)', fontSize: 18 }}>→</div>
+          <div style={{ color: 'rgba(255,255,255,0.18)', fontSize: 18 }}>→</div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 9, color: C.dim, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 3 }}>Target</div>
             <div style={{ fontSize: 32, fontWeight: 800, color: C.green, lineHeight: 1, letterSpacing: '-1px' }}>12%</div>
           </div>
         </div>
-        {/* Progress bar */}
         <div style={{ height: 3, background: 'rgba(255,255,255,0.06)', borderRadius: 99, overflow: 'hidden', marginBottom: 6 }}>
-          <div style={{
-            height: '100%', width: '40%',
-            background: `linear-gradient(90deg, ${C.green}, #4DF09A)`,
-            borderRadius: 99,
-          }} />
+          <div style={{ height: '100%', width: '40%', background: `linear-gradient(90deg, ${C.green}, #4DF09A)`, borderRadius: 99 }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ fontSize: 10, color: C.dim }}>Week 4</span>
@@ -312,51 +293,41 @@ function IntelPanel() {
       </div>
 
       {/* Stats row */}
-      <div style={{
-        display: 'flex', borderBottom: `1px solid rgba(255,255,255,0.05)`,
-      }}>
+      <div style={{ display: 'flex', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         {[
-          { label: 'Lean Mass',    value: '152.4 lb' },
-          { label: 'Symmetry',     value: '81/100'   },
-          { label: 'Phase',        value: 'CUT',      accent: true },
+          { label: 'Lean Mass', value: '152.4 lb', accent: false },
+          { label: 'Symmetry',  value: '81/100',   accent: false },
+          { label: 'Phase',     value: 'CUT',       accent: true  },
         ].map((s, i) => (
           <div key={s.label} style={{
-            flex: 1, padding: '10px 12px',
+            flex: 1, padding: '10px 12px', textAlign: 'center',
             borderRight: i < 2 ? `1px solid rgba(255,255,255,0.05)` : 'none',
-            textAlign: 'center',
           }}>
             <div style={{ fontSize: 9, color: C.dim, textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: 4 }}>{s.label}</div>
-            <div style={{
-              fontSize: 13, fontWeight: 700,
-              color: s.accent ? C.orange : C.white,
-            }}>{s.value}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: s.accent ? C.orange : C.white }}>{s.value}</div>
           </div>
         ))}
       </div>
 
       {/* Diagnosis */}
-      <div style={{
-        padding: '13px 16px',
-        background: 'rgba(255,80,50,0.04)',
-        borderBottom: `1px solid rgba(255,255,255,0.05)`,
-      }}>
+      <div style={{ padding: '13px 16px', background: 'rgba(255,80,50,0.04)', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2px', color: C.dim, textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>⚡</span>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
-            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk of loss.</div>
+            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
           </div>
         </div>
       </div>
 
-      {/* Next actions */}
+      {/* Actions */}
       <div style={{ padding: '13px 16px', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2px', color: C.dim, textTransform: 'uppercase', marginBottom: 10 }}>Adjust Now</div>
         {actions.map(a => (
           <div key={a.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: a.color, width: 12, textAlign: 'center', lineHeight: 1 }}>{a.arrow}</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: a.color, width: 12, textAlign: 'center' }}>{a.arrow}</span>
               <span style={{ fontSize: 11, color: C.muted }}>{a.label}</span>
             </div>
             <div style={{ fontSize: 11, color: C.white, fontWeight: 600 }}>
@@ -375,6 +346,30 @@ function IntelPanel() {
     </div>
   );
 }
+
+/* ─── Step data ───────────────────────────────────────────────────────────── */
+const STEPS = [
+  {
+    n: '01', label: 'Scan',
+    title: 'Upload a physique photo',
+    body: 'AI estimates body fat %, lean mass, muscle group development, symmetry score, and key imbalances — from a single photo.',
+  },
+  {
+    n: '02', label: 'Diagnose',
+    title: 'Get a precise reading',
+    body: 'MassIQ identifies your limiting factor — whether that\'s too much fat, not enough lean mass, or a phase mismatch — and names it clearly.',
+  },
+  {
+    n: '03', label: 'Execute',
+    title: 'Run your exact plan',
+    body: 'A 12-week program with specific calorie targets, protein targets, training focus, sleep, steps, and weekly missions tailored to your scan.',
+  },
+  {
+    n: '04', label: 'Adapt',
+    title: 'Scan again. Update everything.',
+    body: 'Every scan refreshes your diagnosis and regenerates your plan. As your body changes, your system stays current.',
+  },
+];
 
 /* ─── Landing page ────────────────────────────────────────────────────────── */
 export default function LandingPage() {
@@ -401,17 +396,11 @@ export default function LandingPage() {
           HERO
       ═══════════════════════════════════════════════════════════ */}
       <section className="hero-sec" style={{ background: C.bg }}>
-        {/* Ambient glow */}
+        {/* Corner glow */}
         <div style={{
           position: 'absolute', top: -160, right: -120, width: 600, height: 600,
           borderRadius: '50%',
           background: 'radial-gradient(circle, rgba(0,200,83,0.08) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
-        <div style={{
-          position: 'absolute', bottom: -80, left: -80, width: 400, height: 400,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,200,83,0.04) 0%, transparent 70%)',
           pointerEvents: 'none',
         }} />
 
@@ -431,11 +420,22 @@ export default function LandingPage() {
               </div>
             </div>
 
-            <h1 className="fu d1 hero-h1">
-              Know exactly<br />
-              what&apos;s holding<br />
-              your physique back.
-            </h1>
+            {/* H1 with glow behind it */}
+            <div className="fu d1" style={{ position: 'relative' }}>
+              {/* Glow behind headline */}
+              <div style={{
+                position: 'absolute', top: '50%', left: -40,
+                transform: 'translateY(-50%)',
+                width: 600, height: 300, borderRadius: '50%',
+                background: 'radial-gradient(ellipse, rgba(0,200,83,0.08) 0%, transparent 70%)',
+                pointerEvents: 'none', zIndex: 0,
+              }} />
+              <h1 className="hero-h1">
+                Know exactly<br />
+                what&apos;s holding<br />
+                your physique back.
+              </h1>
+            </div>
 
             <p className="fu d2 hero-sub">
               MassIQ scans your body, diagnoses what&apos;s actually
@@ -466,9 +466,9 @@ export default function LandingPage() {
       <div className="proof-strip">
         <div className="proof-inner">
           {[
-            { stat: 'Private Beta',       sub: 'Early access only'              },
-            { stat: 'AI-Powered',         sub: 'Claude Sonnet model'           },
-            { stat: 'Body Scan + Plan',   sub: 'Full system, not just tracking' },
+            { stat: 'Private Beta',     sub: 'Early access only'               },
+            { stat: 'AI-Powered',       sub: 'Claude Sonnet model'             },
+            { stat: 'Body Scan + Plan', sub: 'Full system, not just tracking'  },
           ].map((p, i) => (
             <>
               {i > 0 && <div key={`div-${i}`} className="proof-divider" />}
@@ -499,19 +499,29 @@ export default function LandingPage() {
           </div>
 
           <div className="contrast-pair fu d1">
-            {/* Before — "what you know now" */}
+
+            {/* ── Left: what your current app tells you ── */}
             <div style={{
-              background: 'rgba(255,255,255,0.02)',
-              border: `1px solid ${C.border}`,
-              borderRadius: 20, padding: 28,
+              background: '#1A1A1A',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 20, padding: 32,
             }}>
               <div style={{
-                fontSize: 10, fontWeight: 700, letterSpacing: '2px',
-                textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)',
-                marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8,
+                display: 'flex', alignItems: 'center', gap: 10,
+                marginBottom: 20,
               }}>
-                <span style={{ fontSize: 12 }}>📱</span> What your current app tells you
+                <div style={{
+                  width: 30, height: 30, borderRadius: 8,
+                  background: 'rgba(255,255,255,0.06)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15, flexShrink: 0,
+                }}>📊</div>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, letterSpacing: '2px',
+                  textTransform: 'uppercase', color: '#556655',
+                }}>What your current app tells you</span>
               </div>
+
               {[
                 '"You ate 2,140 calories today."',
                 '"You walked 7,432 steps."',
@@ -519,48 +529,67 @@ export default function LandingPage() {
                 '"Your streak is 14 days."',
               ].map(line => (
                 <div key={line} style={{
-                  fontSize: 14, color: 'rgba(255,255,255,0.28)',
-                  padding: '11px 14px', background: 'rgba(255,255,255,0.02)',
-                  borderRadius: 10, marginBottom: 8, lineHeight: 1.5,
-                  border: '1px solid rgba(255,255,255,0.04)',
-                  fontStyle: 'italic',
+                  fontSize: 15, color: '#6B7280',
+                  padding: '14px 18px',
+                  background: '#222222',
+                  borderRadius: 10, marginBottom: 8,
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  fontStyle: 'italic', lineHeight: 1.5,
                 }}>{line}</div>
               ))}
-              <div style={{ marginTop: 18, fontSize: 13, color: 'rgba(255,255,255,0.2)', lineHeight: 1.55 }}>
+
+              <div style={{
+                marginTop: 16, fontSize: 13, color: '#4B5563',
+                fontStyle: 'italic', lineHeight: 1.6,
+              }}>
                 None of this tells you whether you&apos;re gaining muscle or losing fat.
-                None of it tells you if your plan is working.
+                None of it tells you if your plan is actually working.
               </div>
             </div>
 
-            {/* After — MassIQ */}
+            {/* ── Right: what MassIQ tells you ── */}
             <div style={{
-              background: 'rgba(0,200,83,0.05)',
-              border: `1px solid ${C.borderHi}`,
-              borderRadius: 20, padding: 28,
+              background: '#0D1F0D',
+              border: '1px solid rgba(0,200,83,0.25)',
+              borderRadius: 20, padding: 32,
             }}>
               <div style={{
-                fontSize: 10, fontWeight: 700, letterSpacing: '2px',
-                textTransform: 'uppercase', color: C.green,
-                marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8,
+                display: 'flex', alignItems: 'center', gap: 10,
+                marginBottom: 20,
               }}>
-                <span style={{ fontSize: 12 }}>🧠</span> What MassIQ tells you
+                <div style={{
+                  width: 30, height: 30, borderRadius: 8,
+                  background: 'rgba(0,200,83,0.15)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15, flexShrink: 0,
+                }}>🧠</div>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, letterSpacing: '2px',
+                  textTransform: 'uppercase', color: C.green,
+                }}>What MassIQ tells you</span>
               </div>
+
               {[
-                { heading: 'Where you are', body: 'Body fat: 17.2%. Lean mass: 152.4 lb. Symmetry score: 81/100.' },
+                { heading: 'Where you are',         body: 'Body fat: 17.2%. Lean mass: 152.4 lb. Symmetry score: 81/100.' },
                 { heading: 'What\'s holding you back', body: 'Your deficit is too aggressive. At this rate, you\'re losing lean mass.' },
-                { heading: 'Your exact next move', body: 'Increase protein to 215g. Drop deficit to 380 kcal. Sleep 8 hrs.' },
-                { heading: 'Your trajectory', body: 'On track for 12% body fat in ~10 weeks if you follow the adjusted plan.' },
+                { heading: 'Your exact next move',  body: 'Increase protein to 215g. Drop deficit to 380 kcal. Sleep 8 hrs.' },
+                { heading: 'Your trajectory',       body: 'On track for 12% body fat in ~10 weeks if you follow the adjusted plan.' },
               ].map(item => (
                 <div key={item.heading} style={{
-                  padding: '12px 14px', background: 'rgba(0,200,83,0.07)',
-                  borderRadius: 10, marginBottom: 8, lineHeight: 1.5,
-                  border: `1px solid rgba(0,200,83,0.14)`,
+                  padding: '14px 18px',
+                  background: 'rgba(0,200,83,0.08)',
+                  borderRadius: 10, marginBottom: 8,
+                  border: '1px solid rgba(0,200,83,0.15)',
                 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.green, marginBottom: 4 }}>{item.heading}</div>
-                  <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.72)' }}>{item.body}</div>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, color: C.green,
+                    letterSpacing: '1px', marginBottom: 4,
+                  }}>{item.heading}</div>
+                  <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{item.body}</div>
                 </div>
               ))}
             </div>
+
           </div>
         </div>
       </section>
@@ -575,58 +604,74 @@ export default function LandingPage() {
             <h2 className="sec-h2">Scan. Diagnose. Execute. Adapt.</h2>
           </div>
 
-          <div className="steps-col fu d1">
-            {[
-              {
-                n: '01', label: 'Scan',
-                title: 'Upload a physique photo',
-                body: 'AI estimates body fat %, lean mass, muscle group development, symmetry score, and key imbalances — from a single photo.',
-                green: true,
-              },
-              {
-                n: '02', label: 'Diagnose',
-                title: 'Get a precise reading',
-                body: 'MassIQ identifies your limiting factor — whether that\'s too much fat, not enough lean mass, or a phase mismatch — and names it clearly.',
-                green: false,
-              },
-              {
-                n: '03', label: 'Execute',
-                title: 'Run your exact plan',
-                body: 'A 12-week program with specific calorie targets, protein targets, training focus, sleep, steps, and weekly missions tailored to your scan.',
-                green: false,
-              },
-              {
-                n: '04', label: 'Adapt',
-                title: 'Scan again. Update everything.',
-                body: 'Every scan refreshes your diagnosis and regenerates your plan. As your body changes, your system stays current.',
-                green: false,
-              },
-            ].map((s, i, arr) => (
-              <div key={s.n} style={{ display: 'flex', flex: 1, alignItems: 'flex-start' }}>
-                <div className="step-row">
-                  <div className="step-spine">
-                    <div className="step-num" style={{
-                      background: s.green ? C.green : C.greenBg,
-                      color: s.green ? '#000' : C.green,
-                      border: s.green ? 'none' : `1px solid ${C.borderHi}`,
-                    }}>{s.n}</div>
-                    {i < arr.length - 1 && <div className="step-vl" />}
-                  </div>
-                  <div className="step-body">
-                    <div style={{
-                      fontSize: 9, fontWeight: 700, letterSpacing: '2.5px',
-                      textTransform: 'uppercase', color: C.green, marginBottom: 6,
-                    }}>{s.label}</div>
-                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 8, lineHeight: 1.3 }}>{s.title}</div>
-                    <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>{s.body}</p>
-                  </div>
+          {/* ── Mobile: vertical list ── */}
+          <div className="steps-mobile fu d1">
+            {STEPS.map((s, i) => (
+              <div key={s.n} className="step-m-item">
+                <div className="step-m-left">
+                  <div className="step-m-circle" style={{
+                    background: i === 0 ? C.green : 'rgba(0,200,83,0.15)',
+                    color: i === 0 ? '#000' : C.green,
+                    border: i === 0 ? 'none' : '2px solid rgba(0,200,83,0.4)',
+                  }}>{s.n}</div>
+                  {i < STEPS.length - 1 && <div className="step-m-vline" />}
                 </div>
-                {i < arr.length - 1 && (
-                  <div className="step-connector">→</div>
-                )}
+                <div className="step-m-body">
+                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.green, marginBottom: 6 }}>{s.label}</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 8, lineHeight: 1.3 }}>{s.title}</div>
+                  <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>{s.body}</p>
+                </div>
               </div>
             ))}
           </div>
+
+          {/* ── Desktop: grid with single connecting line ── */}
+          <div className="steps-desktop fu d1">
+            <div style={{ position: 'relative' }}>
+              {/* Single line connecting all 4 circle centers */}
+              <div style={{
+                position: 'absolute',
+                top: 24,                    /* half of 48px circle */
+                left: 'calc(12.5%)',        /* center of col 1 */
+                right: 'calc(12.5%)',       /* center of col 4 */
+                height: 1,
+                background: 'rgba(0,200,83,0.3)',
+                zIndex: 0,
+              }} />
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                alignItems: 'start',
+              }}>
+                {STEPS.map((s, i) => (
+                  <div key={s.n} style={{
+                    display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', textAlign: 'center',
+                    padding: '0 16px',
+                  }}>
+                    {/* Circle sits on top of the line */}
+                    <div style={{
+                      width: 48, height: 48, borderRadius: '50%',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, fontWeight: 800,
+                      background: i === 0 ? C.green : 'rgba(0,200,83,0.15)',
+                      color: i === 0 ? '#000' : C.green,
+                      border: i === 0 ? 'none' : '2px solid rgba(0,200,83,0.4)',
+                      position: 'relative', zIndex: 1,
+                      flexShrink: 0,
+                      marginBottom: 24,
+                    }}>{s.n}</div>
+
+                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.green, marginBottom: 8 }}>{s.label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: C.white, marginBottom: 10, lineHeight: 1.3 }}>{s.title}</div>
+                    <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65 }}>{s.body}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
         </div>
       </section>
 
@@ -649,30 +694,23 @@ export default function LandingPage() {
           <div className="diag-grid">
             {[
               {
-                icon: '⚡',
-                tag: 'Fat Loss Phase',
+                icon: '⚡', tag: 'Fat Loss Phase', delay: 'd1',
                 title: 'You\'re losing weight too fast',
                 body: 'Your caloric deficit is too aggressive for your lean mass target. At this rate, you\'ll lose muscle. The fix: reduce deficit by 220 kcal, increase protein by 30g.',
-                delay: 'd1',
               },
               {
-                icon: '⚖️',
-                tag: 'Body Composition',
+                icon: '⚖️', tag: 'Body Composition', delay: 'd2',
                 title: 'Your symmetry is imbalanced',
                 body: 'Upper-body development is lagging significantly behind lower body. Training focus should shift to chest, shoulders, and arms for the next 4–6 weeks.',
-                delay: 'd2',
               },
               {
-                icon: '🔄',
-                tag: 'Phase Shift',
+                icon: '🔄', tag: 'Phase Shift', delay: 'd3',
                 title: 'Time to stop cutting',
                 body: 'You\'ve reached 13.1% body fat — your target. Continuing the cut risks lean mass loss. MassIQ is shifting you to a recomposition phase.',
-                delay: 'd3',
               },
             ].map(card => (
               <div key={card.title} className={`fu ${card.delay}`} style={{
-                background: C.cardSolid,
-                border: `1px solid ${C.border}`,
+                background: C.cardSolid, border: `1px solid ${C.border}`,
                 borderRadius: 20, padding: 28,
               }}>
                 <div style={{
@@ -680,18 +718,11 @@ export default function LandingPage() {
                   background: C.greenBg, border: `1px solid ${C.borderHi}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 20, marginBottom: 16,
-                }}>
-                  {card.icon}
-                </div>
-                <div style={{
-                  fontSize: 10, fontWeight: 700, letterSpacing: '2px',
-                  textTransform: 'uppercase', color: C.green, marginBottom: 10,
-                }}>
+                }}>{card.icon}</div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: C.green, marginBottom: 10 }}>
                   {card.tag}
                 </div>
-                <h3 style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>
-                  {card.title}
-                </h3>
+                <h3 style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>{card.title}</h3>
                 <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65 }}>{card.body}</p>
               </div>
             ))}
@@ -700,7 +731,7 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════
-          COMPARISON — MASSIQ VS THE REST
+          COMPARISON
       ═══════════════════════════════════════════════════════════ */}
       <section className="sec" style={{ background: C.bg }}>
         <div className="sec-inner">
@@ -721,19 +752,17 @@ export default function LandingPage() {
               </thead>
               <tbody>
                 {[
-                  ['Scans your body composition',      true,  false, false],
+                  ['Scans your body composition',         true, false, false],
                   ['Tells you your exact limiting factor', true, false, false],
-                  ['Generates a personalized plan',    true,  false, false],
-                  ['Updates plan as body changes',     true,  false, false],
-                  ['Diagnoses your phase',             true,  false, false],
-                  ['Daily targets from real data',     true,  false, false],
-                  ['Tells you exactly what to do next', true, false, false],
+                  ['Generates a personalized plan',        true, false, false],
+                  ['Updates plan as body changes',         true, false, false],
+                  ['Diagnoses your phase',                 true, false, false],
+                  ['Daily targets from real data',         true, false, false],
+                  ['Tells you exactly what to do next',   true, false, false],
                 ].map(([label, a, b, c]) => (
                   <tr key={String(label)}>
                     <td>{label}</td>
-                    <td className="massiq-td">
-                      <span className="ck">{a ? '✓' : '—'}</span>
-                    </td>
+                    <td className="massiq-td"><span className="ck">{a ? '✓' : '—'}</span></td>
                     <td><span className={b ? 'ck' : 'cx'}>{b ? '✓' : '—'}</span></td>
                     <td><span className={c ? 'ck' : 'cx'}>{c ? '✓' : '—'}</span></td>
                   </tr>
@@ -743,11 +772,9 @@ export default function LandingPage() {
           </div>
 
           <div className="fu d2" style={{
-            marginTop: 28,
-            padding: '18px 24px',
-            background: C.greenBg,
-            border: `1px solid ${C.borderHi}`,
-            borderRadius: 16,
+            marginTop: 24, padding: '18px 24px',
+            background: C.greenBg, border: `1px solid ${C.borderHi}`,
+            borderRadius: 20,
             fontSize: 14, color: C.muted, lineHeight: 1.6,
           }}>
             <strong style={{ color: C.white }}>The difference: </strong>
@@ -757,7 +784,7 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════
-          OUTCOME — WHAT YOU ACTUALLY GET
+          OUTCOME
       ═══════════════════════════════════════════════════════════ */}
       <section className="sec" style={{ background: C.bg2 }}>
         <div className="sec-inner">
@@ -771,27 +798,23 @@ export default function LandingPage() {
           <div className="outcome-grid">
             {[
               {
-                num: '01',
+                num: '01', delay: 'd1',
                 title: 'Know exactly where you stand',
                 body: 'Body fat percentage. Lean mass. Muscle group development. Symmetry score. A real baseline — not a guess.',
-                delay: 'd1',
               },
               {
-                num: '02',
+                num: '02', delay: 'd2',
                 title: 'Know your realistic trajectory',
                 body: 'How long your target physique will take. What weekly rate to expect. When to switch phases. No false promises.',
-                delay: 'd2',
               },
               {
-                num: '03',
+                num: '03', delay: 'd3',
                 title: 'Know your next move',
                 body: 'Exact protein targets. Calorie targets adjusted for your phase. What to train. What to fix. Updated after every scan.',
-                delay: 'd3',
               },
             ].map(card => (
               <div key={card.num} className={`fu ${card.delay}`} style={{
-                background: C.cardSolid,
-                border: `1px solid ${C.border}`,
+                background: C.cardSolid, border: `1px solid ${C.border}`,
                 borderRadius: 20, padding: 28,
                 position: 'relative', overflow: 'hidden',
               }}>
@@ -801,18 +824,9 @@ export default function LandingPage() {
                   color: 'rgba(255,255,255,0.02)',
                   letterSpacing: '-4px', lineHeight: 1,
                   pointerEvents: 'none', userSelect: 'none',
-                }}>
-                  {card.num}
-                </div>
-                <div style={{
-                  fontSize: 11, fontWeight: 700, letterSpacing: '1.5px',
-                  color: C.green, marginBottom: 14,
-                }}>
-                  {card.num}
-                </div>
-                <h3 style={{ fontSize: 20, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>
-                  {card.title}
-                </h3>
+                }}>{card.num}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.5px', color: C.green, marginBottom: 14 }}>{card.num}</div>
+                <h3 style={{ fontSize: 20, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>{card.title}</h3>
                 <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>{card.body}</p>
               </div>
             ))}
@@ -826,9 +840,8 @@ export default function LandingPage() {
       <section className="sec" style={{ background: C.bg, paddingTop: 60, paddingBottom: 60 }}>
         <div className="sec-inner">
           <div className="fu" style={{
-            background: C.cardSolid,
-            border: `1px solid ${C.border}`,
-            borderRadius: 24, padding: '40px 32px',
+            background: C.cardSolid, border: `1px solid ${C.border}`,
+            borderRadius: 20, padding: '40px 32px',
             maxWidth: 780, margin: '0 auto', textAlign: 'center',
           }}>
             <div style={{
@@ -839,10 +852,7 @@ export default function LandingPage() {
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
               <span style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>Private Beta</span>
             </div>
-            <h2 style={{
-              fontSize: 26, fontWeight: 800, color: C.white,
-              marginBottom: 16, lineHeight: 1.3,
-            }}>
+            <h2 style={{ fontSize: 26, fontWeight: 800, color: C.white, marginBottom: 16, lineHeight: 1.3 }}>
               Built for people who are serious<br />about changing their physique.
             </h2>
             <p style={{ fontSize: 15, color: C.muted, lineHeight: 1.7, maxWidth: 520, margin: '0 auto 28px' }}>
@@ -850,11 +860,7 @@ export default function LandingPage() {
               physique-focused athletes. Early access is free. The feedback loop is real.
             </p>
             <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap' }}>
-              {[
-                'No fake transformations',
-                'No generic plans',
-                'No guesswork',
-              ].map(point => (
+              {['No fake transformations', 'No generic plans', 'No guesswork'].map(point => (
                 <div key={point} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                   <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>✓</span>
                   <span style={{ fontSize: 13, color: C.muted }}>{point}</span>
@@ -870,10 +876,8 @@ export default function LandingPage() {
       ═══════════════════════════════════════════════════════════ */}
       <section className="sec" style={{
         background: 'linear-gradient(180deg, #080C08 0%, #0C170C 100%)',
-        textAlign: 'center',
-        position: 'relative', overflow: 'hidden',
+        textAlign: 'center', position: 'relative', overflow: 'hidden',
       }}>
-        {/* Glow */}
         <div style={{
           position: 'absolute', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)',
@@ -881,14 +885,13 @@ export default function LandingPage() {
           background: 'radial-gradient(ellipse, rgba(0,200,83,0.09) 0%, transparent 70%)',
           pointerEvents: 'none',
         }} />
-
         <div className="fu sec-inner" style={{ position: 'relative' }}>
           <div style={{ maxWidth: 680, margin: '0 auto' }}>
             <Lbl>Get Started</Lbl>
             <h2 className="cta-h2" style={{ marginBottom: 20 }}>
               Stop guessing.<br />Start running a system.
             </h2>
-            <p style={{ fontSize: 17, color: C.muted, lineHeight: 1.7, marginBottom: 40, maxWidth: 480, margin: '0 auto 40px' }}>
+            <p style={{ fontSize: 17, color: C.muted, lineHeight: 1.7, maxWidth: 480, margin: '0 auto 40px' }}>
               Your body changes every week. Your plan should too.
               MassIQ gives you the signal — not the noise.
             </p>
@@ -896,9 +899,7 @@ export default function LandingPage() {
               <a href="/app" className="btn-primary" style={{ fontSize: 16, padding: '18px 40px' }}>
                 Run Your First Scan →
               </a>
-              <div style={{ fontSize: 13, color: C.dim }}>
-                Free to start · No credit card · Private
-              </div>
+              <div style={{ fontSize: 13, color: C.dim }}>Free to start · No credit card · Private</div>
             </div>
           </div>
         </div>
@@ -907,36 +908,20 @@ export default function LandingPage() {
       {/* ═══════════════════════════════════════════════════════════
           FOOTER
       ═══════════════════════════════════════════════════════════ */}
-      <footer style={{
-        background: C.bg,
-        borderTop: `1px solid ${C.border}`,
-        padding: '28px 0',
-      }}>
+      <footer style={{ background: C.bg, borderTop: `1px solid ${C.border}`, padding: '28px 0' }}>
         <div className="footer-row">
           <div>
-            <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '3px', textTransform: 'uppercase', color: C.white, marginBottom: 4 }}>
-              MassIQ
-            </div>
+            <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: '3px', textTransform: 'uppercase', color: C.white, marginBottom: 4 }}>MassIQ</div>
             <div style={{ fontSize: 12, color: C.dim }}>The operating system for your physique.</div>
           </div>
           <div style={{ fontSize: 12, color: C.dim }}>
-            <a
-              href="#"
-              style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}
-            >
-              Privacy
-            </a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Privacy</a>
             {' · '}
-            <a
-              href="#"
-              style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}
-            >
-              Terms
-            </a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Terms</a>
           </div>
         </div>
       </footer>
