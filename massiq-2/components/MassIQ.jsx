@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -508,6 +508,400 @@ function HomeTab({ profile, activePlan, setTab }) {
   );
 }
 
+/* ─── Nutrition Tab ──────────────────────────────────────────────────────── */
+
+/* Circular macro ring using conic-gradient */
+function MacroRing({ label, current, target, color, size = 90 }) {
+  const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+  const deg = Math.round(pct * 3.6);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{
+        width: size, height: size, borderRadius: '50%', position: 'relative',
+        background: `conic-gradient(${color} ${deg}deg, rgba(255,255,255,0.07) ${deg}deg)`,
+      }}>
+        {/* inner circle */}
+        <div style={{
+          position: 'absolute', top: 9, left: 9, right: 9, bottom: 9,
+          borderRadius: '50%', background: C.card,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: C.white, lineHeight: 1 }}>{current}</span>
+          <span style={{ fontSize: 9, color: C.muted, marginTop: 1 }}>
+            {label === 'Protein' ? 'g' : label === 'Carbs' ? 'g' : 'g'}
+          </span>
+        </div>
+      </div>
+      <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</span>
+    </div>
+  );
+}
+
+/* Generic high-protein suggestions by goal */
+function getDefaultSuggestions(goal, dietPrefs = []) {
+  const isVegan = dietPrefs.includes('Vegan') || dietPrefs.includes('Vegetarian');
+  const base = [
+    {
+      id: 's1', time: 'Breakfast', icon: '🍳',
+      name: isVegan ? 'Tofu Scramble + Oats' : 'Eggs & Oatmeal',
+      calories: 480, protein: 32, carbs: 44, fat: 14,
+    },
+    {
+      id: 's2', time: 'Lunch', icon: '🥗',
+      name: isVegan ? 'Lentil & Quinoa Bowl' : 'Chicken & Rice Bowl',
+      calories: 560, protein: 42, carbs: 55, fat: 12,
+    },
+    {
+      id: 's3', time: 'Dinner', icon: '🥩',
+      name: isVegan ? 'Tempeh Stir-Fry' : goal === 'Cut' ? 'Salmon & Veggies' : 'Beef & Sweet Potato',
+      calories: goal === 'Cut' ? 480 : 680, protein: 38, carbs: goal === 'Cut' ? 28 : 58, fat: 18,
+    },
+  ];
+  return base;
+}
+
+/* Log Meal Modal */
+function LogMealModal({ onClose, onAdd, macros }) {
+  const [aiTab,     setAiTab]     = useState('describe');
+  const [descText,  setDescText]  = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [form, setForm] = useState({ name: '', calories: '', protein: '', carbs: '', fat: '' });
+  const [category, setCategory] = useState('Lunch');
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  const setField = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  const analyzeText = async () => {
+    if (!descText.trim()) return;
+    setAnalyzing(true); setError('');
+    try {
+      const res = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{
+            role: 'user',
+            content: `Analyze nutrition for: ${descText}. Return ONLY valid JSON with these exact keys: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}`,
+          }],
+          max_tokens: 200,
+        }),
+      });
+      const { text } = await res.json();
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        const d = JSON.parse(match[0]);
+        setForm({ name: d.name || descText, calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
+      }
+    } catch { setError('Analysis failed — fill in manually.'); }
+    setAnalyzing(false);
+  };
+
+  const analyzePhoto = async (file) => {
+    if (!file) return;
+    setAnalyzing(true); setError('');
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const base64 = (e.target.result).split(',')[1];
+        const res = await fetch('/api/claude', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
+                { type: 'text', text: 'Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}' },
+              ],
+            }],
+            max_tokens: 200,
+          }),
+        });
+        const { text } = await res.json();
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          const d = JSON.parse(match[0]);
+          setForm({ name: d.name || 'Food', calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
+        }
+        setAnalyzing(false);
+      };
+      reader.readAsDataURL(file);
+    } catch { setError('Photo analysis failed — fill in manually.'); setAnalyzing(false); }
+  };
+
+  const handleAdd = () => {
+    if (!form.name.trim()) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const meals = LS.get(LS_KEYS.meals(today), []);
+    const meal = {
+      id: Date.now(), name: form.name.trim(), category,
+      calories: Number(form.calories) || 0,
+      protein: Number(form.protein) || 0,
+      carbs: Number(form.carbs) || 0,
+      fat: Number(form.fat) || 0,
+    };
+    LS.set(LS_KEYS.meals(today), [...meals, meal]);
+    onAdd(meal);
+    onClose();
+  };
+
+  const inputStyle = {
+    width: '100%', padding: '12px 14px', borderRadius: 12,
+    background: C.cardElevated, border: `1.5px solid ${C.border}`,
+    fontSize: 15, color: C.white,
+  };
+  const CATS = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Pre-Workout', 'Post-Workout'];
+
+  return (
+    /* Backdrop */
+    <div className="fi" onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.7)',
+      display: 'flex', alignItems: 'flex-end',
+    }}>
+      {/* Sheet */}
+      <div className="su" onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 480, margin: '0 auto',
+        background: C.card, borderRadius: '24px 24px 0 0',
+        padding: '0 0 max(24px, env(safe-area-inset-bottom))',
+        maxHeight: '92dvh', overflowY: 'auto',
+        border: `1px solid ${C.border}`,
+      }}>
+        {/* Drag handle */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 40, height: 4, borderRadius: 99, background: C.border }} />
+        </div>
+        <div style={{ padding: '8px 20px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 700 }}>Log a Meal</h2>
+            <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer' }}>×</button>
+          </div>
+
+          {/* AI Analyze */}
+          <div style={{ background: C.cardElevated, borderRadius: 16, padding: 16, marginBottom: 20 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: C.green, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 12 }}>AI Analyze</div>
+            {/* Tab toggle */}
+            <div style={{ display: 'flex', background: C.card, borderRadius: 10, padding: 3, marginBottom: 14 }}>
+              {[['describe','📝 Describe'],['photo','📷 Photo']].map(([k, lbl]) => (
+                <button key={k} className="bp" onClick={() => setAiTab(k)} style={{
+                  flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  background: aiTab === k ? C.green : 'transparent',
+                  color: aiTab === k ? '#000' : C.muted,
+                }}>{lbl}</button>
+              ))}
+            </div>
+
+            {aiTab === 'describe' ? (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input style={{ ...inputStyle, flex: 1 }} placeholder="e.g. grilled chicken breast 200g with rice"
+                  value={descText} onChange={e => setDescText(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && analyzeText()} />
+                <Btn onClick={analyzeText} disabled={analyzing || !descText.trim()}
+                  style={{ padding: '12px 16px', borderRadius: 12, flexShrink: 0 }}>
+                  {analyzing ? '…' : '✦'}
+                </Btn>
+              </div>
+            ) : (
+              <div>
+                <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                  onChange={e => analyzePhoto(e.target.files?.[0])} />
+                <button className="bp" onClick={() => fileRef.current?.click()} style={{
+                  width: '100%', padding: '28px 0', borderRadius: 12, border: `1.5px dashed ${C.green}`,
+                  background: C.greenBg, color: C.green, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                }}>
+                  {analyzing ? '⏳ Analyzing…' : '📷 Take or upload a photo'}
+                </button>
+              </div>
+            )}
+            {error && <p style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{error}</p>}
+          </div>
+
+          {/* Manual fields */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+            <input style={inputStyle} placeholder="Meal name" value={form.name} onChange={e => setField('name', e.target.value)} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <input style={inputStyle} type="number" placeholder="Calories" value={form.calories} onChange={e => setField('calories', e.target.value)} />
+              <input style={inputStyle} type="number" placeholder="Protein (g)" value={form.protein} onChange={e => setField('protein', e.target.value)} />
+              <input style={inputStyle} type="number" placeholder="Carbs (g)" value={form.carbs} onChange={e => setField('carbs', e.target.value)} />
+              <input style={inputStyle} type="number" placeholder="Fat (g)" value={form.fat} onChange={e => setField('fat', e.target.value)} />
+            </div>
+          </div>
+
+          {/* Category chips */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+            {CATS.map(c => (
+              <Chip key={c} label={c} active={category === c} onClick={() => setCategory(c)} />
+            ))}
+          </div>
+
+          <Btn onClick={handleAdd} disabled={!form.name.trim()} style={{ width: '100%' }}>
+            Add Meal
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Main Nutrition Tab */
+function NutritionTab({ profile, activePlan }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [meals,      setMeals]      = useState(() => LS.get(LS_KEYS.meals(today), []));
+  const [showModal,  setShowModal]  = useState(false);
+  const [suggestions] = useState(() => {
+    const mealplan = LS.get(LS_KEYS.mealplan);
+    if (mealplan?.suggestions) return mealplan.suggestions;
+    return getDefaultSuggestions(profile?.goal, profile?.dietPrefs);
+  });
+
+  const macros = activePlan?.macros || calcMacros(profile) || { calories: 2000, protein: 150, carbs: 200, fat: 55 };
+
+  const totals = meals.reduce(
+    (a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0), carbs: a.carbs + (m.carbs || 0), fat: a.fat + (m.fat || 0) }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+
+  const deleteMeal = (id) => {
+    const updated = meals.filter(m => m.id !== id);
+    setMeals(updated);
+    LS.set(LS_KEYS.meals(today), updated);
+  };
+
+  const logSuggestion = (s) => {
+    const meal = { id: Date.now(), name: s.name, category: s.time, calories: s.calories, protein: s.protein, carbs: s.carbs, fat: s.fat };
+    const updated = [...meals, meal];
+    setMeals(updated);
+    LS.set(LS_KEYS.meals(today), updated);
+  };
+
+  const remaining = Math.max(0, macros.calories - totals.calories);
+
+  return (
+    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Nutrition</h1>
+
+      {/* ── Macro rings ── */}
+      <Card className="su">
+        <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 20 }}>
+          <MacroRing label="Protein" current={totals.protein} target={macros.protein} color={C.blue} />
+          <MacroRing label="Carbs"   current={totals.carbs}   target={macros.carbs}   color={C.gold} />
+          <MacroRing label="Fat"     current={totals.fat}     target={macros.fat}     color={C.orange} />
+        </div>
+        {/* Calorie summary */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 4px 0', borderTop: `1px solid ${C.border}` }}>
+          {[
+            { label: 'Eaten',     value: totals.calories, color: C.white },
+            { label: 'Target',    value: macros.calories, color: C.muted },
+            { label: 'Remaining', value: remaining,       color: remaining === 0 ? C.red : C.green },
+          ].map(s => (
+            <div key={s.label} style={{ textAlign: 'center', flex: 1 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: s.color }}>{s.value}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label} kcal</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* ── Daily Suggestions ── */}
+      <div className="su" style={{ animationDelay: '.05s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
+        <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
+          {suggestions.map(s => (
+            <div key={s.id} style={{
+              background: C.card, borderRadius: 18, padding: 16,
+              border: `1px solid ${C.border}`, flexShrink: 0, width: 180,
+              display: 'flex', flexDirection: 'column', gap: 10,
+            }}>
+              <div style={{ fontSize: 28 }}>{s.icon}</div>
+              <div>
+                <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 8 }}>{s.name}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+                  {[
+                    { label: `${s.calories} kcal`, color: C.orange },
+                    { label: `P ${s.protein}g`,    color: C.blue },
+                    { label: `C ${s.carbs}g`,      color: C.gold },
+                    { label: `F ${s.fat}g`,        color: C.muted },
+                  ].map(chip => (
+                    <span key={chip.label} style={{ fontSize: 10, fontWeight: 600, color: chip.color, background: `${chip.color}18`, padding: '3px 7px', borderRadius: 99 }}>
+                      {chip.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <button className="bp" onClick={() => logSuggestion(s)} style={{
+                width: '100%', padding: '8px 0', borderRadius: 10,
+                background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>+ Log</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Today's meals ── */}
+      <div className="su" style={{ animationDelay: '.1s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Meals</div>
+        {meals.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '36px 0', color: C.muted }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>🍽️</div>
+            <div style={{ fontSize: 14 }}>No meals logged yet</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {meals.map(m => (
+              <div key={m.id} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                background: C.card, borderRadius: 14, padding: '12px 14px',
+                border: `1px solid ${C.border}`,
+              }}>
+                {/* Icon */}
+                <div style={{
+                  width: 40, height: 40, borderRadius: 10,
+                  background: C.greenBg, border: `1px solid ${C.greenDim}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
+                }}>🍽️</div>
+                {/* Info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.white, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+                    P {m.protein}g · C {m.carbs}g · F {m.fat}g
+                  </div>
+                </div>
+                {/* Right: calories + delete */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: C.orange }}>{m.calories}</span>
+                  <button className="bp" onClick={() => deleteMeal(m.id)} style={{
+                    background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', lineHeight: 1, padding: 2,
+                  }}>×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Floating + button ── */}
+      <button className="bp" onClick={() => setShowModal(true)} style={{
+        position: 'fixed', bottom: 96, right: 20, zIndex: 50,
+        width: 54, height: 54, borderRadius: '50%',
+        background: C.green, border: 'none', color: '#000',
+        fontSize: 26, fontWeight: 700, cursor: 'pointer',
+        boxShadow: `0 4px 20px rgba(0,200,83,0.4)`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>+</button>
+
+      {showModal && (
+        <LogMealModal
+          onClose={() => setShowModal(false)}
+          onAdd={(meal) => setMeals(prev => [...prev, meal])}
+          macros={macros}
+        />
+      )}
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -582,7 +976,7 @@ export default function MassIQ() {
   const renderTab = () => {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
-      case 'nutrition': return <PlaceholderTab label="Nutrition" icon="🥗" />;
+      case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} />;
       case 'scan':      return <PlaceholderTab label="Body Scan" icon="📸" />;
       case 'plan':      return <PlaceholderTab label="Plan"      icon="📋" />;
       case 'profile':   return <PlaceholderTab label="Profile"   icon="👤" />;
