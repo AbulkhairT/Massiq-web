@@ -902,6 +902,306 @@ function NutritionTab({ profile, activePlan }) {
   );
 }
 
+/* ─── Plan Tab ───────────────────────────────────────────────────────────── */
+
+/* Get ISO week number */
+function getWeekKey() {
+  const d = new Date();
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const week = Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7);
+  return `${d.getFullYear()}-W${week}`;
+}
+
+function daysBetween(a, b) {
+  return Math.round((new Date(b) - new Date(a)) / 86400000);
+}
+
+const PHASE_COLORS = {
+  Maintain: C.green,
+  Cut:      C.orange,
+  Build:    C.blue,
+  Bulk:     C.blue,
+  Recomp:   C.purple,
+};
+
+const DEFAULT_MISSIONS = [
+  'Hit your daily protein target every day this week',
+  'Complete all scheduled training sessions',
+  'Get 7+ hours of sleep at least 5 nights',
+];
+
+function PlanTab({ profile, activePlan, setTab }) {
+  const weekKey = getWeekKey();
+  const [missions, setMissions] = useState(() => {
+    const saved = LS.get(`massiq:missions:${weekKey}`, null);
+    const texts = activePlan?.weeklyMissions || DEFAULT_MISSIONS;
+    if (saved && saved.length === texts.length) return saved;
+    return texts.map((text, i) => ({ id: i, text, done: false }));
+  });
+
+  const toggleMission = (id) => {
+    const updated = missions.map(m => m.id === id ? { ...m, done: !m.done } : m);
+    setMissions(updated);
+    LS.set(`massiq:missions:${weekKey}`, updated);
+  };
+
+  /* ── No active plan ── */
+  if (!activePlan) {
+    return (
+      <div style={{ padding: '24px 16px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Your Plan</h1>
+        <div className="su" style={{
+          background: C.card, border: `1.5px solid ${C.green}`,
+          borderRadius: 20, padding: 36, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>Your plan comes from your scan</h2>
+          <p style={{ color: C.muted, fontSize: 14, lineHeight: 1.7, marginBottom: 28, maxWidth: 280, margin: '0 auto 28px' }}>
+            MassIQ analyzes your actual physique to generate a 12-week program. No guessing. No generic plans.
+          </p>
+          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Run Your First Scan →</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Derive plan values ── */
+  const macros      = activePlan.macros || calcMacros(profile) || {};
+  const phase       = activePlan.phase  || profile?.goal || 'Maintain';
+  const phaseColor  = PHASE_COLORS[phase] || C.green;
+  const week        = activePlan.week   || 1;
+  const phasePct    = Math.round((week / 12) * 100);
+  const startBF     = activePlan.startBF  || activePlan.bodyFat  || 18;
+  const targetBF    = activePlan.targetBF || (phase === 'Cut' ? startBF - 4 : phase === 'Bulk' ? startBF + 1 : startBF);
+  const trainDays   = activePlan.trainDays || 4;
+  const cardioDays  = activePlan.cardioDays || 2;
+  const sleepHrs    = activePlan.sleepHrs  || 8;
+  const waterL      = activePlan.waterL    || 3;
+  const steps       = activePlan.steps     || 8000;
+  const objective   = activePlan.objective || `Optimize body composition through targeted ${phase.toLowerCase()} protocols.`;
+  const whyItWorks  = activePlan.whyThisWorks || `This plan is calibrated to your current body composition and metabolic rate. By combining your calorie target with structured training, your body will prioritize the right adaptations each week.`;
+
+  const startDate    = activePlan.startDate   || new Date().toISOString().slice(0, 10);
+  const nextScanDate = activePlan.nextScanDate || (() => {
+    const d = new Date(startDate); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10);
+  })();
+  const today        = new Date().toISOString().slice(0, 10);
+  const totalDays    = daysBetween(startDate, nextScanDate) || 84;
+  const elapsed      = Math.max(0, daysBetween(startDate, today));
+  const daysLeft     = Math.max(0, daysBetween(today, nextScanDate));
+  const scanPct      = Math.min(100, Math.round((elapsed / totalDays) * 100));
+
+  const MILESTONES = [
+    { w: 3,  label: 'Baseline set',         desc: 'Locked in your targets and training routine' },
+    { w: 6,  label: 'Habits established',   desc: 'Consistency building toward long-term change' },
+    { w: 9,  label: 'Your check-in',        desc: 'Mid-plan progress assessment' },
+    { w: 12, label: 'Final scan + new plan', desc: 'Full rescan and updated 12-week program' },
+  ];
+
+  const tileStyle = (color) => ({
+    background: C.cardElevated, borderRadius: 16, padding: '14px 14px 16px',
+    display: 'flex', flexDirection: 'column', gap: 8,
+  });
+
+  const DAILY_TILES = [
+    { icon: '🔥', label: 'Calories', value: macros.calories || 2000, unit: 'kcal', color: C.orange },
+    { icon: '⚡', label: 'Protein',  value: macros.protein  || 150,  unit: 'g',    color: C.blue },
+    { icon: '🚶', label: 'Steps',    value: steps,                   unit: '/day', color: C.green },
+    { icon: '🌙', label: 'Sleep',    value: sleepHrs,                unit: 'hrs',  color: C.purple },
+    { icon: '💧', label: 'Water',    value: waterL,                  unit: 'L',    color: '#4AD4FF' },
+    { icon: '🏋️', label: 'Training', value: trainDays,              unit: 'x/wk', color: C.red },
+  ];
+
+  return (
+    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Your Plan</h1>
+
+      {/* 1 ── Phase Hero ── */}
+      <Card className="su" style={{ background: '#1A2E1A', border: `1.5px solid ${phaseColor}`, position: 'relative' }}>
+        {/* Week badge */}
+        <div style={{ position: 'absolute', top: 16, right: 16, background: C.cardElevated, borderRadius: 10, padding: '5px 12px', fontSize: 12, fontWeight: 600, color: C.muted }}>
+          Week {week} of 12
+        </div>
+        {/* Phase pill */}
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: `${phaseColor}22`, color: phaseColor, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${phaseColor}55`, marginBottom: 14, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          <span>✓</span> {phase}
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
+          {phase === 'Cut' ? 'Fat Loss Phase' : phase === 'Bulk' || phase === 'Build' ? 'Muscle Building Phase' : phase === 'Recomp' ? 'Recomposition Phase' : 'Maintenance Phase'}
+        </div>
+        <p style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.5 }}>{objective}</p>
+        {/* Progress bar */}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.muted, marginBottom: 6 }}>
+            <span style={{ color: C.green, fontWeight: 600 }}>{phasePct}% complete</span>
+          </div>
+          <ProgressBar value={week} max={12} color={phaseColor} height={8} />
+        </div>
+        {/* Target row */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <span style={{ fontSize: 12, color: C.muted }}>
+            Target: <span style={{ color: C.white }}>{nextScanDate}</span>
+          </span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
+            On Track ✓
+          </span>
+        </div>
+      </Card>
+
+      {/* 2 ── Transformation Timeline ── */}
+      <Card className="su" style={{ animationDelay: '.04s' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>Transformation Timeline</span>
+          <span style={{ fontSize: 12, color: C.muted }}>8–12 weeks</span>
+        </div>
+        {/* Progress bar with dots */}
+        <div style={{ position: 'relative', marginBottom: 8 }}>
+          <div style={{ height: 8, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${phasePct}%`, borderRadius: 99, background: `linear-gradient(90deg, ${C.orange}, ${C.green})` }} />
+          </div>
+          {/* Now dot */}
+          <div style={{ position: 'absolute', top: -4, left: `${Math.max(2, Math.min(96, phasePct))}%`, transform: 'translateX(-50%)', width: 16, height: 16, borderRadius: '50%', background: C.orange, border: `3px solid ${C.card}` }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.muted, marginBottom: 20 }}>
+          <span>Now ~{startBF}%</span>
+          <span style={{ color: C.green, fontWeight: 600 }}>Goal ~{targetBF}% 🏁</span>
+        </div>
+        {/* 4 stats */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
+          {[
+            { label: 'Start BF',  value: `${startBF}%`,   color: C.muted },
+            { label: 'Target BF', value: `${targetBF}%`,  color: C.green },
+            { label: 'Training',  value: `${trainDays}x/wk`, color: C.blue },
+            { label: 'Cardio',    value: `${cardioDays}x/wk`, color: C.orange },
+          ].map(s => (
+            <div key={s.label} style={{ textAlign: 'center', background: C.cardElevated, borderRadius: 12, padding: '10px 4px' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: s.color }}>{s.value}</div>
+              <div style={{ fontSize: 10, color: C.dimmed, marginTop: 3 }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* 3 ── Why This Works ── */}
+      <Card className="su" style={{ animationDelay: '.08s', background: C.card }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <span style={{ fontSize: 20 }}>✨</span>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>Why this plan works</span>
+        </div>
+        <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7 }}>{whyItWorks}</p>
+      </Card>
+
+      {/* 4 ── Daily Targets Grid ── */}
+      <div className="su" style={{ animationDelay: '.12s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Daily Targets</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          {DAILY_TILES.map(t => (
+            <div key={t.label} style={tileStyle(t.color)}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 28, height: 28, borderRadius: 8, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>{t.icon}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>{t.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.white, lineHeight: 1 }}>{t.value}</div>
+                <div style={{ fontSize: 11, color: C.dimmed }}>{t.unit}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 5 ── Weekly Missions ── */}
+      <div className="su" style={{ animationDelay: '.16s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Weekly Missions</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {missions.map(m => (
+            <div key={m.id} className="bp" onClick={() => toggleMission(m.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 14,
+              background: C.card, borderRadius: 14, padding: '14px 16px',
+              border: `1px solid ${m.done ? C.greenDim : C.border}`,
+            }}>
+              <div style={{
+                width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+                border: `2px solid ${m.done ? C.green : C.dimmed}`,
+                background: m.done ? C.greenBg : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {m.done && <span style={{ fontSize: 13, color: C.green }}>✓</span>}
+              </div>
+              <span style={{
+                fontSize: 14, color: m.done ? C.muted : C.white, lineHeight: 1.4,
+                textDecoration: m.done ? 'line-through' : 'none',
+              }}>{m.text}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 6 ── Milestones Timeline ── */}
+      <div className="su" style={{ animationDelay: '.20s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>Milestones</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          {MILESTONES.map((m, i) => {
+            const isPast    = week > m.w;
+            const isCurrent = week <= m.w && week > (MILESTONES[i - 1]?.w || 0);
+            const dotColor  = isPast ? C.green : isCurrent ? C.green : C.dimmed;
+            const dotFill   = isPast || isCurrent;
+            return (
+              <div key={m.w} style={{ display: 'flex', gap: 16, paddingBottom: i < MILESTONES.length - 1 ? 0 : 0 }}>
+                {/* Dot + line */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                  <div style={{
+                    width: 16, height: 16, borderRadius: '50%', marginTop: 2, flexShrink: 0,
+                    background: dotFill ? dotColor : 'transparent',
+                    border: `2px solid ${dotColor}`,
+                    boxShadow: isCurrent ? `0 0 10px ${C.green}88` : 'none',
+                  }} />
+                  {i < MILESTONES.length - 1 && (
+                    <div style={{ width: 2, flex: 1, minHeight: 36, background: isPast ? C.green : C.border, margin: '4px 0' }} />
+                  )}
+                </div>
+                {/* Content */}
+                <div style={{ paddingBottom: 24 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 11, color: isCurrent ? C.green : C.dimmed, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>W{m.w}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: isCurrent ? C.white : isPast ? C.muted : C.dimmed }}>{m.label}</span>
+                    {isCurrent && <span style={{ fontSize: 10, color: C.green, background: C.greenBg, padding: '2px 8px', borderRadius: 99, fontWeight: 600 }}>Current</span>}
+                  </div>
+                  <p style={{ fontSize: 13, color: C.dimmed, lineHeight: 1.5 }}>{m.desc}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 7 ── Next Scan Card ── */}
+      <Card className="su" style={{ animationDelay: '.24s', border: `1px solid ${C.greenDim}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>Next scan in</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: C.white }}>{daysLeft} <span style={{ fontSize: 16, fontWeight: 400, color: C.muted }}>days</span></div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 11, color: C.muted }}>Scheduled</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>{nextScanDate}</div>
+          </div>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <ProgressBar value={elapsed} max={totalDays} color={C.green} height={8} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.dimmed, marginTop: 5 }}>
+            <span>Day {elapsed}</span>
+            <span>Day {totalDays}</span>
+          </div>
+        </div>
+        <Btn onClick={() => setTab('scan')} variant="outline" style={{ width: '100%' }}>
+          Schedule Scan 📸
+        </Btn>
+      </Card>
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -978,7 +1278,7 @@ export default function MassIQ() {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} />;
       case 'scan':      return <PlaceholderTab label="Body Scan" icon="📸" />;
-      case 'plan':      return <PlaceholderTab label="Plan"      icon="📋" />;
+      case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'profile':   return <PlaceholderTab label="Profile"   icon="👤" />;
       default:          return null;
     }
