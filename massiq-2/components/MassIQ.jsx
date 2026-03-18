@@ -32,14 +32,14 @@ const CSS = `
   .spinner{animation:spin .8s linear infinite}
   .ov{animation:fadeIn .2s ease}
   input,textarea,select{outline:none;font-family:inherit}
-  input::placeholder,textarea::placeholder{color:#A89880}
+  input::placeholder,textarea::placeholder{color:#8A9A8A}
   .dp1{animation:dp 1.2s ease-in-out infinite}
   .dp2{animation:dp 1.2s ease-in-out .2s infinite}
   .dp3{animation:dp 1.2s ease-in-out .4s infinite}
   .unlock-pop{animation:unlockPop .5s cubic-bezier(.34,1.56,.64,1) both}
   .ch-card{transition:transform .2s ease,box-shadow .2s ease;cursor:pointer}
   .ch-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.08)}
-  .shimmer-bg{background:linear-gradient(90deg,#F0E8D8 0%,#E8DCC8 50%,#F0E8D8 100%);background-size:200% 100%;animation:shimmerSlide 2s linear infinite}
+  .shimmer-bg{background:linear-gradient(90deg,#141A14 0%,#E8DCC8 50%,#141A14 100%);background-size:200% 100%;animation:shimmerSlide 2s linear infinite}
   @keyframes ringPop{0%{transform:scale(0.7);opacity:0}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
   .ch-tier-card{transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer}
   .ch-tier-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(0,0,0,.1)}
@@ -49,7 +49,7 @@ const CSS = `
   .recipe-card:active{transform:scale(.97)}
 `;
 
-const C={cream:"#F5EFE4",warm:"#EDE4D4",paper:"#FAF6EE",ink:"#1A1410",inkLight:"#3D3530",terra:"#C4622D",sage:"#5C7A5A",dust:"#A89880",blush:"#E8A598",gold:"#C4952D",purple:"#7B68C8",cardBg:"#F0E8D8",border:"rgba(100,80,60,0.12)",red:"#D94040"};
+const C={cream:"#0A0F0A",warm:"#1C251C",paper:"#0A0F0A",ink:"#FFFFFF",inkLight:"#E0E0E0",terra:"#00C853",sage:"#5C7A5A",dust:"#8A9A8A",blush:"#E8A598",gold:"#C4952D",purple:"#7B68C8",cardBg:"#141A14",border:"rgba(255,255,255,0.08)",red:"#D94040"};
 
 const ALL_CHALLENGES=[
   {id:"steps_start",tier:"bronze",emoji:"👟",title:"First Steps",desc:"Hit 8,000 steps in a day",reward:"Unlocks Silver challenges",requiresIds:[],progressKey:"steps_pct",target:0.8,targetDesc:"8,000 steps"},
