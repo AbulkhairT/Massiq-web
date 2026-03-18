@@ -2783,7 +2783,18 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
 /* ─── Scan Tab ───────────────────────────────────────────────────────────── */
 
 const PHASE_LABEL_COLORS = { Cut: C.orange, Build: C.blue, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
-const MG_COLOR = { underdeveloped: C.red, average: C.gold, 'well-developed': C.green };
+// Calibrated muscle group display — maps new 5-tier vocab + legacy values
+const MG_META = {
+  'not yet defined': { label: 'Early stage', pct: 20, color: C.red       },
+  'early':           { label: 'Developing',  pct: 32, color: C.orange     },
+  'moderate':        { label: 'Moderate',    pct: 52, color: C.gold       },
+  'solid':           { label: 'Solid',       pct: 72, color: '#00C853AA'  },
+  'well-developed':  { label: 'Strong',      pct: 88, color: C.green      },
+  // legacy values from old prompt — mapped forward
+  'underdeveloped':  { label: 'Early stage', pct: 20, color: C.red       },
+  'average':         { label: 'Moderate',    pct: 52, color: C.gold       },
+};
+const getMG = (level) => MG_META[level?.toLowerCase?.() ?? ''] ?? MG_META['moderate'];
 
 function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const photoRef  = useRef(null);
@@ -2840,24 +2851,74 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
       const weight = profile?.weightLbs || 170;
 
       // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
-      // /api/anthropic supports up to 10 MB image payloads; /api/claude caps at 250 KB
+      // /api/anthropic supports large image payloads; /api/claude caps at 250 KB
       const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          system: `You are a physique analysis assistant. Describe visible body composition traits in a measured, professional, non-judgmental way — like an experienced coach reviewing a photo.
+
+CORE RULES:
+1. Describe only what is VISIBLE. Never infer training history, lifestyle, habits, or experience level.
+2. All comparisons must be RELATIVE to this person's own frame — never to external population averages.
+3. Express uncertainty honestly. If a trait is hard to assess from this photo, say so.
+4. Start with what is present and working before noting areas for development.
+
+FORBIDDEN WORDS — never use: underdeveloped, below average, above average, lacks, lacking, weak, limited training, training history, experience level, beginner, poor, concerning, inadequate, subpar, disappointing, unfortunately
+
+MUSCLE DEVELOPMENT — use ONLY these five levels (no others):
+  "not yet defined" | "early" | "moderate" | "solid" | "well-developed"
+
+COMPARISONS — always relative to the person's own body:
+  ✗ "Chest is underdeveloped"  ✓ "Chest appears less pronounced relative to shoulder width"
+  ✗ "Low muscle mass"          ✓ "Muscle development appears moderate overall"
+
+BODY FAT — estimate a 2% range conservatively (photos make people look leaner than they are):
+${gender === 'Male'
+  ? '< 8% very lean | 8–12% lean | 12–15% moderately lean | 15–20% moderate | 20–25% elevated | >25% high'
+  : '< 16% very lean | 16–20% lean | 20–25% moderately lean | 25–30% moderate | 30–35% elevated | >35% high'}
+
+PHYSIQUE SCORE: 30–95. Average physique = 50–62. Only use <45 for very high BF + minimal development.
+SYMMETRY SCORE: 60–95. Most people are 70–85. Below 70 only for obvious structural asymmetries.
+
+DIAGNOSIS TONE — write like a coach, not a critic. Start with what is present, frame gaps as opportunities.`,
           messages: [{
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Analyze this physique photo. Person is ${age} years old, ${gender}, ${height} inches, ${weight} lbs.
+              { type: 'text', text: `Analyze this physique photo. Person: ${age} years old, ${gender}, ${height} inches tall, ${weight} lbs.
 
-Your job: visually estimate body composition and muscle development. Do NOT generate nutrition targets or macros — those will be calculated by a separate system.
-
-Return ONLY a raw JSON object with NO markdown, NO code blocks:
-{"bodyFatPct":0,"leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"muscleGroups":{"chest":"underdeveloped|average|well-developed","shoulders":"...","back":"...","arms":"...","core":"...","legs":"..."},"weakestGroups":["core","legs"],"asymmetries":[],"strengths":["back","shoulders"],"diagnosis":"2-3 sentence specific assessment of what you see","recommendation":"most important single change based on visual assessment","disclaimer":"AI visual estimate — scan accuracy improves with multiple scans over time"}` },
+Return ONLY a valid JSON object — no markdown, no code blocks, no explanation outside the JSON:
+{
+  "bodyFatPct": <number — midpoint of your estimated 2% range>,
+  "bodyFatRange": "<e.g. 16–18%>",
+  "leanMass": <estimated lean body mass in lbs>,
+  "fatMass": <estimated fat mass in lbs>,
+  "physiqueScore": <30–95>,
+  "symmetryScore": <60–95>,
+  "confidence": "<high|medium|low — based on photo quality and pose clarity>",
+  "muscleGroups": {
+    "chest":     "<not yet defined|early|moderate|solid|well-developed>",
+    "shoulders": "<not yet defined|early|moderate|solid|well-developed>",
+    "back":      "<not yet defined|early|moderate|solid|well-developed>",
+    "arms":      "<not yet defined|early|moderate|solid|well-developed>",
+    "core":      "<not yet defined|early|moderate|solid|well-developed>",
+    "legs":      "<not yet defined|early|moderate|solid|well-developed>"
+  },
+  "weakestGroups": ["<muscle group names where development could be further progressed, relative to the rest of their frame>"],
+  "strengths": ["<muscle group names that show comparatively stronger development>"],
+  "asymmetries": ["<describe only clearly visible left-right differences, or leave empty>"],
+  "bodyFatSummary": "<1–2 sentences: calibrated description of body fat level and distribution — no harsh language>",
+  "muscleSummary": "<1–2 sentences: overall muscle development relative to this person's own frame>",
+  "priorityAreas": ["<specific relative observation per area, e.g. 'Core definition is not yet clearly visible relative to upper body development'>"],
+  "balanceNote": "<1 sentence on upper-lower and left-right proportions>",
+  "diagnosis": "<2–3 sentences: start with what is present/working, then note development opportunities as relative observations — coach tone, no criticism>",
+  "recommendation": "<1 specific, actionable suggestion based only on visible traits — no lifestyle assumptions>",
+  "disclaimer": "Visual AI estimate — accuracy improves with consistent lighting, a straight-on pose, and multiple scans over time."
+}` },
             ],
           }],
-          max_tokens: 800,
+          max_tokens: 1000,
         }),
       });
 
@@ -3037,23 +3098,22 @@ Return ONLY a raw JSON object with NO markdown, NO code blocks:
 
         {/* 5 – Muscle Groups */}
         <Card className="su" style={{ animationDelay: '.12s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Groups</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Development</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {Object.entries(mg).map(([name, level]) => {
-              const color    = MG_COLOR[level] || C.muted;
-              const pct      = level === 'well-developed' ? 85 : level === 'average' ? 55 : 28;
+              const meta       = getMG(level);
               const isPriority = result.weakestGroups?.includes(name);
               return (
                 <div key={name}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize' }}>{name}</span>
-                      {isPriority && <span style={{ fontSize: 9, fontWeight: 700, color: C.red, background: `${C.red}22`, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase' }}>Priority</span>}
+                      {isPriority && <span style={{ fontSize: 9, fontWeight: 700, color: C.green, background: C.greenBg, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '.04em' }}>Focus area</span>}
                     </div>
-                    <span style={{ fontSize: 12, color, fontWeight: 600 }}>{level}</span>
+                    <span style={{ fontSize: 12, color: meta.color, fontWeight: 600 }}>{meta.label}</span>
                   </div>
                   <div style={{ height: 6, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 99 }} />
+                    <div style={{ width: `${meta.pct}%`, height: '100%', background: meta.color, borderRadius: 99, transition: 'width .6s ease' }} />
                   </div>
                 </div>
               );
@@ -3061,31 +3121,86 @@ Return ONLY a raw JSON object with NO markdown, NO code blocks:
           </div>
         </Card>
 
-        {/* 6 – Asymmetries */}
+        {/* 6 – Assessment */}
+        <Card className="su" style={{ animationDelay: '.14s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Assessment</div>
+
+          {/* Body composition summary */}
+          {result.bodyFatSummary && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Body Composition</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
+            </div>
+          )}
+
+          {/* Muscle summary */}
+          {result.muscleSummary && (
+            <div style={{ marginBottom: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Muscle Development</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
+            </div>
+          )}
+
+          {/* Balance */}
+          {result.balanceNote && (
+            <div style={{ paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Balance</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.balanceNote}</p>
+            </div>
+          )}
+
+          {/* Fallback to old diagnosis field if new fields absent */}
+          {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
+          )}
+        </Card>
+
+        {/* 7 – Focus areas (replaces "Priority" badge — coach framing) */}
+        {result.priorityAreas?.length > 0 && (
+          <Card className="su" style={{ animationDelay: '.15s' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Focus Areas</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {result.priorityAreas.map((area, i) => (
+                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, border: `1px solid ${C.green}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                    <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>{i + 1}</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{area}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* 8 – Recommendation */}
+        {result.recommendation && (
+          <Card className="su" style={{ animationDelay: '.155s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>→ Next Move</div>
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.recommendation}</p>
+          </Card>
+        )}
+
+        {/* Asymmetries — shown only when flagged */}
         {result.asymmetries?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.14s', background: `${C.gold}18`, border: `1px solid ${C.gold}44` }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold }}>⚠️ Asymmetries Detected</div>
-            <ul style={{ paddingLeft: 18 }}>
+          <Card className="su" style={{ animationDelay: '.16s', background: `${C.gold}12`, border: `1px solid ${C.gold}33` }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold, fontSize: 13 }}>Balance note</div>
+            <ul style={{ paddingLeft: 18, margin: 0 }}>
               {result.asymmetries.map((a, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a}</li>)}
             </ul>
           </Card>
         )}
 
-        {/* 7 – Strengths */}
-        {result.strengths?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.15s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>💪 Strengths</div>
-            <ul style={{ paddingLeft: 18 }}>
-              {result.strengths.map((s, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, textTransform: 'capitalize' }}>{s}</li>)}
-            </ul>
-          </Card>
+        {/* Confidence indicator */}
+        {result.confidence && result.confidence !== 'high' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 14 }}>ℹ️</span>
+            <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
+              {result.confidence === 'medium'
+                ? 'Assessment confidence: moderate — a clearer, straight-on photo will improve accuracy.'
+                : 'Assessment confidence: limited — photo lighting or angle reduced precision. Retake for better results.'}
+            </span>
+          </div>
         )}
-
-        {/* 8 – Diagnosis */}
-        <Card className="su" style={{ animationDelay: '.16s', background: C.card }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>🧬 Diagnosis</div>
-          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, fontStyle: 'italic' }}>{result.diagnosis}</p>
-        </Card>
 
         {/* 9 – Milestones strip */}
         <div className="su" style={{ animationDelay: '.17s', display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
