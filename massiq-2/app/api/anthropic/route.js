@@ -15,11 +15,11 @@ export async function POST(req){
 
   const { messages, system, max_tokens, model } = body || {};
   if(!Array.isArray(messages) || messages.length === 0) return bad("messages must be a non-empty array");
-  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(2048, +max_tokens)) : 600;
+  const maxTokens = Number.isFinite(+max_tokens) ? Math.max(1, Math.min(4000, +max_tokens)) : 600;
 
-  // Very lightweight validation to avoid accidental huge payloads
+  // Allow up to 10 MB for image payloads (base64 photos)
   const approxSize = JSON.stringify({messages, system}).length;
-  if(approxSize > 250_000) return bad("Payload too large", 413);
+  if(approxSize > 10_000_000) return bad("Payload too large", 413);
 
   const chosenModel = (model || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
 

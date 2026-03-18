@@ -2816,7 +2816,8 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
       const weight = profile?.weightLbs || 170;
 
       // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
-      const res = await fetch('/api/claude', {
+      // /api/anthropic supports up to 10 MB image payloads; /api/claude caps at 250 KB
+      const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
