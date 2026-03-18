@@ -66,20 +66,17 @@ const CSS = `
   }
 
   /* Loop steps: vertical mobile */
-  .loop-steps{
-    display:flex;
-    flex-direction:column;
-    gap:0;
+  .loop-steps{display:flex;flex-direction:column}
+  .loop-step{display:flex;flex-direction:row;gap:20px;align-items:flex-start}
+  .loop-spine{display:flex;flex-direction:column;align-items:center;width:48px;flex-shrink:0}
+  .loop-circle{
+    width:48px;height:48px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:#fff;
+    flex-shrink:0;
   }
-  .loop-step{
-    display:flex;
-    gap:16px;
-    padding:20px 0;
-    position:relative;
-  }
-  .loop-step-line{
-    display:block;
-  }
+  .loop-line{width:2px;flex:1;min-height:40px;background:rgba(0,200,83,0.2);margin-top:4px}
+  .loop-text{flex:1;padding-top:10px;padding-bottom:40px}
   .loop-arrow-h{display:none}
 
   /* Footer: stack on mobile */
@@ -149,25 +146,13 @@ const CSS = `
       gap:24px;
     }
 
-    .loop-steps{
-      flex-direction:row;
-      align-items:flex-start;
-      justify-content:center;
-    }
-    .loop-step{
-      flex-direction:column;
-      flex:1;
-      gap:0;
-      padding:0 8px;
-      text-align:center;
-    }
-    .loop-step-line{display:none}
-    .loop-arrow-h{
-      display:flex;
-      align-items:center;
-      padding-top:22px;
-      flex-shrink:0;
-    }
+    .loop-steps{flex-direction:row;align-items:flex-start;justify-content:center}
+    .loop-step{flex-direction:column;align-items:center;text-align:center;flex:1;padding:0 8px}
+    .loop-spine{flex-direction:row;width:auto}
+    .loop-circle{margin:0 auto 16px}
+    .loop-line{display:none}
+    .loop-text{padding-top:0;padding-bottom:0}
+    .loop-arrow-h{display:flex;align-items:center;padding-top:22px;flex-shrink:0}
 
     .footer-inner{
       flex-direction:row;
@@ -458,25 +443,17 @@ export default function LandingPage() {
               { n: '05', label: 'NEXT SCAN',       desc: 'Measure real change. Update your plan.' },
             ].map(({ n, label, desc }, i) => (
               <div key={label} style={{ display: 'flex', flex: 1, alignItems: 'flex-start' }}>
-                {/* Step block */}
+                {/* Step */}
                 <div className={`fu d${i + 1} loop-step`}>
-                  {/* Mobile: left-border vertical line */}
-                  <div className="loop-step-line" style={{
-                    width: 2, background: i < 4 ? C.greenDim : 'transparent',
-                    flexShrink: 0, marginLeft: 21, marginTop: 40,
-                    alignSelf: 'stretch',
-                  }} />
-
-                  <div style={{ flex: 1 }}>
-                    {/* Number circle */}
-                    <div style={{
-                      width: 44, height: 44, borderRadius: '50%', margin: '0 auto 12px',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 11, fontWeight: 700, letterSpacing: '2px',
+                  {/* Spine: circle + connecting line (mobile) */}
+                  <div className="loop-spine">
+                    <div className="loop-circle" style={{
                       background: i === 0 ? C.green : C.greenBg,
-                      border: `2px solid ${i === 0 ? C.green : C.greenDim}`,
-                      color: i === 0 ? '#000' : C.green,
                     }}>{n}</div>
+                    {i < 4 && <div className="loop-line" />}
+                  </div>
+                  {/* Text */}
+                  <div className="loop-text">
                     <div style={{
                       fontSize: 11, fontWeight: 700, letterSpacing: '2px',
                       textTransform: 'uppercase', color: C.green, marginBottom: 6,
@@ -485,7 +462,7 @@ export default function LandingPage() {
                   </div>
                 </div>
 
-                {/* Arrow between steps — desktop only */}
+                {/* Arrow — desktop only */}
                 {i < 4 && (
                   <div className="loop-arrow-h">
                     <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
