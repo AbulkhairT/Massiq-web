@@ -1202,6 +1202,340 @@ function PlanTab({ profile, activePlan, setTab }) {
   );
 }
 
+/* ─── Profile Tab ────────────────────────────────────────────────────────── */
+
+/* Toast notification */
+function Toast({ msg, onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 2800); return () => clearTimeout(t); }, [onDone]);
+  return (
+    <div className="su" style={{
+      position: 'fixed', bottom: 100, left: '50%', transform: 'translateX(-50%)',
+      background: C.green, color: '#000', fontWeight: 700, fontSize: 14,
+      padding: '10px 22px', borderRadius: 99, zIndex: 500, whiteSpace: 'nowrap',
+      boxShadow: '0 4px 20px rgba(0,200,83,0.4)',
+    }}>{msg}</div>
+  );
+}
+
+/* Mission definitions */
+const MISSIONS = [
+  { id: 'm_log_meal',    tier: 'Bronze', emoji: '🍽️', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
+  { id: 'm_water',       tier: 'Bronze', emoji: '💧', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
+  { id: 'm_sleep',       tier: 'Bronze', emoji: '🌙', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
+  { id: 'm_steps',       tier: 'Bronze', emoji: '👟', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
+  { id: 'm_protein3',    tier: 'Silver', emoji: '⚡', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_log5',        tier: 'Silver', emoji: '📝', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_fullweek',    tier: 'Gold',   emoji: '🏆', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
+  { id: 'm_alltargets',  tier: 'Gold',   emoji: '🎯', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
+];
+const TIER_ORDER  = ['Bronze','Silver','Gold','Platinum','Legendary'];
+const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platinum: C.purple, Legendary: C.green };
+
+/* Simple SVG line chart — physique score over scans */
+function PhysiqueChart({ scans }) {
+  if (!scans || scans.length < 2) return null;
+  const scores = scans.map(s => s.physiqueScore || 50);
+  const minS = Math.min(...scores) - 5;
+  const maxS = Math.max(...scores) + 5;
+  const W = 300, H = 72;
+  const pts = scores.map((s, i) => ({
+    x: scans.length < 2 ? W / 2 : (i / (scans.length - 1)) * (W - 20) + 10,
+    y: H - 10 - ((s - minS) / (maxS - minS || 1)) * (H - 20),
+  }));
+  const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ overflow: 'visible', display: 'block' }}>
+      <defs>
+        <linearGradient id="chartLine" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={C.green} stopOpacity="0.6" />
+          <stop offset="100%" stopColor={C.green} />
+        </linearGradient>
+      </defs>
+      <path d={d} stroke="url(#chartLine)" strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      {pts.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={4} fill={C.green} stroke={C.card} strokeWidth={2} />
+      ))}
+    </svg>
+  );
+}
+
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showToast }) {
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
+  const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  /* Health score from last scan or profile defaults */
+  const lastScan = scanHistory[scanHistory.length - 1];
+  const bf        = lastScan?.bodyFat  || 20;
+  const leanKg    = lastScan?.leanMass || (profile ? Number((profile.weightLbs * 0.453592 * 0.82).toFixed(1)) : 65);
+  const bfScore   = Math.max(0, Math.min(100, Math.round(100 - (bf - 8) * 2.8)));
+  const leanScore = Math.min(100, Math.round((leanKg / 75) * 100));
+  const healthScore = Math.round(bfScore * 0.6 + leanScore * 0.4);
+  const healthLabel = healthScore >= 80 ? 'Elite' : healthScore >= 60 ? 'Great' : 'Good';
+
+  /* Delta summary for scan history */
+  const firstScan = scanHistory[0];
+  const bfDelta   = firstScan && lastScan ? (lastScan.bodyFat  - firstScan.bodyFat).toFixed(1)  : null;
+  const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
+
+  /* Unlock logic */
+  const isUnlocked = (m) => m.requires.every(r => completed.includes(r));
+  const isDone     = (id) => completed.includes(id);
+  const totalXP    = MISSIONS.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
+
+  const completeMission = (m) => {
+    if (isDone(m.id) || !isUnlocked(m)) return;
+    const next = [...completed, m.id];
+    const nextXP = xp + m.xp;
+    setCompleted(next); setXp(nextXP);
+    LS.set(LS_KEYS.completed, next);
+    LS.set(LS_KEYS.xp, nextXP);
+    showToast(`+${m.xp} XP — ${m.title} complete!`);
+  };
+
+  /* Tier progress */
+  const bronzeDone = MISSIONS.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
+  const silverDone = MISSIONS.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
+  const goldDone   = MISSIONS.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
+  const tierFilled = bronzeDone === 4 ? (silverDone === 2 ? (goldDone === 2 ? 3 : 2) : 1) : 0;
+
+  const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
+  const goalColor = GOAL_COLORS[profile?.goal] || C.green;
+
+  return (
+    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Profile</h1>
+
+      {/* 1 ── Physique Journey ── */}
+      <div className="su">
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Your Physique Journey</div>
+        {scanHistory.length === 0 ? (
+          <Card style={{ textAlign: 'center', padding: 28 }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>📸</div>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Your transformation starts with your first scan</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>Every measurement you take gets tracked here over time.</div>
+            <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Run First Scan →</Btn>
+          </Card>
+        ) : (
+          <Card style={{ padding: 16 }}>
+            {bfDelta !== null && (
+              <div style={{ fontSize: 13, color: C.green, fontWeight: 600, marginBottom: 14 }}>
+                Since you started: {Number(bfDelta) <= 0 ? `${Math.abs(bfDelta)}% body fat lost` : `${bfDelta}% body fat gained`}
+                {lmDelta !== null && `, ${Number(lmDelta) >= 0 ? '+' : ''}${lmDelta} lbs lean mass`}
+              </div>
+            )}
+            {/* Horizontal scroll of scan cards */}
+            <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 8, marginBottom: 14 }}>
+              {scanHistory.map((s, i) => {
+                const prev = scanHistory[i - 1];
+                const improving = prev ? s.physiqueScore >= prev.physiqueScore : true;
+                return (
+                  <div key={i} style={{ flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 120, border: `1px solid ${C.border}` }}>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>{s.date || `Scan ${i + 1}`}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: C.white }}>{s.physiqueScore || '—'}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>score</div>
+                    <div style={{ fontSize: 12, color: C.green, marginTop: 4 }}>{s.bodyFat}% BF</div>
+                    {i > 0 && (
+                      <div style={{ fontSize: 11, color: improving ? C.green : C.red, marginTop: 2 }}>
+                        {improving ? '↑' : '↓'} {Math.abs((s.physiqueScore || 0) - (prev.physiqueScore || 0))} pts
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Line chart */}
+            <div style={{ padding: '4px 0' }}>
+              <PhysiqueChart scans={scanHistory} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: C.dimmed, marginTop: 4 }}>
+              <span>{scanHistory[0]?.date}</span>
+              <span style={{ color: C.muted }}>Physique Score</span>
+              <span>{scanHistory[scanHistory.length - 1]?.date}</span>
+            </div>
+          </Card>
+        )}
+      </div>
+
+      {/* 2 ── Health Score ── */}
+      <Card className="su" style={{ animationDelay: '.04s' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1, background: `linear-gradient(135deg, ${C.gold}, ${C.green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              {healthScore}
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{healthLabel}</div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+              Composite score from body fat, muscle mass & physique consistency
+            </p>
+          </div>
+        </div>
+        {[
+          { icon: '💧', label: 'Body Fat',     sub: bf < 18 ? 'In healthy range' : 'Room to improve', value: `${bf}%`,       color: bf < 18 ? C.green : C.orange },
+          { icon: '🏋️', label: 'Muscle Mass',  sub: leanKg < 70 ? 'Room to grow' : 'Well developed',  value: `${leanKg} kg`, color: C.blue },
+          { icon: '❤️', label: 'Visceral Fat', sub: 'Healthy level',                                   value: '3/20',         color: C.green },
+        ].map(row => (
+          <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{row.label}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{row.sub}</div>
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: row.color }}>{row.value}</div>
+          </div>
+        ))}
+      </Card>
+
+      {/* 3 ── XP + Missions ── */}
+      <div className="su" style={{ animationDelay: '.08s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Physique Missions</div>
+
+        {/* Hero stats */}
+        <Card style={{ marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
+            {[
+              { label: 'Total XP',   value: totalXP },
+              { label: 'Day Streak', value: LS.get(LS_KEYS.streak, 0) },
+              { label: 'Done',       value: `${completed.length}/${MISSIONS.length}` },
+            ].map(s => (
+              <div key={s.label}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{s.value}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        {/* Tier bar */}
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20, padding: '0 4px' }}>
+          {TIER_ORDER.map((tier, i) => {
+            const filled = i <= tierFilled;
+            return (
+              <div key={tier} style={{ display: 'flex', alignItems: 'center', flex: i < TIER_ORDER.length - 1 ? 1 : 0 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: filled ? TIER_COLORS[tier] : C.border, border: `2px solid ${filled ? TIER_COLORS[tier] : C.dimmed}` }} />
+                  <span style={{ fontSize: 9, color: filled ? TIER_COLORS[tier] : C.dimmed, fontWeight: 600 }}>{tier}</span>
+                </div>
+                {i < TIER_ORDER.length - 1 && (
+                  <div style={{ flex: 1, height: 2, background: i < tierFilled ? TIER_COLORS[tier] : C.border, margin: '0 4px', marginBottom: 14 }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Mission cards */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {MISSIONS.map(m => {
+            const done     = isDone(m.id);
+            const unlocked = isUnlocked(m);
+            const tc       = TIER_COLORS[m.tier];
+            return (
+              <div key={m.id} className="bp" onClick={() => completeMission(m)} style={{
+                display: 'flex', alignItems: 'center', gap: 14,
+                background: C.card, borderRadius: 16, padding: '14px 16px',
+                border: `1px solid ${done ? tc + '55' : C.border}`,
+                opacity: !unlocked && !done ? 0.4 : 1,
+              }}>
+                {/* Ring */}
+                <div style={{
+                  width: 48, height: 48, borderRadius: '50%', flexShrink: 0,
+                  border: `3px solid ${done ? tc : C.border}`,
+                  background: done ? `${tc}22` : C.cardElevated,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 22,
+                }}>
+                  {done ? '✓' : !unlocked ? '🔒' : m.emoji}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: done ? C.muted : C.white, textDecoration: done ? 'line-through' : 'none' }}>{m.title}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: tc, background: `${tc}22`, padding: '2px 8px', borderRadius: 99 }}>{m.tier}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{m.desc}</div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: done ? C.dimmed : C.gold, flexShrink: 0 }}>+{m.xp} XP</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 4 ── Profile Info ── */}
+      <Card className="su" style={{ animationDelay: '.12s' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>Profile Info</span>
+          <Btn variant="outline" onClick={onEditProfile} style={{ padding: '8px 16px', fontSize: 13 }}>Edit Profile</Btn>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[
+            ['Name',     profile?.name],
+            ['Age',      profile?.age ? `${profile.age} years` : '—'],
+            ['Weight',   profile?.weightLbs ? `${profile.weightLbs} lbs` : '—'],
+            ['Height',   profile?.heightIn  ? `${profile.heightIn} in`  : '—'],
+            ['Activity', profile?.activity],
+          ].map(([k, v]) => (
+            <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 13, color: C.muted }}>{k}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{v || '—'}</span>
+            </div>
+          ))}
+          {/* Goal pill */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 13, color: C.muted }}>Goal</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: goalColor, background: `${goalColor}22`, padding: '4px 12px', borderRadius: 99, border: `1px solid ${goalColor}55` }}>
+              {profile?.goal || '—'}
+            </span>
+          </div>
+          {/* Dietary prefs */}
+          {profile?.dietPrefs?.length > 0 && (
+            <div style={{ paddingTop: 4 }}>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>Dietary Prefs</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {profile.dietPrefs.map(d => (
+                  <span key={d} style={{ fontSize: 12, color: C.muted, background: C.cardElevated, padding: '4px 10px', borderRadius: 99, border: `1px solid ${C.border}` }}>{d}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Cuisine prefs */}
+          {profile?.cuisines?.length > 0 && (
+            <div style={{ paddingTop: 4 }}>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>Cuisines</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {profile.cuisines.map(c => (
+                  <span key={c} style={{ fontSize: 12, color: C.muted, background: C.cardElevated, padding: '4px 10px', borderRadius: 99, border: `1px solid ${C.border}` }}>{c}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* 5 ── Reset ── */}
+      <div style={{ paddingTop: 8, textAlign: 'center' }}>
+        {!confirmReset ? (
+          <button className="bp" onClick={() => setConfirmReset(true)} style={{ background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '10px 0' }}>
+            Reset All Data
+          </button>
+        ) : (
+          <Card style={{ border: `1px solid ${C.red}`, textAlign: 'center', padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Are you sure?</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>This will clear all your data and restart onboarding.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="ghost" onClick={() => setConfirmReset(false)} style={{ flex: 1 }}>Cancel</Btn>
+              <Btn onClick={onReset} style={{ flex: 1, background: C.red, color: C.white }}>Yes, Reset</Btn>
+            </div>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -1257,6 +1591,8 @@ export default function MassIQ() {
   const [activePlan, setActivePlan] = useState(null);
   const [tab,        setTab]        = useState('home');
   const [ready,      setReady]      = useState(false);
+  const [toast,      setToast]      = useState(null);
+  const [editing,    setEditing]    = useState(false);
 
   useEffect(() => {
     setProfile(LS.get(LS_KEYS.profile));
@@ -1264,12 +1600,28 @@ export default function MassIQ() {
     setReady(true);
   }, []);
 
+  const handleReset = () => {
+    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    setProfile(null); setActivePlan(null); setTab('home'); setEditing(false);
+  };
+
+  const handleEditProfile = () => {
+    setEditing(true);
+  };
+
+  const handleOnboardingComplete = (p) => {
+    setProfile(p);
+    setEditing(false);
+  };
+
+  const showToast = (msg) => setToast(msg);
+
   if (!ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
-  if (!profile) return (
+  if (!profile || editing) return (
     <>
       <style>{CSS}</style>
-      <Onboarding onComplete={p => setProfile(p)} />
+      <Onboarding onComplete={handleOnboardingComplete} />
     </>
   );
 
@@ -1279,8 +1631,17 @@ export default function MassIQ() {
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} />;
       case 'scan':      return <PlaceholderTab label="Body Scan" icon="📸" />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} />;
-      case 'profile':   return <PlaceholderTab label="Profile"   icon="👤" />;
-      default:          return null;
+      case 'profile':   return (
+        <ProfileTab
+          profile={profile}
+          activePlan={activePlan}
+          setTab={setTab}
+          onEditProfile={handleEditProfile}
+          onReset={handleReset}
+          showToast={showToast}
+        />
+      );
+      default: return null;
     }
   };
 
@@ -1293,6 +1654,7 @@ export default function MassIQ() {
         </div>
       </div>
       <TabBar active={tab} setTab={setTab} />
+      {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
     </>
   );
 }
