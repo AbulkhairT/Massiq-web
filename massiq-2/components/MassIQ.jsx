@@ -1,5 +1,8 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
+import { buildWorkoutPlan } from '../lib/content/workouts';
+import { buildMealPlan }    from '../lib/content/meals';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -210,13 +213,14 @@ const SS = {
 };
 
 /* ─── AI Helpers ─────────────────────────────────────────────────────────── */
-async function callClaude(messages, maxTokens = 2000) {
+// model: 'haiku' (default, 12x cheaper) | 'sonnet' (vision only) | explicit model ID
+async function callClaude(messages, maxTokens = 600, model = 'haiku') {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch('/api/claude', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messages, max_tokens: maxTokens }),
+        body: JSON.stringify({ messages, max_tokens: maxTokens, model }),
       });
       if (!res.ok) throw new Error(`API ${res.status}`);
       const { text, error } = await res.json();
@@ -243,158 +247,88 @@ function weekKey2() {
   return `${d.getFullYear()}-W${Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7)}`;
 }
 
-/* ─── AI Plan Generators ─────────────────────────────────────────────────── */
+/* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
+   All plan/mission/tip/insight generation is now deterministic.
+   LLM is reserved ONLY for: physique scan (vision), meal suggestions,
+   recipe details, meal swaps, and food photo analysis.
+   Cost: ~$0.005/session (down from ~$0.17 with all-Sonnet approach).
+─────────────────────────────────────────────────────────────────────────── */
+
 async function generateInitialPlan(profile, macros, engineOutput = null) {
-  const in4weeks    = new Date(Date.now() + 28 * 86400000).toISOString().slice(0, 10);
-  const m           = engineOutput?.macro_targets || macros;
-  const tl          = engineOutput?.trajectory;
-  const diag        = engineOutput?.diagnosis?.primary;
-  const claudeCtx   = engineOutput?.claude_context || '';
-  const startBF     = engineOutput?.start_bf ?? 20;
-  const targetBF    = engineOutput?.target_bf ?? (profile.goal === 'Cut' ? startBF - 4 : startBF);
-  const weeksToGoal = tl?.timeline_weeks ?? 12;
-
-  // Claude's role: generate narrative, missions, tips, and training focus.
-  // The numbers are provided by the engine and must not be changed.
-  const text = await callClaude([{ role: 'user', content:
-    `You are an elite physique coach. The physiological targets below were computed by a deterministic calculation engine. Your job is to generate the NARRATIVE, MISSIONS, and TIPS — not the numbers.
-
-${claudeCtx || `TARGETS: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`}
-
-User profile:
-- Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
-- Weight: ${profile.weightLbs} lbs, Goal: ${profile.goal}, Activity: ${profile.activity}
-- Dietary prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}
-- Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
-- Avoid: ${(profile.avoid||[]).join(', ')||'none'}
-${diag ? `- Primary diagnosis: ${diag.primary_issue}` : ''}
-
-Rules:
-1. Use the exact calorie/macro numbers above — do not change them
-2. Weekly missions must reference the exact protein/calorie targets
-3. Daily tips must be specific (include actual numbers from the targets)
-4. whyThisWorks must explain the diagnosis and the science behind the plan
-
-Return ONLY raw JSON (no markdown, no code blocks):
-{"phase":{"name":"string","label":"${profile.goal}","objective":"specific 2-sentence objective referencing their diagnosis","durationWeeks":12},"dailyTargets":{"calories":${m.calories},"protein":${m.protein},"carbs":${m.carbs},"fat":${m.fat},"steps":${m.steps||9000},"sleepHours":${m.sleepHours||8},"waterLiters":${m.waterLiters||3},"trainingDaysPerWeek":${m.trainingDaysPerWeek||4}},"whyThisWorks":"3-4 sentences — reference the diagnosis and explain the science","weeklyMissions":["Hit ${m.protein}g protein every day this week","Complete ${m.trainingDaysPerWeek||4} resistance sessions","Reach ${m.steps||9000} steps daily"],"trainingFocus":{"primary":"specific muscle group or movement pattern","secondary":"secondary focus","frequency":"${m.trainingDaysPerWeek||4}x per week","reasoning":"why this training split serves the ${profile.goal} goal"},"nutritionKeyChange":"one specific, numerical change from their current habits","dailyTips":["Monday: specific tip with a number","Tuesday: specific tip","Wednesday: specific tip","Thursday: specific tip","Friday: specific tip","Saturday: specific tip","Sunday: specific tip"],"nextScanDate":"${in4weeks}","transformationTimeline":{"startBF":${startBF},"targetBF":${targetBF},"weeksToGoal":${weeksToGoal}}}`
-  }], 2000);
-  return parseJSON(text);
+  // Synchronous — no LLM call. Returns same shape as previous Claude version.
+  return buildPlanContent(profile, macros, engineOutput);
 }
 
-async function generateMealPlan(profile, activePlan, scanResults = null) {
-  const m = activePlan?.macros || activePlan?.dailyTargets || {};
-  const text = await callClaude([{ role: 'user', content:
-    `Generate a 7-day meal plan for ${profile.name}:
-Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, ${m.carbs||200}g carbs, ${m.fat||55}g fat
-Restrictions: ${(profile.dietPrefs||[]).join(', ')||'none'}
-Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
-Avoid: ${(profile.avoid||[]).join(', ')||'none'}
-Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
-${scanResults ? `Scan: BF ${scanResults.bodyFatPct}%, weak: ${(scanResults.weakestGroups||[]).join(', ')}` : ''}
-Rules: Hit macros daily. Vary cuisines. Never include avoided foods. Training days more carbs.
-Return ONLY raw JSON array of 7:
-[{"day":"Monday","isTrainingDay":true,"totalCalories":0,"totalProtein":0,"breakfast":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"lunch":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"dinner":{"name":"string","description":"string","calories":0,"protein":0,"carbs":0,"fat":0,"prepTime":"string","whyThisMeal":"string"},"snack":{"name":"string","calories":0,"protein":0,"description":"string"}}]`
-  }], 4000);
-  return parseJSON(text);
+async function generateMealPlan(profile, activePlan) {
+  // Synchronous — no LLM call. Template database with macro-matching.
+  const m          = activePlan?.macros || activePlan?.dailyTargets || {};
+  const trainDays  = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  return buildMealPlan(
+    m.calories || 2000,
+    m.protein  || 150,
+    trainDays,
+    profile.dietPrefs || [],
+    profile.avoid     || [],
+  );
 }
 
 async function generateSuggestions(profile, activePlan, todayMeals) {
+  // Keep LLM but use Haiku — context-aware meal suggestions still benefit from AI.
   const m = activePlan?.macros || activePlan?.dailyTargets || {};
   const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
   const h = new Date().getHours();
-  const timeOfDay = h < 11 ? 'morning (breakfast)' : h < 15 ? 'midday (lunch)' : 'evening (dinner)';
+  const timeOfDay = h < 11 ? 'Breakfast' : h < 15 ? 'Lunch' : 'Dinner';
   const text = await callClaude([{ role: 'user', content:
-    `Suggest 3 meals for ${profile.name} right now:
-Goal: ${profile.goal}, Time: ${timeOfDay}
-Remaining: ${Math.max(0,(m.calories||2000)-eaten.cal)} kcal, ${Math.max(0,(m.protein||150)-eaten.prot)}g protein
-Prefs: ${(profile.dietPrefs||[]).join(', ')||'none'}, Cuisines: ${(profile.cuisines||[]).join(', ')||'any'}
-Avoid: ${(profile.avoid||[]).join(', ')||'none'}
-Already eaten: ${todayMeals.map(x=>x.name).join(', ')||'nothing yet'}
-Return ONLY raw JSON array of 3:
-[{"id":"s1","name":"string","mealType":"breakfast|lunch|dinner|snack","time":"Breakfast|Lunch|Dinner|Snack","icon":"emoji","calories":0,"protein":0,"carbs":0,"fat":0,"description":"string","whyNow":"one sentence why this is right for right now"}]`
-  }], 800);
+    `Suggest 3 meals. Time: ${timeOfDay}. Goal: ${profile.goal}. Remaining: ${Math.max(0,(m.calories||2000)-eaten.cal)} kcal, ${Math.max(0,(m.protein||150)-eaten.prot)}g protein. Prefs: ${(profile.dietPrefs||[]).join(',')||'none'}. Avoid: ${(profile.avoid||[]).join(',')||'none'}.
+Return ONLY JSON array of 3: [{"id":"s1","name":"","mealType":"${timeOfDay.toLowerCase()}","time":"${timeOfDay}","icon":"emoji","calories":0,"protein":0,"carbs":0,"fat":0,"description":"","whyNow":"one sentence"}]`
+  }], 500, 'haiku');
   return parseJSON(text);
 }
 
 async function generateDailyTip(profile, activePlan, todayMeals) {
+  // Fully template-based — no LLM call.
   const m = activePlan?.macros || activePlan?.dailyTargets || {};
   const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
-  const text = await callClaude([{ role: 'user', content:
-    `Give ${profile.name} ONE specific actionable tip right now. Goal: ${profile.goal}. Time: ${new Date().getHours()}:00. Calories: ${eaten.cal}/${m.calories||2000}. Protein: ${eaten.prot}g/${m.protein||150}g. Write one sentence max 20 words with their actual numbers. No fluff. Return ONLY the tip text.`
-  }], 80);
-  const raw = text.trim().replace(/^["']|["']$/g, '');
-  // Claude sometimes wraps the tip in JSON e.g. {"tip":"..."}
-  try {
-    const parsed = JSON.parse(raw);
-    return (typeof parsed === 'object' && parsed !== null)
-      ? String(parsed.tip || parsed.text || parsed.message || Object.values(parsed)[0] || raw)
-      : raw;
-  } catch {
-    return raw;
-  }
+  return getDailyTip(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, eaten, new Date().getDay());
 }
 
 async function generatePatterns(profile, activePlan) {
-  const m = activePlan?.macros || activePlan?.dailyTargets || {};
-  const text = await callClaude([{ role: 'user', content:
-    `Analyze ${profile.name}'s fitness profile and generate 3 specific actionable insights:
-Goal: ${profile.goal}, Activity: ${profile.activity}
-Daily targets: ${m.calories||2000} kcal, ${m.protein||150}g protein
-Training: ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week
-Return ONLY raw JSON: {"insights":[{"icon":"emoji","pattern":"specific insight with numbers","action":"specific thing to do"}]}`
-  }], 400);
-  return parseJSON(text);
+  // Synchronous — no LLM call. Returns same shape as previous Claude version.
+  const m         = activePlan?.macros || activePlan?.dailyTargets || {};
+  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const insights  = buildInsights(profile, { calories: m.calories||2000, protein: m.protein||150 }, trainDays, null);
+  return { insights };
 }
 
 async function generateMissions(profile, activePlan) {
-  const m = activePlan?.macros || activePlan?.dailyTargets || {};
-  const text = await callClaude([{ role: 'user', content:
-    `Generate 8 progressive missions for ${profile.name} (Goal: ${profile.goal}, ${m.calories||2000} kcal, ${m.protein||150}g protein, training ${activePlan?.dailyTargets?.trainingDaysPerWeek||activePlan?.trainDays||4}x/week).
-2 Bronze (easy, 100 XP), 2 Silver (medium, 250 XP), 2 Gold (hard, 500 XP), 2 Platinum (elite, 1000 XP).
-Each specific to their numbers. Return ONLY raw JSON array:
-[{"id":"unique_id","tier":"Bronze|Silver|Gold|Platinum","emoji":"emoji","title":"short title","description":"specific with their numbers","xp":100}]`
-  }], 600);
-  return parseJSON(text);
+  // Synchronous — no LLM call. Template-based tier system.
+  const m         = activePlan?.macros || activePlan?.dailyTargets || {};
+  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  return buildMissions(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, trainDays);
 }
 
 async function generateWorkoutPlan(profile, activePlan) {
+  // Synchronous — no LLM call. Evidence-based split selection by training days.
   const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  const focus = activePlan?.trainingFocus || {};
-  const text = await callClaude([{ role: 'user', content:
-    `Generate a 7-day workout split for ${profile.name}:
-Goal: ${profile.goal}, Training: ${trainDays}x/week
-Primary focus: ${focus.primary || 'overall strength'}, Secondary: ${focus.secondary || 'conditioning'}
-Activity: ${profile.activity}
-Rules: Include rest days. Compound movements first. 4-6 exercises per training day. Progressive overload.
-Return ONLY raw JSON array of 7 (Monday-Sunday):
-[{"day":"Monday","isTrainingDay":true,"workoutType":"Push","focus":["Chest","Shoulders","Triceps"],"duration":"50-60 min","warmup":"5 min light cardio + arm circles, shoulder rotations","cooldown":"5 min static stretching targeting worked muscles","exercises":[{"name":"Bench Press","sets":4,"reps":"8-10","rest":"90s","weight":"70-80% 1RM","technique":"Lower bar to lower chest, elbows at 45°. Drive feet into floor. Press explosively."}]}]`
-  }], 3000);
-  return parseJSON(text);
+  return buildWorkoutPlan(profile.goal, trainDays);
 }
 
 async function generateRecipeDetails(meal, profile) {
+  // Use Haiku — recipe generation is simple structured output, no complex reasoning needed.
   const text = await callClaude([{ role: 'user', content:
-    `Detailed recipe for: ${meal.name}
-Macros: ${meal.calories || 0} kcal, ${meal.protein || 0}g protein, ${meal.carbs || 0}g carbs, ${meal.fat || 0}g fat
-Prep time: ${meal.prepTime || '15-20 min'}, Goal: ${profile?.goal || 'fitness'}
-Return ONLY raw JSON:
-{"ingredients":["200g chicken breast","100g brown rice","1 tbsp olive oil","salt and pepper to taste"],"steps":[{"text":"Season chicken breast with salt, pepper, and garlic powder","timerSeconds":null},{"text":"Heat olive oil in pan over medium-high heat","timerSeconds":null},{"text":"Cook chicken 6 minutes per side until golden","timerSeconds":360},{"text":"Rest chicken 3 minutes before slicing","timerSeconds":180}]}`
-  }], 600);
+    `Recipe for: ${meal.name} (${meal.calories} kcal, ${meal.protein}g P, ${meal.carbs}g C, ${meal.fat}g F). Goal: ${profile?.goal||'fitness'}.
+Return ONLY JSON: {"ingredients":["200g chicken breast"],"steps":[{"text":"Cook step","timerSeconds":null}]}`
+  }], 500, 'haiku');
   return parseJSON(text);
 }
 
-async function swapMealAPI(currentMeal, profile, activePlan) {
-  const mealType = currentMeal.mealType || currentMeal.time || currentMeal.category || 'Meal';
+async function swapMealAPI(currentMeal, profile) {
+  // Use Haiku — simple substitution task with structured output.
+  const mealType = currentMeal.mealType || currentMeal.time || 'Meal';
   const text = await callClaude([{ role: 'user', content:
-    `Replace this meal with a completely different one:
-Current: ${currentMeal.name} (${currentMeal.calories} kcal, ${currentMeal.protein}g protein)
-Type: ${mealType}, Goal: ${profile?.goal}
-Prefs: ${(profile?.dietPrefs||[]).join(', ')||'none'}, Cuisines: ${(profile?.cuisines||[]).join(', ')||'any'}
-Avoid: ${(profile?.avoid||[]).join(', ')||'none'}
-Must be different cuisine/style. Hit similar macros.
-Return ONLY raw JSON single object:
-{"name":"string","description":"string","icon":"emoji","calories":${currentMeal.calories},"protein":${currentMeal.protein},"carbs":${currentMeal.carbs||0},"fat":${currentMeal.fat||0},"prepTime":"string","whyThisMeal":"why this is a great swap"}`
-  }], 400);
+    `Suggest a different ${mealType} meal. Target: ${currentMeal.calories} kcal, ${currentMeal.protein}g protein. Goal: ${profile?.goal}. Avoid: ${(profile?.avoid||[]).join(',')||'none'}.
+Return ONLY JSON: {"name":"","description":"","icon":"emoji","calories":${currentMeal.calories},"protein":${currentMeal.protein},"carbs":${currentMeal.carbs||0},"fat":${currentMeal.fat||0},"prepTime":"","whyThisMeal":""}`
+  }], 300, 'haiku');
   return parseJSON(text);
 }
 

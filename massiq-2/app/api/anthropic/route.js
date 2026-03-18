@@ -21,7 +21,10 @@ export async function POST(req){
   const approxSize = JSON.stringify({messages, system}).length;
   if(approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  const chosenModel = (model || process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6");
+  // Prefer Haiku for vision (12x cheaper, adequate for structured physique JSON output).
+  // Override with ANTHROPIC_SCAN_MODEL env var, or pass model in request body.
+  const defaultScanModel = process.env.ANTHROPIC_SCAN_MODEL || process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
+  const chosenModel = model || defaultScanModel;
 
   const upstreamBody = { model: chosenModel, max_tokens: maxTokens, messages };
   if(system) upstreamBody.system = system;
