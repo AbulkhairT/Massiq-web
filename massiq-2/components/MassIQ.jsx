@@ -4306,15 +4306,18 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+  const persistUserState = async (nextProfile, nextPlan, scanHistory = null, source = 'unknown_ui_action') => {
     if (!session?.access_token) return;
     try {
       setSyncing(true);
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
+      const sessionId = session?.session_id || null;
       if (!userId) return;
+      console.info('[sync] persistUserState:start', { source, userId, sessionId, hasPlan: Boolean(nextPlan), hasProfile: Boolean(nextProfile) });
       if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
       if (nextPlan) {
+        console.info('[sync] plans.insert actor', { source, userId, sessionId });
         await upsertPlan(session.access_token, userId, nextPlan);
       }
       if (Array.isArray(scanHistory) && scanHistory.length) {
@@ -4322,7 +4325,7 @@ export default function MassIQ() {
         await createScan(session.access_token, userId, latestScan);
       }
     } catch (err) {
-      console.error('Persist failed (original Supabase error):', err?.message || err, err);
+      console.error('Persist failed (original Supabase error):', { source, message: err?.message || String(err), error: err });
       showToast('We couldn’t finish syncing your account. Please try again.');
     } finally {
       setSyncing(false);
@@ -4402,7 +4405,7 @@ export default function MassIQ() {
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
       setActivePlan(plan);
-      persistUserState(p, plan);
+      persistUserState(p, plan, null, 'onboarding_complete');
       // Background: generate meal plan, workout plan, missions
       generateMealPlan(p, plan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
@@ -4414,7 +4417,7 @@ export default function MassIQ() {
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
     } else {
-      persistUserState(p, activePlan);
+      persistUserState(p, activePlan, null, 'profile_update');
     }
   };
 
@@ -4437,7 +4440,7 @@ export default function MassIQ() {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
-      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
+      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history, 'scan_apply_plan'); }} />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
       case 'profile':   return (
         <ProfileTab
