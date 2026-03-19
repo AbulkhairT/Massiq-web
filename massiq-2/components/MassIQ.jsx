@@ -733,6 +733,7 @@ function Onboarding({ onComplete }) {
     setData((p) => ({
       ...p,
       ...saved,
+      name: saved.name || p.name || '',
       unitSystem: saved.unitSystem || 'imperial',
       weightLbs: saved.weightLbs ? String(saved.weightLbs) : '',
       weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : '',
@@ -745,7 +746,7 @@ function Onboarding({ onComplete }) {
   const TOTAL = 9; // steps 0-8
 
   const canNext = [
-    !!data.name.trim(),                        // 0 name
+    !!(data.name || '').trim(),                // 0 name
     !!data.goal,                               // 1 goal
     !!(((data.unitSystem === 'metric' ? data.weightKg : data.weightLbs)
       && (data.unitSystem === 'metric' ? data.heightCm : (data.heightFt && data.heightInch))
@@ -922,7 +923,7 @@ function Onboarding({ onComplete }) {
             autoFocus
             value={data.name}
             onChange={e => set('name', e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && data.name.trim() && goNext()}
+            onKeyDown={e => e.key === 'Enter' && (data.name || '').trim() && goNext()}
           />
         </div>
       );
