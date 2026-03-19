@@ -4,6 +4,17 @@ import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
+import {
+  initializeSession,
+  signInWithPassword,
+  signUpWithPassword,
+  signOut as signOutSession,
+  fetchUser,
+  upsertProfile,
+  getProfile,
+  upsertPlan,
+  getPlan,
+} from '../lib/supabase/client';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -3026,7 +3037,7 @@ function AIPatterns({ profile, activePlan }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showToast }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast }) {
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
   const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
@@ -3348,6 +3359,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
 
       {/* 6 ── Reset ── */}
       <div style={{ paddingTop: 8, textAlign: 'center' }}>
+        <button className="bp" onClick={onLogout} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '8px 0 14px' }}>
+          Log Out
+        </button>
         {!confirmReset ? (
           <button className="bp" onClick={() => setConfirmReset(true)} style={{ background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '10px 0' }}>
             Reset All Data
@@ -3564,7 +3578,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     LS.set(LS_KEYS.stats, { calories: 0, protein: 0 });
     LS.set(LS_KEYS.scanHistory, history);
     setScanHistory(history);
-    onPlanApplied(plan);
+    onPlanApplied(plan, history);
     // Regenerate meal plan with scan data in background
     generateMealPlan(profile, plan, result)
       .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
@@ -3998,6 +4012,53 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   );
 }
 
+function AuthScreen({ onSubmit, loading, error, notice }) {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const disabled = loading || !email.trim() || password.length < 6;
+
+  return (
+    <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <style>{CSS}</style>
+      <Card className="glass su" style={{ width: '100%', maxWidth: 420, padding: 24, background: C.cardElevated }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 14 }}>MASSIQ</div>
+        <h1 style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
+        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+          {mode === 'login' ? 'Log in to continue your plan, scans, and progress timeline.' : 'Set up your identity once. MassIQ will remember your profile, scans, and active plan.'}
+        </p>
+
+        <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
+          {['login', 'signup'].map((m) => (
+            <button key={m} className="bp" onClick={() => setMode(m)} style={{
+              flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
+              background: mode === m ? C.greenBg : 'transparent',
+              color: mode === m ? C.green : C.muted,
+              border: 'none',
+            }}>
+              {m === 'login' ? 'Log In' : 'Create Account'}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <Btn disabled={disabled} onClick={() => onSubmit(mode, email.trim(), password)} style={{ width: '100%', marginTop: 6 }}>
+            {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
+          </Btn>
+        </div>
+
+        {(error || notice) && (
+          <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red : C.greenDim}`, background: error ? 'rgba(255,90,95,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
+            {error || notice}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -4100,23 +4161,135 @@ function Sidebar({ active, setTab, profile }) {
 
 /* ─── Root App ───────────────────────────────────────────────────────────── */
 export default function MassIQ() {
+  const [session,    setSession]    = useState(null);
+  const [authReady,  setAuthReady]  = useState(false);
+  const [authBusy,   setAuthBusy]   = useState(false);
+  const [authError,  setAuthError]  = useState('');
+  const [authNotice, setAuthNotice] = useState('');
   const [profile,    setProfile]    = useState(null);
   const [activePlan, setActivePlan] = useState(null);
   const [tab,        setTab]        = useState('home');
   const [ready,      setReady]      = useState(false);
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
+  const [syncing,    setSyncing]    = useState(false);
 
   useEffect(() => {
-    const p = LS.get(LS_KEYS.profile);
-    const rawPlan = LS.get(LS_KEYS.activePlan);
-    // Clamp any stale macro values from localStorage (e.g. old Claude-generated extremes)
-    if (rawPlan && rawPlan.macros) rawPlan.macros = clampMacros(rawPlan.macros, p);
-    if (rawPlan && rawPlan.dailyTargets) rawPlan.dailyTargets = clampMacros(rawPlan.dailyTargets, p);
-    setProfile(p);
-    setActivePlan(rawPlan);
-    setReady(true);
+    let mounted = true;
+    const boot = async () => {
+      try {
+        const s = await initializeSession();
+        if (!mounted) return;
+        setSession(s);
+      } catch (err) {
+        if (!mounted) return;
+        setAuthError(err.message || 'Could not restore session.');
+      } finally {
+        if (mounted) setAuthReady(true);
+      }
+    };
+    boot();
+    return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (!session?.access_token) {
+      setProfile(null);
+      setActivePlan(null);
+      setReady(true);
+      return;
+    }
+    let mounted = true;
+    const hydrate = async () => {
+      setReady(false);
+      try {
+        const user = session.user || await fetchUser(session.access_token);
+        const userId = user?.id;
+        if (!userId) throw new Error('Missing user session.');
+
+        const [profileRow, planRow] = await Promise.all([
+          getProfile(session.access_token, userId),
+          getPlan(session.access_token, userId),
+        ]);
+
+        const loadedProfile = profileRow?.profile || null;
+        const loadedPlan = planRow?.plan || null;
+        const loadedScanHistory = Array.isArray(planRow?.scan_history) ? planRow.scan_history : [];
+
+        if (mounted) {
+          setProfile(loadedProfile);
+          setActivePlan(loadedPlan);
+          setTab(loadedProfile && loadedPlan ? 'home' : 'home');
+          LS.set(LS_KEYS.profile, loadedProfile);
+          LS.set(LS_KEYS.activePlan, loadedPlan);
+          LS.set(LS_KEYS.scanHistory, loadedScanHistory);
+        }
+      } catch (err) {
+        if (mounted) setAuthError(err.message || 'Could not load account data.');
+      } finally {
+        if (mounted) setReady(true);
+      }
+    };
+    hydrate();
+    return () => { mounted = false; };
+  }, [authReady, session?.access_token]);
+
+  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+    if (!session?.access_token) return;
+    try {
+      setSyncing(true);
+      const user = session.user || await fetchUser(session.access_token);
+      const userId = user?.id;
+      if (!userId) return;
+      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
+      if (nextPlan) {
+        const scans = scanHistory ?? LS.get(LS_KEYS.scanHistory, []);
+        await upsertPlan(session.access_token, userId, nextPlan, scans);
+      }
+    } catch (err) {
+      console.error('Persist failed:', err);
+      showToast(`⚠️ Sync issue: ${err.message || 'Failed to save to cloud.'}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleAuthSubmit = async (mode, email, password) => {
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthNotice('');
+    try {
+      const res = mode === 'signup'
+        ? await signUpWithPassword(email, password)
+        : await signInWithPassword(email, password);
+      if (!res?.access_token) {
+        setAuthNotice(mode === 'signup'
+          ? 'Account created. Check your email if confirmation is required, then log in.'
+          : 'Login succeeded but no active session was returned.');
+        return;
+      }
+      setSession(res);
+    } catch (err) {
+      setAuthError(err.message || 'Authentication failed.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (session?.access_token) await signOutSession(session.access_token);
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
+    setSession(null);
+    setProfile(null);
+    setActivePlan(null);
+    setEditing(false);
+    setReady(true);
+    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+  };
 
   const handleReset = () => {
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
@@ -4129,10 +4302,12 @@ export default function MassIQ() {
 
   const handleOnboardingComplete = (p, plan) => {
     setProfile(p);
+    LS.set(LS_KEYS.profile, p);
     setEditing(false);
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
       setActivePlan(plan);
+      persistUserState(p, plan);
       // Background: generate meal plan, workout plan, missions
       generateMealPlan(p, plan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
@@ -4143,12 +4318,18 @@ export default function MassIQ() {
       generateMissions(p, plan)
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
+    } else {
+      persistUserState(p, activePlan);
     }
   };
 
   const showToast = (msg) => setToast(msg);
 
-  if (!ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+  if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+
+  if (!session?.access_token) {
+    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
+  }
 
   if (!profile || editing) return (
     <>
@@ -4161,7 +4342,7 @@ export default function MassIQ() {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
-      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={p => setActivePlan(p)} />;
+      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
       case 'profile':   return (
         <ProfileTab
@@ -4170,6 +4351,7 @@ export default function MassIQ() {
           setTab={setTab}
           onEditProfile={handleEditProfile}
           onReset={handleReset}
+          onLogout={handleLogout}
           showToast={showToast}
         />
       );
@@ -4197,6 +4379,7 @@ export default function MassIQ() {
       </div>
 
       <TabBar active={tab} setTab={setTab} />
+      {syncing && <Toast msg="Syncing your account…" onDone={() => {}} />}
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
     </>
   );
