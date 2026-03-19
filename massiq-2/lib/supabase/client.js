@@ -76,6 +76,7 @@ function toSafeInt(value, field) {
 function serializeProfile(userId, profile) {
   return {
     id: userId,
+    name: profile?.name?.trim() || null,
     age: toNumber(profile?.age),
     weight: toNumber(profile?.weightLbs),
     height: toNumber(profile?.heightCm),
@@ -90,14 +91,14 @@ function deserializeProfile(row) {
   const heightCm = toNumber(row.height, 0) || 0;
   return {
     id: row.id,
-    name: 'Athlete',
+    name: row.name || null,
     age: toNumber(row.age, null),
     weightLbs: toNumber(row.weight, null),
     heightCm: toNumber(row.height, null),
     heightIn: heightCm ? Number((heightCm / 2.54).toFixed(1)) : null,
-    gender: row.gender || 'Male',
-    goal: row.goal || 'Maintain',
-    activity: row.activity_level || 'Moderate',
+    gender: row.gender || null,
+    goal: row.goal || null,
+    activity: row.activity_level || null,
     unitSystem: 'imperial',
     dietPrefs: [],
     avoid: [],
@@ -215,10 +216,17 @@ export async function initializeSession() {
   if (!session?.access_token) return null;
   const expiresAt = Number(session.expires_at || 0);
   const now = Math.floor(Date.now() / 1000);
-  if (expiresAt && expiresAt - now < 90 && session.refresh_token) {
-    return refreshSession(session.refresh_token);
+  const activeSession = expiresAt && expiresAt - now < 90 && session.refresh_token
+    ? await refreshSession(session.refresh_token)
+    : session;
+  try {
+    const user = await fetchUser(activeSession.access_token);
+    if (!user?.id) throw new Error('Missing user id');
+    return { ...activeSession, user };
+  } catch {
+    clearStoredSession();
+    return null;
   }
-  return session;
 }
 
 export async function fetchUser(token) {
@@ -241,21 +249,30 @@ export async function upsertProfile(token, userId, profile) {
 }
 
 export async function getProfile(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
-    method: 'GET',
-    headers: authHeaders(token),
-  });
-  return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  try {
+    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,name,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  } catch (err) {
+    if (!String(err?.message || '').toLowerCase().includes('name')) throw err;
+    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  }
 }
 
 export async function ensureProfile(token, userId) {
   const existing = await getProfile(token, userId);
   if (existing) return existing;
-  await supabaseFetch('/rest/v1/profiles', {
+  await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'return=representation',
+      Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify({ id: userId }),
   });
