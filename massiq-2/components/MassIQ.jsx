@@ -4220,6 +4220,7 @@ function Sidebar({ active, setTab, profile }) {
 
 /* ─── Root App ───────────────────────────────────────────────────────────── */
 export default function MassIQ() {
+  const authInFlight = useRef(false);
   const [session,    setSession]    = useState(null);
   const [authReady,  setAuthReady]  = useState(false);
   const [authBusy,   setAuthBusy]   = useState(false);
@@ -4237,11 +4238,14 @@ export default function MassIQ() {
     let mounted = true;
     const boot = async () => {
       try {
+        console.info('[auth] session restore:start');
         const s = await initializeSession();
         if (!mounted) return;
+        console.info('[auth] session restore:done', { hasSession: Boolean(s?.access_token) });
         setSession(s);
       } catch (err) {
         if (!mounted) return;
+        console.error('[auth] session restore:error', err);
         setAuthError(err.message || 'Could not restore session.');
       } finally {
         if (mounted) setAuthReady(true);
@@ -4311,6 +4315,11 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          console.info('[auth] route decision', {
+            hasProfile: Boolean(loadedProfile),
+            hasPlan: Boolean(loadedPlan),
+            destination: loadedProfile ? 'app' : 'onboarding',
+          });
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
@@ -4356,6 +4365,8 @@ export default function MassIQ() {
   };
 
   const handleAuthSubmit = async (mode, email, password) => {
+    if (authInFlight.current) return;
+    authInFlight.current = true;
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const userPassword = String(password || '');
 
@@ -4383,18 +4394,39 @@ export default function MassIQ() {
     setAuthError('');
     setAuthNotice('');
     try {
-      const res = mode === 'signup'
+      console.info('[auth] attempt:start', { mode, email: normalizedEmail });
+      let res = mode === 'signup'
         ? await signUpWithPassword(normalizedEmail, userPassword)
         : await signInWithPassword(normalizedEmail, userPassword);
+      console.info('[auth] attempt:success', { mode, hasSession: Boolean(res?.access_token) });
+      if (mode === 'signup' && !res?.access_token) {
+        console.info('[auth] signup:missing_session_try_login', { email: normalizedEmail });
+        res = await signInWithPassword(normalizedEmail, userPassword);
+      }
       if (!res?.access_token) {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
       setSession(res);
     } catch (err) {
+      const raw = String(err?.message || '').toLowerCase();
+      if (mode === 'signup' && (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered'))) {
+        try {
+          console.info('[auth] signup:duplicate_try_login', { email: normalizedEmail });
+          const loginRes = await signInWithPassword(normalizedEmail, userPassword);
+          if (loginRes?.access_token) {
+            setSession(loginRes);
+            return;
+          }
+        } catch (loginErr) {
+          console.error('[auth] signup duplicate fallback login:error', loginErr);
+        }
+      }
+      console.error('[auth] attempt:error', { mode, email: normalizedEmail, message: err?.message || String(err) });
       setAuthError(mapAuthError(err, mode));
     } finally {
       setAuthBusy(false);
+      authInFlight.current = false;
     }
   };
 
