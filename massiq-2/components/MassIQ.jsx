@@ -11,7 +11,7 @@ import {
   signOut as signOutSession,
   fetchUser,
   upsertProfile,
-  ensureProfile,
+  getProfile,
   upsertPlan,
   getPlan,
   createScan,
@@ -349,23 +349,37 @@ function getActiveTargets(activePlan, profile) {
 }
 
 function buildBaselinePlanFromProfile(profile) {
+  const weightKg = Number(((profile?.weightLbs || 0) * 0.453592).toFixed(2));
+  const heightCm = Number(profile?.heightCm || 0);
+  const age = Number(profile?.age || 0);
+  const gender = profile?.gender === 'Female' ? 'female' : 'male';
+  const activityMap = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 };
+  const activityMultiplier = activityMap[profile?.activity] || 1.55;
+  const bmr = (10 * weightKg) + (6.25 * heightCm) - (5 * age) + (gender === 'male' ? 5 : -161);
+  const tdee = bmr * activityMultiplier;
+  const goalKey = String(profile?.goal || 'Maintain').toLowerCase();
+  const targetCalories = goalKey === 'cut' ? (tdee * 0.8) : goalKey === 'bulk' ? (tdee * 1.12) : goalKey === 'recomp' ? (tdee * 0.9) : tdee;
+  const calories = Math.max(1200, Math.round(targetCalories));
+  const protein = Math.max(60, Math.round(weightKg * 2.0));
+  const fat = Math.max(35, Math.round(((calories * 0.28) / 9)));
+  const carbs = Math.max(50, Math.round((calories - (protein * 4) - (fat * 9)) / 4));
   const targets = {
-    calories: 2500,
-    protein: 150,
-    carbs: 250,
-    fat: 70,
-    steps: 9000,
+    calories,
+    protein,
+    carbs,
+    fat,
+    steps: goalKey === 'cut' ? 10000 : 8500,
     sleepHours: 8,
     waterLiters: 3,
-    trainingDaysPerWeek: 4,
-    cardioDays: 2,
+    trainingDaysPerWeek: goalKey === 'bulk' ? 5 : 4,
+    cardioDays: goalKey === 'bulk' ? 1 : 2,
   };
   const nextScan = new Date();
   nextScan.setDate(nextScan.getDate() + 28);
   return {
-    phase: 'Maintain',
-    phaseName: 'Maintain Phase',
-    objective: 'Baseline phase generated from your profile inputs.',
+    phase: profile?.goal || 'Maintain',
+    phaseName: `${profile?.goal || 'Maintain'} Phase`,
+    objective: 'Baseline phase generated from validated profile inputs.',
     week: 1,
     startDate: todayStr(),
     nextScanDate: nextScan.toISOString().slice(0, 10),
@@ -729,11 +743,13 @@ function Onboarding({ onComplete }) {
   useEffect(() => {
     const saved = LS.get(LS_KEYS.profile, null);
     if (!saved) return;
+    const savedAge = Number(saved.age);
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
     setData((p) => ({
       ...p,
       ...saved,
       name: saved.name || p.name || '',
+      age: Number.isFinite(savedAge) && savedAge >= 13 && savedAge <= 100 ? String(savedAge) : '',
       unitSystem: saved.unitSystem || 'imperial',
       weightLbs: saved.weightLbs ? String(saved.weightLbs) : '',
       weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : '',
@@ -744,13 +760,15 @@ function Onboarding({ onComplete }) {
   }, []);
 
   const TOTAL = 9; // steps 0-8
+  const ageNum = parseInt(String(data.age || '').trim(), 10);
+  const ageValid = Number.isInteger(ageNum) && ageNum >= 13 && ageNum <= 100;
 
   const canNext = [
     !!(data.name || '').trim(),                // 0 name
     !!data.goal,                               // 1 goal
     !!(((data.unitSystem === 'metric' ? data.weightKg : data.weightLbs)
       && (data.unitSystem === 'metric' ? data.heightCm : (data.heightFt && data.heightInch))
-      && data.age && data.gender)), // 2 stats
+      && ageValid && data.gender)), // 2 stats
     !!data.activity,                           // 3 activity
     true,                                      // 4 dietary (skippable)
     true,                                      // 5 cuisine (skippable)
@@ -780,15 +798,25 @@ function Onboarding({ onComplete }) {
   }, [step]);
 
   const [generating, setGenerating] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const finish = async () => {
+    setSubmitError('');
+    if (!ageValid) {
+      setSubmitError('Age must be a whole number between 13 and 100.');
+      return;
+    }
     const normalizedWeightLbs = data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0);
     const normalizedHeightCm = data.unitSystem === 'imperial'
       ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
       : Number(data.heightCm || 0);
+    if (!Number.isFinite(normalizedWeightLbs) || normalizedWeightLbs <= 0 || !Number.isFinite(normalizedHeightCm) || normalizedHeightCm <= 0) {
+      setSubmitError('Please enter a valid height and weight to continue.');
+      return;
+    }
     const profile = {
       ...data,
-      age: Number(data.age),
+      age: ageNum,
       weightLbs: Number(normalizedWeightLbs.toFixed(1)),
       heightCm: Number(normalizedHeightCm.toFixed(1)),
       heightIn: Number((normalizedHeightCm / 2.54).toFixed(1)),
@@ -796,75 +824,24 @@ function Onboarding({ onComplete }) {
     LS.set(LS_KEYS.profile, profile);
 
     // Editing existing profile — skip plan gen
-    if (LS.get(LS_KEYS.activePlan)) { onComplete(profile, null); return; }
+    if (LS.get(LS_KEYS.activePlan)) {
+      try {
+        await onComplete(profile, null);
+      } catch (err) {
+        console.error('Profile save failed:', err);
+        setSubmitError(err?.message || 'Could not save profile. Please try again.');
+      }
+      return;
+    }
 
     setGenerating(true);
+    const plan = buildBaselinePlanFromProfile(profile);
     try {
-      // 1. Run the deterministic engine first — this is the source of truth for all numbers
-      const engineOutput = await callEngine(profile, []);
-      const macros = clampMacros(engineOutput?.macro_targets || calcMacros(profile), profile);
-
-      // 2. Claude generates narrative/missions/tips constrained by engine output
-      const planData = await generateInitialPlan(profile, macros, engineOutput);
-      const td = todayStr();
-
-      // 3. Assemble plan — engine targets take priority over Claude's returned numbers
-      const plan = {
-        phase:          profile.goal,
-        phaseName:      planData.phase?.name        || `${profile.goal} Phase`,
-        objective:      planData.phase?.objective   || '',
-        week:           1,
-        startDate:      td,
-        nextScanDate:   planData.nextScanDate       || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
-        macros: {
-          calories: macros.calories,
-          protein:  macros.protein,
-          carbs:    macros.carbs,
-          fat:      macros.fat,
-        },
-        dailyTargets: {
-          calories:            macros.calories,
-          protein:             macros.protein,
-          carbs:               macros.carbs,
-          fat:                 macros.fat,
-          steps:               macros.steps               || 9000,
-          sleepHours:          macros.sleepHours          || 8,
-          waterLiters:         macros.waterLiters         || 3,
-          trainingDaysPerWeek: macros.trainingDaysPerWeek || 4,
-        },
-        trainDays:          macros.trainingDaysPerWeek || 4,
-        sleepHrs:           macros.sleepHours          || 8,
-        waterL:             macros.waterLiters         || 3,
-        steps:              macros.steps               || 9000,
-        weeklyMissions:     planData.weeklyMissions    || [],
-        whyThisWorks:       planData.whyThisWorks      || '',
-        dailyTips:          planData.dailyTips         || [],
-        trainingFocus:      planData.trainingFocus     || {},
-        nutritionKeyChange: planData.nutritionKeyChange || '',
-        startBF:            engineOutput?.start_bf     ?? planData.transformationTimeline?.startBF ?? 20,
-        targetBF:           engineOutput?.target_bf    ?? planData.transformationTimeline?.targetBF ?? (profile.goal === 'Cut' ? 16 : 20),
-        cardioDays:         macros.cardioDays           || 2,
-        // Attach engine output for downstream use (scan feedback, diagnosis display)
-        engineDiagnosis:    engineOutput?.diagnosis     || null,
-        engineTrajectory:   engineOutput?.trajectory    || null,
-        tdee:               engineOutput?.physio?.tdee  || null,
-      };
-      onComplete(profile, plan);
+      await onComplete(profile, plan);
     } catch (err) {
-      console.error('Plan generation failed:', err);
-      const macros = calcMacros(profile);
-      const td = todayStr();
-      const fallback = {
-        phase: profile.goal, phaseName: `${profile.goal} Phase`,
-        objective: `Optimize body composition through targeted ${profile.goal.toLowerCase()} protocols.`,
-        week: 1, startDate: td,
-        nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
-        macros, dailyTargets: { ...macros, steps: 8000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4 },
-        trainDays: 4, sleepHrs: 8, waterL: 3, steps: 8000,
-        weeklyMissions: [], whyThisWorks: '', dailyTips: [],
-        startBF: 20, targetBF: profile.goal === 'Cut' ? 16 : 20, cardioDays: 2,
-      };
-      onComplete(profile, fallback);
+      console.error('Onboarding completion failed:', err);
+      setGenerating(false);
+      setSubmitError(err?.message || 'Could not save your account data. Please try again.');
     }
   };
 
@@ -1000,6 +977,11 @@ function Onboarding({ onComplete }) {
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Age</div>
             <input type="number" className="ob-num-input" placeholder="28" value={data.age} onChange={e => set('age', e.target.value)} />
+            {data.age !== '' && !ageValid && (
+              <div style={{ marginTop: 8, fontSize: 12, color: C.red, textAlign: 'center' }}>
+                Age must be between 13 and 100.
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
             {['Male', 'Female'].map(g => (
@@ -1156,6 +1138,11 @@ function Onboarding({ onComplete }) {
             {step === 4 || step === 5 || step === 6 ? (
               <Btn onClick={goNext} style={{ flex: 1 }}>Continue →</Btn>
             ) : null}
+          </div>
+        )}
+        {!!submitError && (
+          <div style={{ color: C.red, fontSize: 13, textAlign: 'center', marginTop: 18 }}>
+            {submitError}
           </div>
         )}
       </div>
@@ -2983,20 +2970,6 @@ function Toast({ msg, onDone }) {
   );
 }
 
-/* Mission definitions */
-const MISSIONS = [
-  { id: 'm_log_meal',    tier: 'Bronze', emoji: '🍽️', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
-  { id: 'm_water',       tier: 'Bronze', emoji: '💧', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
-  { id: 'm_sleep',       tier: 'Bronze', emoji: '🌙', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
-  { id: 'm_steps',       tier: 'Bronze', emoji: '👟', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
-  { id: 'm_protein3',    tier: 'Silver', emoji: '⚡', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_log5',        tier: 'Silver', emoji: '📝', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_fullweek',    tier: 'Gold',   emoji: '🏆', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
-  { id: 'm_alltargets',  tier: 'Gold',   emoji: '🎯', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
-];
-const TIER_ORDER  = ['Bronze','Silver','Gold','Platinum','Legendary'];
-const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platinum: C.purple, Legendary: C.green };
-
 /* Simple SVG line chart — physique score over scans */
 function PhysiqueChart({ scans }) {
   if (!scans || scans.length < 2) return null;
@@ -3074,10 +3047,8 @@ function AIPatterns({ profile, activePlan }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout }) {
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-  const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
-  const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
   const [confirmReset, setConfirmReset] = useState(false);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -3086,9 +3057,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
     hydration: { enabled: false, time: '14:00' },
     checkpoint: { enabled: true, time: '09:00' },
   }));
-
-  const aiMissions = LS.get('massiq:missions', null);
-  const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
 
   /* Health score from last scan or profile defaults */
   const lastScan    = scanHistory[scanHistory.length - 1];
@@ -3114,27 +3082,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
   const firstScan = scanHistory[0];
   const bfDelta   = firstScan && lastScan ? (lastScan.bodyFat  - firstScan.bodyFat).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
-
-  /* Unlock logic */
-  const isUnlocked = (m) => !m.requires || m.requires.every(r => completed.includes(r));
-  const isDone     = (id) => completed.includes(id);
-  const totalXP    = activeMissions.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
-
-  const completeMission = (m) => {
-    if (isDone(m.id) || !isUnlocked(m)) return;
-    const next = [...completed, m.id];
-    const nextXP = xp + m.xp;
-    setCompleted(next); setXp(nextXP);
-    LS.set(LS_KEYS.completed, next);
-    LS.set(LS_KEYS.xp, nextXP);
-    showToast(`+${m.xp} XP — ${m.title} complete!`);
-  };
-
-  /* Tier progress */
-  const bronzeDone = activeMissions.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
-  const silverDone = activeMissions.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
-  const goldDone   = activeMissions.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
-  const tierFilled = bronzeDone === 4 ? (silverDone === 2 ? (goldDone === 2 ? 3 : 2) : 1) : 0;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
@@ -3233,82 +3180,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         ))}
       </Card>
 
-      {/* 3 ── XP + Missions ── */}
-      <div className="su" style={{ animationDelay: '.08s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Physique Missions</div>
-
-        {/* Hero stats */}
-        <Card style={{ marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
-            {[
-              { label: 'Total XP',   value: totalXP },
-              { label: 'Day Streak', value: LS.get(LS_KEYS.streak, 0) },
-              { label: 'Done',       value: `${completed.length}/${activeMissions.length}` },
-            ].map(s => (
-              <div key={s.label}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{s.value}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* Tier bar */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20, padding: '0 4px' }}>
-          {TIER_ORDER.map((tier, i) => {
-            const filled = i <= tierFilled;
-            return (
-              <div key={tier} style={{ display: 'flex', alignItems: 'center', flex: i < TIER_ORDER.length - 1 ? 1 : 0 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: filled ? TIER_COLORS[tier] : C.border, border: `2px solid ${filled ? TIER_COLORS[tier] : C.dimmed}` }} />
-                  <span style={{ fontSize: 9, color: filled ? TIER_COLORS[tier] : C.dimmed, fontWeight: 600 }}>{tier}</span>
-                </div>
-                {i < TIER_ORDER.length - 1 && (
-                  <div style={{ flex: 1, height: 2, background: i < tierFilled ? TIER_COLORS[tier] : C.border, margin: '0 4px', marginBottom: 14 }} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Mission cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {activeMissions.map(m => {
-            const done     = isDone(m.id);
-            const unlocked = isUnlocked(m);
-            const tc       = TIER_COLORS[m.tier];
-            return (
-              <div key={m.id} className="bp" onClick={() => completeMission(m)} style={{
-                display: 'flex', alignItems: 'center', gap: 14,
-                background: C.card, borderRadius: 16, padding: '14px 16px',
-                border: `1px solid ${done ? tc + '55' : C.border}`,
-                opacity: !unlocked && !done ? 0.4 : 1,
-              }}>
-                {/* Ring */}
-                <div style={{
-                  width: 48, height: 48, borderRadius: '50%', flexShrink: 0,
-                  border: `3px solid ${done ? tc : C.border}`,
-                  background: done ? `${tc}22` : C.cardElevated,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 22,
-                }}>
-                  {done ? '✓' : !unlocked ? '🔒' : m.emoji}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: done ? C.muted : C.white, textDecoration: done ? 'line-through' : 'none' }}>{m.title}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: tc, background: `${tc}22`, padding: '2px 8px', borderRadius: 99 }}>{m.tier}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{m.desc}</div>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: done ? C.dimmed : C.gold, flexShrink: 0 }}>+{m.xp} XP</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 3.5 ── AI Patterns ── */}
+      {/* 3 ── AI Patterns ── */}
       <AIPatterns profile={profile} activePlan={activePlan} />
 
       {/* 4 ── Profile Info ── */}
@@ -4251,12 +4123,23 @@ export default function MassIQ() {
         let loadedPlan = null;
         let loadedScanHistory = [];
         try {
-          console.info('[sync] ensureProfile:start', { userId });
-          loadedProfile = await ensureProfile(session.access_token, userId);
-          console.info('[sync] ensureProfile:ok', { hasProfile: Boolean(loadedProfile) });
+          console.info('[sync] getProfile:start', { userId });
+          loadedProfile = await getProfile(session.access_token, userId);
+          console.info('[sync] getProfile:ok', { hasProfile: Boolean(loadedProfile) });
         } catch (profileErr) {
-          console.error('sync:ensureProfile failed', profileErr);
+          console.error('sync:getProfile failed', profileErr);
           throw profileErr;
+        }
+        if (!loadedProfile) {
+          if (mounted) {
+            setProfile(null);
+            setActivePlan(null);
+            setTab('home');
+            LS.set(LS_KEYS.profile, null);
+            LS.set(LS_KEYS.activePlan, null);
+            LS.set(LS_KEYS.scanHistory, []);
+          }
+          return;
         }
         try {
           console.info('[sync] getLatestPlan:start', { userId });
@@ -4275,7 +4158,7 @@ export default function MassIQ() {
           loadedScanHistory = [];
         }
 
-        if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
+        if (loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
             console.info('[sync] createDefaultPlan:start', { userId });
@@ -4307,24 +4190,40 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+  const persistUserState = async (nextProfile, nextPlan, scanHistory = null, opts = {}) => {
     if (!session?.access_token) return;
+    setSyncing(true);
     try {
-      setSyncing(true);
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
-      if (!userId) return;
-      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
-      if (nextPlan) {
-        await upsertPlan(session.access_token, userId, nextPlan);
+      if (!userId) throw new Error('No user');
+      if (nextProfile) {
+        try {
+          await upsertProfile(session.access_token, userId, nextProfile);
+        } catch (profileError) {
+          console.error('PROFILE ERROR', profileError);
+          throw profileError;
+        }
+      }
+      const planToPersist = nextPlan || (opts.requirePlanAfterProfile && nextProfile ? buildBaselinePlanFromProfile(nextProfile) : null);
+      if (planToPersist) {
+        try {
+          await upsertPlan(session.access_token, userId, planToPersist);
+        } catch (planError) {
+          console.error('PLAN ERROR', planError);
+          throw planError;
+        }
       }
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
         await createScan(session.access_token, userId, latestScan);
       }
+      return planToPersist;
     } catch (err) {
+      if (opts.throwOnError) throw err;
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
       showToast('We couldn’t finish syncing your account. Please try again.');
+      return null;
     } finally {
       setSyncing(false);
     }
@@ -4396,26 +4295,31 @@ export default function MassIQ() {
     setEditing(true);
   };
 
-  const handleOnboardingComplete = (p, plan) => {
-    setProfile(p);
-    LS.set(LS_KEYS.profile, p);
-    setEditing(false);
-    if (plan) {
-      LS.set(LS_KEYS.activePlan, plan);
-      setActivePlan(plan);
-      persistUserState(p, plan);
+  const handleOnboardingComplete = async (p, plan) => {
+    try {
+      const persistedPlan = await persistUserState(p, plan, null, { requirePlanAfterProfile: true, throwOnError: true });
+      const finalPlan = persistedPlan || plan;
+      setProfile(p);
+      LS.set(LS_KEYS.profile, p);
+      setEditing(false);
+      if (finalPlan) {
+        LS.set(LS_KEYS.activePlan, finalPlan);
+        setActivePlan(finalPlan);
+      }
       // Background: generate meal plan, workout plan, missions
-      generateMealPlan(p, plan)
+      generateMealPlan(p, finalPlan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
         .catch(console.error);
-      generateWorkoutPlan(p, plan)
+      generateWorkoutPlan(p, finalPlan)
         .then(days => { LS.set(LS_KEYS.workoutplan, days); })
         .catch(console.error);
-      generateMissions(p, plan)
+      generateMissions(p, finalPlan)
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
-    } else {
-      persistUserState(p, activePlan);
+    } catch (err) {
+      console.error('Onboarding sync failed:', err);
+      setAuthError('Could not save your profile and plan. Please retry.');
+      throw err;
     }
   };
 
@@ -4427,7 +4331,11 @@ export default function MassIQ() {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
-  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  const profileComplete = profile
+    && Number(profile.age) >= 13
+    && Number(profile.age) <= 100
+    && Number(profile.weightLbs) > 0
+    && Number(profile.heightCm) > 0;
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
@@ -4449,7 +4357,6 @@ export default function MassIQ() {
           onEditProfile={handleEditProfile}
           onReset={handleReset}
           onLogout={handleLogout}
-          showToast={showToast}
         />
       );
       default: return null;
