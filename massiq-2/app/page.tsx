@@ -5,15 +5,15 @@ import { useEffect } from "react";
 const C = {
   bg:          '#080C08',
   bg2:         '#0B0F0B',
-  card:        'rgba(255,255,255,0.03)',
-  cardSolid:   '#0D120D',
-  border:      'rgba(255,255,255,0.07)',
-  borderHi:    'rgba(0,200,83,0.22)',
-  green:       '#00C853',
-  greenBg:     'rgba(0,200,83,0.10)',
+  card:        'rgba(255,255,255,0.028)',
+  cardSolid:   '#111611',
+  border:      'rgba(255,255,255,0.09)',
+  borderHi:    'rgba(52,209,123,0.24)',
+  green:       '#34D17B',
+  greenBg:     'rgba(52,209,123,0.12)',
   white:       '#FFFFFF',
-  muted:       'rgba(255,255,255,0.48)',
-  dim:         'rgba(255,255,255,0.22)',
+  muted:       'rgba(255,255,255,0.62)',
+  dim:         'rgba(255,255,255,0.3)',
   orange:      '#FF6B35',
 };
 
@@ -107,10 +107,10 @@ const CSS = `
     transition: transform .15s ease, box-shadow .15s ease;
     width: fit-content;
   }
-  .btn-primary:hover { transform: scale(1.03); box-shadow: 0 0 48px rgba(0,200,83,0.42); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 40px rgba(52,209,123,0.35); }
   .btn-ghost {
     display: inline-flex; align-items: center; justify-content: center;
-    background: rgba(255,255,255,0.06); color: ${C.muted}; font-weight: 600;
+    background: rgba(255,255,255,0.04); color: ${C.muted}; font-weight: 600;
     font-size: 14px; padding: 14px 28px; border-radius: 99px;
     border: 1px solid ${C.border};
     transition: background .15s ease, color .15s ease;
@@ -363,12 +363,12 @@ const STEPS = [
   {
     n: '01', label: 'Scan',
     title: 'Upload a physique photo',
-    body: 'AI estimates body fat %, lean mass, muscle group development, symmetry score, and key imbalances — from a single photo.',
+    body: 'MassIQ estimates body-fat range, lean mass, muscle development, and symmetry from a single photo.',
   },
   {
     n: '02', label: 'Diagnose',
-    title: 'Get a precise reading',
-    body: 'MassIQ identifies your limiting factor — whether that\'s too much fat, not enough lean mass, or a phase mismatch — and names it clearly.',
+    title: 'Get a calibrated assessment',
+    body: 'MassIQ highlights likely limiting factors based on your scan signal and profile context.',
   },
   {
     n: '03', label: 'Execute',
@@ -378,7 +378,7 @@ const STEPS = [
   {
     n: '04', label: 'Adapt',
     title: 'Scan again. Update everything.',
-    body: 'Every scan refreshes your diagnosis and regenerates your plan. As your body changes, your system stays current.',
+    body: 'Each scan can refresh your plan targets so your execution stays aligned with current progress.',
   },
 ];
 
@@ -426,7 +426,7 @@ export default function LandingPage() {
               }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
                 <span style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>
-                  AI Physique Intelligence
+                  Physique Intelligence
                 </span>
               </div>
             </div>
@@ -449,10 +449,9 @@ export default function LandingPage() {
             </div>
 
             <p className="fu d2 hero-sub">
-              MassIQ scans your body, diagnoses what&apos;s actually
-              happening, and gives you a precise plan — then updates
-              every time you scan again. Not a calorie counter.
-              Not a step tracker. A system.
+              MassIQ uses photo-based scan estimates plus deterministic
+              planning logic to set weekly calorie, protein, training,
+              and recovery targets. It is built for structured iteration.
             </p>
 
             <div className="fu d3 hero-ctas">
@@ -478,7 +477,7 @@ export default function LandingPage() {
         <div className="proof-inner">
           {[
             { stat: 'Private Beta',     sub: 'Early access only'               },
-            { stat: 'AI-Powered',       sub: 'Claude Sonnet model'             },
+            { stat: 'Photo + Engine',   sub: 'Vision estimate + rules engine'  },
             { stat: 'Body Scan + Plan', sub: 'Full system, not just tracking'  },
           ].map((p, i) => (
             <>
