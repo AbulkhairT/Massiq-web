@@ -6,20 +6,20 @@ import { buildMealPlan }    from '../lib/content/meals';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
-  bg: '#0A0F0A',
-  card: '#141A14',
-  cardElevated: '#1C251C',
-  border: 'rgba(255,255,255,0.08)',
-  green: '#00C853',
-  greenDim: '#2D5A3D',
-  greenBg: 'rgba(0,200,83,0.15)',
+  bg: '#0B0F0C',
+  card: '#141A17',
+  cardElevated: '#1A231E',
+  border: 'rgba(255,255,255,0.09)',
+  green: '#34D17B',
+  greenDim: '#2F5B46',
+  greenBg: 'rgba(52,209,123,0.16)',
   white: '#FFFFFF',
-  muted: '#8A9A8A',
-  dimmed: '#556655',
+  muted: '#A3AEA6',
+  dimmed: '#66746B',
   orange: '#FF6B35',
-  blue: '#4A9EFF',
+  blue: '#6FA7FF',
   purple: '#9B7FD4',
-  red: '#FF4444',
+  red: '#FF5A5F',
   gold: '#FFD60A',
 };
 
@@ -29,7 +29,10 @@ const CSS = `
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;background:${C.bg}}
   ::-webkit-scrollbar{display:none}
-  body{font-family:'Inter',sans-serif;color:${C.white};-webkit-font-smoothing:antialiased}
+  body{
+    font-family:'Inter',sans-serif;color:${C.white};-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;letter-spacing:-0.01em;
+  }
   @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -40,8 +43,21 @@ const CSS = `
   @keyframes stepFadeOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-20px)}}
   .su{animation:slideUp .3s ease both}
   .fi{animation:fadeIn .25s ease both}
-  .bp{cursor:pointer;transition:transform .12s ease,opacity .12s ease}
+  .bp{
+    cursor:pointer;transition:transform .16s ease,opacity .16s ease,background-color .2s ease,border-color .2s ease,color .2s ease;
+    -webkit-tap-highlight-color:transparent;
+  }
   .bp:active{transform:scale(.96);opacity:.85}
+  .screen{padding:28px 18px 44px;display:flex;flex-direction:column;gap:22px}
+  .screen-title{font-size:34px;font-weight:760;line-height:1.06;letter-spacing:-0.03em}
+  .section-title{font-size:17px;font-weight:700;line-height:1.2;letter-spacing:-0.02em;margin-bottom:12px}
+  .section-subtitle{font-size:13px;line-height:1.5;color:${C.muted}}
+  .glass{
+    background:linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01));
+    border:1px solid ${C.border};box-shadow:0 8px 30px rgba(0,0,0,0.24);
+  }
+  .metric{font-size:24px;font-weight:720;line-height:1}
+  .label{font-size:11px;color:${C.muted};letter-spacing:.05em;text-transform:uppercase}
   input,textarea,select{outline:none;font-family:inherit;color:${C.white}}
   input::placeholder,textarea::placeholder{color:${C.muted}}
   .prog-bar{animation:prog .6s ease both}
@@ -65,21 +81,21 @@ const CSS = `
   .ob-num-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
   .ob-num-input:focus{border-color:${C.green}}
   .ob-card{
-    border:2px solid rgba(255,255,255,0.08);border-radius:20px;padding:22px 18px;
-    background:#141A14;cursor:pointer;transition:all .18s ease;
+    border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:20px 18px;
+    background:${C.card};cursor:pointer;transition:all .18s ease;
   }
-  .ob-card:hover{transform:scale(1.02);border-color:rgba(0,200,83,0.4)}
+  .ob-card:hover{transform:translateY(-1px);border-color:rgba(52,209,123,0.42)}
   .ob-card.selected{border-color:${C.green};background:rgba(0,200,83,0.12)}
   .ob-chip{
-    padding:10px 20px;border-radius:50px;border:1.5px solid rgba(255,255,255,0.12);
-    background:transparent;color:#8A9A8A;font-size:14px;font-weight:500;cursor:pointer;
+    padding:9px 16px;border-radius:999px;border:1px solid rgba(255,255,255,0.14);
+    background:transparent;color:${C.muted};font-size:13px;font-weight:500;cursor:pointer;
     transition:all .15s ease;font-family:inherit;
   }
   .ob-chip.selected{border-color:${C.green};background:rgba(0,200,83,0.15);color:${C.green}}
   .ob-chip:hover{border-color:rgba(0,200,83,0.4);color:#fff}
   .ob-activity-row{
-    padding:18px 20px;border-radius:16px;border:2px solid rgba(255,255,255,0.08);
-    background:#141A14;cursor:pointer;transition:all .18s ease;display:flex;
+    padding:17px 18px;border-radius:16px;border:1px solid rgba(255,255,255,0.1);
+    background:${C.card};cursor:pointer;transition:all .18s ease;display:flex;
     align-items:center;justify-content:space-between;
   }
   .ob-activity-row:hover{border-color:rgba(0,200,83,0.3)}
@@ -95,8 +111,11 @@ const CSS = `
     .mobile-tabbar{display:none!important}
     .desktop-sidebar{display:flex!important}
     .app-layout{display:grid!important;grid-template-columns:220px 1fr}
-    .app-content{max-width:800px;margin:0 auto;padding:32px 24px 40px}
+    .app-content{max-width:860px;margin:0 auto;padding:34px 26px 52px}
     .ob-wrap{max-width:600px;margin:0 auto}
+  }
+  @media(max-width:430px){
+    .screen-title{font-size:31px}
   }
   @media(max-width:768px){
     .desktop-sidebar{display:none!important}
@@ -336,28 +355,28 @@ Return ONLY JSON: {"name":"","description":"","icon":"emoji","calories":${curren
 const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...rest }) => {
   const base = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    gap: 8, padding: '14px 24px', borderRadius: 14, fontWeight: 600,
-    fontSize: 15, border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    gap: 8, padding: '13px 22px', borderRadius: 14, fontWeight: 620,
+    fontSize: 14, letterSpacing: '-0.01em', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'all .15s ease', opacity: disabled ? 0.45 : 1,
-    ...(variant === 'primary' && { background: C.green, color: '#000' }),
-    ...(variant === 'outline' && { background: 'transparent', color: C.green, border: `1.5px solid ${C.green}` }),
-    ...(variant === 'ghost'   && { background: 'transparent', color: C.muted, border: `1.5px solid ${C.border}` }),
+    ...(variant === 'primary' && { background: C.green, color: '#071109', boxShadow: '0 8px 22px rgba(52,209,123,0.24)' }),
+    ...(variant === 'outline' && { background: 'transparent', color: C.green, border: `1px solid ${C.green}` }),
+    ...(variant === 'ghost'   && { background: 'transparent', color: C.muted, border: `1px solid ${C.border}` }),
     ...style,
   };
   return <button className="bp" style={base} onClick={disabled ? undefined : onClick} {...rest}>{children}</button>;
 };
 
 const Card = ({ children, style = {}, className = '', ...rest }) => (
-  <div className={className} style={{ background: C.card, borderRadius: 20, padding: 20, border: `1px solid ${C.border}`, ...style }} {...rest}>
+  <div className={className} style={{ background: C.card, borderRadius: 18, padding: 18, border: `1px solid ${C.border}`, boxShadow: '0 8px 28px rgba(0,0,0,0.2)', ...style }} {...rest}>
     {children}
   </div>
 );
 
 const Chip = ({ label, active, onClick }) => (
   <button className="bp" onClick={onClick} style={{
-    padding: '8px 16px', borderRadius: 50, border: `1.5px solid ${active ? C.green : C.border}`,
+    padding: '7px 14px', borderRadius: 50, border: `1px solid ${active ? C.green : C.border}`,
     background: active ? C.greenBg : 'transparent', color: active ? C.green : C.muted,
-    fontSize: 13, fontWeight: 500, cursor: 'pointer',
+    fontSize: 12, fontWeight: 550, cursor: 'pointer',
   }}>{label}</button>
 );
 
@@ -928,8 +947,8 @@ function HomeTab({ profile, activePlan, setTab }) {
   const week  = activePlan?.week  || 1;
 
   return (
-    <div style={{ padding: '24px 16px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Today</h1>
+    <div className="screen">
+      <h1 className="screen-title">Today</h1>
 
       {!activePlan ? (
         /* ── No active plan: CTA ── */
@@ -949,7 +968,7 @@ function HomeTab({ profile, activePlan, setTab }) {
       ) : (
         <>
           {/* ── Greeting card ── */}
-          <Card className="su" style={{ background: '#1A2E1A', border: `1.5px solid ${C.green}` }}>
+          <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: C.white }}>
                 Good {getGreeting()}, {profile?.name || 'Athlete'}.
@@ -972,7 +991,7 @@ function HomeTab({ profile, activePlan, setTab }) {
                   flex: 1, textAlign: 'center',
                   borderLeft: i > 0 ? `1px solid ${C.border}` : 'none',
                 }}>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{s.value}</div>
+                <div className="metric" style={{ fontSize: 21, color: C.white }}>{s.value}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>{s.unit}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 2 }}>{s.label}</div>
                 </div>
@@ -985,7 +1004,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           </Card>
 
           {/* ── Phase card ── */}
-          <Card className="su" style={{ animationDelay: '.05s' }}>
+          <Card className="su glass" style={{ animationDelay: '.05s' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <div style={{ fontSize: 13, color: C.muted, fontWeight: 500, marginBottom: 4 }}>Current Phase</div>
@@ -1004,7 +1023,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           </Card>
 
           {/* ── Today's Targets ── */}
-          <Card className="su" style={{ animationDelay: '.1s' }}>
+          <Card className="su glass" style={{ animationDelay: '.1s' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <span style={{ fontWeight: 700, fontSize: 16 }}>Today's Targets</span>
               <span style={{ color: C.muted, fontSize: 18, letterSpacing: 2 }}>···</span>
@@ -1764,11 +1783,11 @@ function NutritionTab({ profile, activePlan, showToast }) {
   const remaining = Math.max(0, macros.calories - totals.calories);
 
   return (
-    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Nutrition</h1>
+    <div className="screen">
+      <h1 className="screen-title">Nutrition</h1>
 
       {/* ── Macro rings ── */}
-      <Card className="su">
+      <Card className="su glass">
         <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 20 }}>
           <MacroRing label="Protein" current={totals.protein} target={macros.protein} color={C.blue} />
           <MacroRing label="Carbs"   current={totals.carbs}   target={macros.carbs}   color={C.gold} />
@@ -1802,7 +1821,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
             const isSwapping = swappingId === s.id;
             return (
               <div key={s.id} style={{
-                background: C.card, borderRadius: 18, padding: 16,
+                background: C.card, borderRadius: 16, padding: 15,
                 border: `1px solid ${isSwapping ? C.greenDim : C.border}`, flexShrink: 0, width: 180,
                 display: 'flex', flexDirection: 'column', gap: 8, position: 'relative',
                 opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
@@ -1838,9 +1857,9 @@ function NutritionTab({ profile, activePlan, showToast }) {
                   </div>
                 </div>
                 <button className="bp" onClick={() => logSuggestion(s)} style={{
-                  width: '100%', padding: '8px 0', borderRadius: 10, marginTop: 'auto',
+                  width: '100%', padding: '9px 0', borderRadius: 11, marginTop: 'auto',
                   background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
-                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  fontSize: 12, fontWeight: 620, cursor: 'pointer',
                 }}>+ Log</button>
               </div>
             );
@@ -1985,8 +2004,8 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   /* ── No active plan ── */
   if (!activePlan) {
     return (
-      <div style={{ padding: '24px 16px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Your Plan</h1>
+      <div className="screen">
+        <h1 className="screen-title">Your Plan</h1>
         <div className="su" style={{
           background: C.card, border: `1.5px solid ${C.green}`,
           borderRadius: 20, padding: 36, textAlign: 'center',
@@ -2050,11 +2069,11 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   ];
 
   return (
-    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Your Plan</h1>
+    <div className="screen">
+      <h1 className="screen-title">Your Plan</h1>
 
       {/* 1 ── Phase Hero ── */}
-      <Card className="su" style={{ background: '#1A2E1A', border: `1.5px solid ${phaseColor}`, position: 'relative' }}>
+      <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${phaseColor}55`, position: 'relative' }}>
         {/* Week badge */}
         <div style={{ position: 'absolute', top: 16, right: 16, background: C.cardElevated, borderRadius: 10, padding: '5px 12px', fontSize: 12, fontWeight: 600, color: C.muted }}>
           Week {week} of 12
@@ -2534,8 +2553,8 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
 
   return (
-    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white }}>Profile</h1>
+    <div className="screen">
+      <h1 className="screen-title">Profile</h1>
 
       {/* 1 ── Physique Journey ── */}
       <div className="su">
@@ -2589,7 +2608,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
       </div>
 
       {/* 2 ── Health Score ── */}
-      <Card className="su" style={{ animationDelay: '.04s' }}>
+      <Card className="su glass" style={{ animationDelay: '.04s' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1, background: `linear-gradient(135deg, ${C.gold}, ${C.green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
@@ -2976,14 +2995,14 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     const mg      = result.muscleGroups || {};
 
     return (
-      <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="screen" style={{ gap: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h1 style={{ fontSize: 28, fontWeight: 800 }}>Scan Results</h1>
+          <h1 className="screen-title" style={{ fontSize: 30 }}>Scan Results</h1>
           <button className="bp" onClick={() => setResult(null)} style={{ background: C.cardElevated, border: 'none', color: C.muted, padding: '6px 14px', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Retake</button>
         </div>
 
         {/* 1 – Phase Hero */}
-        <Card className="su" style={{ background: '#1A2E1A', border: `1.5px solid ${phColor}` }}>
+        <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${phColor}55` }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: `${phColor}22`, color: phColor, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${phColor}55`, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>
             ✓ {ph.label || 'Maintain'}
           </div>
@@ -3185,9 +3204,9 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
 
   /* ── Pre-scan state ── */
   return (
-    <div style={{ padding: '24px 16px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="screen">
       <div>
-        <h1 style={{ fontSize: 32, fontWeight: 800, color: C.white, marginBottom: 6 }}>Scan</h1>
+        <h1 className="screen-title" style={{ marginBottom: 6 }}>Scan</h1>
         <p style={{ fontSize: 14, color: C.muted }}>AI physique analysis from a single photo</p>
       </div>
 
@@ -3279,8 +3298,9 @@ function TabBar({ active, setTab }) {
   return (
     <div className="mobile-tabbar" style={{
       position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 100,
-      background: '#0D130D', borderTop: `1px solid ${C.border}`,
-      display: 'flex', padding: '8px 0 max(8px, env(safe-area-inset-bottom))',
+      background: 'rgba(12,18,14,0.9)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+      borderTop: `1px solid ${C.border}`,
+      display: 'flex', padding: '10px 0 max(10px, env(safe-area-inset-bottom))',
     }}>
       {TABS.map(t => {
         const isActive = active === t.key;
@@ -3290,10 +3310,10 @@ function TabBar({ active, setTab }) {
             gap: 4, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
           }}>
             <div style={{
-              padding: '4px 12px', borderRadius: 20, fontSize: 20, lineHeight: 1,
+              padding: '4px 12px', borderRadius: 16, fontSize: 20, lineHeight: 1,
               background: isActive ? C.greenBg : 'transparent',
             }}>{t.icon}</div>
-            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.03em', color: isActive ? C.green : C.dimmed }}>
+            <span style={{ fontSize: 10, fontWeight: 580, letterSpacing: '.02em', color: isActive ? C.green : C.dimmed }}>
               {t.label}
             </span>
           </button>
@@ -3308,14 +3328,14 @@ function Sidebar({ active, setTab, profile }) {
   const goalEmoji = { Cut: '📉', Bulk: '📈', Recomp: '🔄', Maintain: '⚖️' }[profile?.goal] || '🎯';
   return (
     <div className="desktop-sidebar" style={{
-      width: 220, minHeight: '100dvh', background: '#0D130D',
+      width: 220, minHeight: '100dvh', background: '#101711',
       borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column',
       position: 'fixed', top: 0, left: 0, zIndex: 50,
     }}>
       {/* Logo */}
       <div style={{ padding: '28px 20px 24px', borderBottom: `1px solid ${C.border}` }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase' }}>MASSIQ</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>AI Physique OS</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 5, letterSpacing: '.02em' }}>AI Physique OS</div>
       </div>
 
       {/* Nav */}
@@ -3443,7 +3463,7 @@ export default function MassIQ() {
         <div className="desktop-sidebar" style={{ width: 220, flexShrink: 0 }} />
 
         {/* Content */}
-        <div style={{ flex: 1, paddingBottom: 80, minWidth: 0 }}>
+        <div style={{ flex: 1, paddingBottom: 96, minWidth: 0 }}>
           <div className="app-content" style={{ maxWidth: 480, margin: '0 auto' }}>
             {renderTab()}
           </div>
