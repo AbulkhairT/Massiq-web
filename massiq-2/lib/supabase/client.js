@@ -90,7 +90,7 @@ function deserializeProfile(row) {
   const heightCm = toNumber(row.height, 0) || 0;
   return {
     id: row.id,
-    name: 'Athlete',
+    name: '',
     age: toNumber(row.age, null),
     weightLbs: toNumber(row.weight, null),
     heightCm: toNumber(row.height, null),
