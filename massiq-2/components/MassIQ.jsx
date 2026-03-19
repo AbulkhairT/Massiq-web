@@ -4240,7 +4240,9 @@ export default function MassIQ() {
     const hydrate = async () => {
       setReady(false);
       try {
+        console.info('[sync] getUser:start');
         const user = session.user || await fetchUser(session.access_token);
+        console.info('[sync] getUser:ok', { userId: user?.id || null });
         const userId = user?.id;
         if (!userId) throw new Error('Missing user session.');
 
@@ -4248,19 +4250,25 @@ export default function MassIQ() {
         let loadedPlan = null;
         let loadedScanHistory = [];
         try {
+          console.info('[sync] ensureProfile:start', { userId });
           loadedProfile = await ensureProfile(session.access_token, userId);
+          console.info('[sync] ensureProfile:ok', { hasProfile: Boolean(loadedProfile) });
         } catch (profileErr) {
           console.error('sync:ensureProfile failed', profileErr);
           throw profileErr;
         }
         try {
+          console.info('[sync] getLatestPlan:start', { userId });
           loadedPlan = await getPlan(session.access_token, userId);
+          console.info('[sync] getLatestPlan:ok', { hasPlan: Boolean(loadedPlan) });
         } catch (planErr) {
           console.error('sync:getPlan failed', planErr);
           throw planErr;
         }
         try {
+          console.info('[sync] getLatestScan:start', { userId });
           loadedScanHistory = await getScans(session.access_token, userId);
+          console.info('[sync] getLatestScan:ok', { scanCount: loadedScanHistory.length });
         } catch (scanErr) {
           console.error('sync:getScans failed (continuing without scans)', scanErr);
           loadedScanHistory = [];
@@ -4269,7 +4277,9 @@ export default function MassIQ() {
         if (loadedProfile && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
+            console.info('[sync] createDefaultPlan:start', { userId });
             await upsertPlan(session.access_token, userId, fallbackPlan);
+            console.info('[sync] createDefaultPlan:ok');
           } catch (createPlanErr) {
             console.error('sync:createDefaultPlan failed', createPlanErr);
             throw createPlanErr;

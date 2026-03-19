@@ -54,14 +54,6 @@ function toNumber(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function normalizeStringArray(value) {
-  if (Array.isArray(value)) return value.filter(Boolean);
-  if (typeof value === 'string' && value.trim()) {
-    return value.split(',').map(v => v.trim()).filter(Boolean);
-  }
-  return [];
-}
-
 function toPhaseValue(phase) {
   const p = String(phase || '').trim().toLowerCase();
   if (p === 'bulk' || p === 'cut' || p === 'recomp' || p === 'maintain') return p;
@@ -82,10 +74,6 @@ function serializeProfile(userId, profile) {
     gender: profile?.gender || null,
     goal: profile?.goal || null,
     activity_level: profile?.activity || null,
-    unit_system: profile?.unitSystem || 'imperial',
-    food_preferences: normalizeStringArray(profile?.dietPrefs),
-    dietary_restrictions: normalizeStringArray(profile?.avoid),
-    reminder_settings: profile?.reminders || {},
   };
 }
 
@@ -102,10 +90,10 @@ function deserializeProfile(row) {
     gender: row.gender || 'Male',
     goal: row.goal || 'Maintain',
     activity: row.activity_level || 'Moderate',
-    unitSystem: row.unit_system || 'imperial',
-    dietPrefs: normalizeStringArray(row.food_preferences),
-    avoid: normalizeStringArray(row.dietary_restrictions),
-    reminders: row.reminder_settings || {},
+    unitSystem: 'imperial',
+    dietPrefs: [],
+    avoid: [],
+    reminders: {},
   };
 }
 
@@ -119,10 +107,6 @@ function serializePlan(userId, plan) {
     carbs: toNumber(macros.carbs),
     fat: toNumber(macros.fat),
     is_active: true,
-    rationale: plan?.objective || plan?.phaseReason || '',
-    workout_program: plan?.workoutProgram || { trainDays: plan?.trainDays || macros.trainingDaysPerWeek || 4 },
-    meal_guidance: plan?.mealGuidance || { dailyTargets: plan?.dailyTargets || macros },
-    source_scan_id: plan?.sourceScanId || null,
   };
 }
 
@@ -138,19 +122,19 @@ function deserializePlan(row) {
   return {
     phase: phaseLabel,
     phaseName: `${phaseLabel} Phase`,
-    objective: row.rationale || '',
+    objective: '',
     macros,
     dailyTargets: {
       ...macros,
-      steps: row?.meal_guidance?.dailyTargets?.steps || 9000,
-      sleepHours: row?.meal_guidance?.dailyTargets?.sleepHours || 8,
-      waterLiters: row?.meal_guidance?.dailyTargets?.waterLiters || 3,
-      trainingDaysPerWeek: row?.workout_program?.trainDays || row?.meal_guidance?.dailyTargets?.trainingDaysPerWeek || 4,
-      cardioDays: row?.meal_guidance?.dailyTargets?.cardioDays || 2,
+      steps: 9000,
+      sleepHours: 8,
+      waterLiters: 3,
+      trainingDaysPerWeek: 4,
+      cardioDays: 2,
     },
-    trainDays: row?.workout_program?.trainDays || 4,
+    trainDays: 4,
     createdAt: row.created_at || null,
-    sourceScanId: row.source_scan_id || null,
+    sourceScanId: null,
   };
 }
 
@@ -159,9 +143,6 @@ function serializeScan(userId, scan) {
     user_id: userId,
     body_fat: toNumber(scan?.bodyFat ?? scan?.bodyFatPct),
     lean_mass: toNumber(scan?.leanMass),
-    symmetry: toNumber(scan?.symmetryScore ?? scan?.symmetry),
-    confidence: toNumber(scan?.confidence),
-    raw_result: scan,
   };
 }
 
@@ -174,8 +155,7 @@ function deserializeScan(row) {
     bodyFat: toNumber(row?.body_fat, toNumber(raw.bodyFat ?? raw.bodyFatPct, null)),
     bodyFatPct: toNumber(row?.body_fat, toNumber(raw.bodyFatPct ?? raw.bodyFat, null)),
     leanMass: toNumber(row?.lean_mass, toNumber(raw.leanMass, null)),
-    symmetryScore: toNumber(row?.symmetry, toNumber(raw.symmetryScore ?? raw.symmetry, null)),
-    confidence: toNumber(row?.confidence, toNumber(raw.confidence, 0.75)),
+    confidence: toNumber(raw.confidence, 0.75),
   };
 }
 
@@ -253,7 +233,7 @@ export async function upsertProfile(token, userId, profile) {
 }
 
 export async function getProfile(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,food_preferences,dietary_restrictions,reminder_settings,created_at&id=eq.${userId}&limit=1`, {
+  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
     method: 'GET',
     headers: authHeaders(token),
   });
@@ -263,17 +243,13 @@ export async function getProfile(token, userId) {
 export async function ensureProfile(token, userId) {
   const existing = await getProfile(token, userId);
   if (existing) return existing;
-  await upsertProfile(token, userId, {
-    age: 25,
-    weightLbs: 170,
-    heightCm: 178,
-    gender: 'Male',
-    goal: 'Maintain',
-    activity: 'Moderate',
-    unitSystem: 'imperial',
-    dietPrefs: [],
-    avoid: [],
-    reminders: {},
+  await supabaseFetch('/rest/v1/profiles', {
+    method: 'POST',
+    headers: {
+      ...authHeaders(token),
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify({ id: userId }),
   });
   return getProfile(token, userId);
 }
@@ -291,7 +267,7 @@ export async function upsertPlan(token, userId, plan) {
 }
 
 export async function getPlan(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,is_active,rationale,workout_program,meal_guidance,source_scan_id,created_at&user_id=eq.${userId}&is_active=eq.true&order=created_at.desc&limit=1`, {
+  const rows = await supabaseFetch(`/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,created_at&user_id=eq.${userId}&order=created_at.desc&limit=1`, {
     method: 'GET',
     headers: authHeaders(token),
   });
@@ -312,7 +288,7 @@ export async function createScan(token, userId, scan) {
 }
 
 export async function getScans(token, userId, limit = 25) {
-  const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,symmetry,confidence,raw_result,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
+  const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
     method: 'GET',
     headers: authHeaders(token),
   });
