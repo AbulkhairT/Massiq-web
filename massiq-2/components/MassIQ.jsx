@@ -4322,7 +4322,7 @@ export default function MassIQ() {
         await createScan(session.access_token, userId, latestScan);
       }
     } catch (err) {
-      console.error('Persist failed:', err);
+      console.error('Persist failed (original Supabase error):', err?.message || err, err);
       showToast('We couldn’t finish syncing your account. Please try again.');
     } finally {
       setSyncing(false);

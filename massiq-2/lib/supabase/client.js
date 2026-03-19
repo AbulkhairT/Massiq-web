@@ -65,6 +65,14 @@ function toPhaseLabel(phase) {
   return p.charAt(0).toUpperCase() + p.slice(1);
 }
 
+function toSafeInt(value, field) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`[plans] Invalid ${field}: ${String(value)}`);
+  }
+  return Math.round(n);
+}
+
 function serializeProfile(userId, profile) {
   return {
     id: userId,
@@ -99,14 +107,14 @@ function deserializeProfile(row) {
 
 function serializePlan(userId, plan) {
   const macros = plan?.dailyTargets || plan?.macros || {};
+  if (!userId) throw new Error('[plans] Missing user_id for plan insert');
   return {
     user_id: userId,
     phase: toPhaseValue(plan?.phase),
-    calories: toNumber(macros.calories),
-    protein: toNumber(macros.protein),
-    carbs: toNumber(macros.carbs),
-    fat: toNumber(macros.fat),
-    is_active: true,
+    calories: toSafeInt(macros.calories, 'calories'),
+    protein: toSafeInt(macros.protein, 'protein'),
+    carbs: toSafeInt(macros.carbs, 'carbs'),
+    fat: toSafeInt(macros.fat, 'fat'),
   };
 }
 
@@ -256,11 +264,12 @@ export async function ensureProfile(token, userId) {
 
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
-  return supabaseFetch('/rest/v1/plans?on_conflict=user_id', {
+  console.info('[sync] plans.insert payload', row);
+  return supabaseFetch('/rest/v1/plans', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'resolution=merge-duplicates,return=representation',
+      Prefer: 'return=representation',
     },
     body: JSON.stringify(row),
   });
