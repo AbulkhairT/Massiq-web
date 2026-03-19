@@ -329,6 +329,12 @@ function getPrimaryLimiters(scan, activePlan) {
   return ['Execution consistency is the current bottleneck.'];
 }
 
+function getActiveTargets(activePlan, profile) {
+  const targets = activePlan?.dailyTargets || activePlan?.macros;
+  if (targets?.calories && targets?.protein) return targets;
+  return calcMacros(profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60 };
+}
+
 /* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
    All plan/mission/tip/insight generation is now deterministic.
    LLM is reserved ONLY for: physique scan (vision), meal suggestions,
@@ -592,14 +598,53 @@ function Onboarding({ onComplete }) {
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
   const [data, setData] = useState({
     name: '', age: '', gender: 'Male', unitSystem: 'imperial',
-    weightLbs: '', weightKg: '', heightCm: '', heightFt: '5', heightInch: '10',
+    weightLbs: '', weightKg: '', heightCm: '', heightFt: '', heightInch: '',
     goal: '', activity: '', dietPrefs: [], cuisines: [], avoid: [],
   });
 
   const set       = (k, v) => setData(p => ({ ...p, [k]: v }));
+  const setUnitSystem = (unit) => setData((p) => {
+    if (p.unitSystem === unit) return p;
+    const next = { ...p, unitSystem: unit };
+    const lbs = Number(p.weightLbs || 0);
+    const kg = Number(p.weightKg || 0);
+    const cm = Number(p.heightCm || 0);
+    const totalIn = (Number(p.heightFt || 0) * 12) + Number(p.heightInch || 0);
+    if (unit === 'metric') {
+      const convertedKg = lbs ? lbs * 0.453592 : (kg || 0);
+      const convertedCm = totalIn ? totalIn * 2.54 : cm;
+      next.weightKg = convertedKg ? convertedKg.toFixed(1) : '';
+      next.heightCm = convertedCm ? String(Math.round(convertedCm)) : '';
+    } else {
+      const convertedLbs = kg ? kg * 2.20462 : lbs;
+      const inches = cm ? cm / 2.54 : totalIn;
+      next.weightLbs = convertedLbs ? convertedLbs.toFixed(1) : '';
+      if (inches) {
+        next.heightFt = String(Math.floor(inches / 12));
+        next.heightInch = String(Math.round(inches % 12));
+      }
+    }
+    return next;
+  });
   const toggleArr = (k, v) => setData(p => ({
     ...p, [k]: p[k].includes(v) ? p[k].filter(x => x !== v) : [...p[k], v],
   }));
+
+  useEffect(() => {
+    const saved = LS.get(LS_KEYS.profile, null);
+    if (!saved) return;
+    const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
+    setData((p) => ({
+      ...p,
+      ...saved,
+      unitSystem: saved.unitSystem || 'imperial',
+      weightLbs: saved.weightLbs ? String(saved.weightLbs) : '',
+      weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : '',
+      heightCm: saved.heightCm ? String(saved.heightCm) : '',
+      heightFt: inches ? String(Math.floor(inches / 12)) : '',
+      heightInch: inches ? String(Math.round(inches % 12)) : '',
+    }));
+  }, []);
 
   const TOTAL = 9; // steps 0-8
 
@@ -818,7 +863,7 @@ function Onboarding({ onComplete }) {
               <button
                 key={u.key}
                 className={`ob-chip${data.unitSystem === u.key ? ' selected' : ''}`}
-                onClick={() => set('unitSystem', u.key)}
+                onClick={() => setUnitSystem(u.key)}
               >
                 {u.label}
               </button>
@@ -1115,7 +1160,7 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
 }
 
 function HomeTab({ profile, activePlan, setTab }) {
-  const macros = calcMacros(profile);
+  const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
@@ -1277,9 +1322,10 @@ function useAISuggestions(profile, activePlan, meals) {
   const [loading,     setLoading]     = useState(!hasCached);
   const [error,       setError]       = useState('');
   const buildFallbackSuggestions = () => {
-    const m = activePlan?.macros || activePlan?.dailyTargets || { calories: 2000, protein: 150, carbs: 210, fat: 60 };
-    const cals = Number(m.calories || 2000);
-    const prot = Number(m.protein || 150);
+    const m = getActiveTargets(activePlan, profile);
+    const eaten = (meals || []).reduce((a, meal) => ({ calories: a.calories + (meal.calories || 0), protein: a.protein + (meal.protein || 0) }), { calories: 0, protein: 0 });
+    const cals = Math.max(600, Number(m.calories || 2000) - eaten.calories);
+    const prot = Math.max(45, Number(m.protein || 150) - eaten.protein);
     const phase = profile?.goal || activePlan?.phase || 'Maintain';
     const mealsByPhase = {
       Cut: [
@@ -1305,7 +1351,7 @@ function useAISuggestions(profile, activePlan, meals) {
     }[phase] || [];
     return mealsByPhase.map((x, i) => {
       const mealCal = Math.round(cals * x.ratio);
-      const mealProt = Math.round(prot * 0.32);
+      const mealProt = Math.max(18, Math.round(prot * 0.34));
       return {
         id: `fb${i + 1}`,
         time: i === 0 ? 'Lunch' : i === 1 ? 'Snack' : 'Dinner',
@@ -1992,7 +2038,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
   const [suggestions, setSuggestions] = useState([]);
   useEffect(() => { if (rawSuggestions.length > 0) setSuggestions(rawSuggestions); }, [rawSuggestions.length]);
 
-  const macros = activePlan?.macros || calcMacros(profile) || { calories: 2000, protein: 150, carbs: 200, fat: 55 };
+  const macros = getActiveTargets(activePlan, profile);
 
   const totals = meals.reduce(
     (a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0), carbs: a.carbs + (m.carbs || 0), fat: a.fat + (m.fat || 0) }),
