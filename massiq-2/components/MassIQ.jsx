@@ -7,7 +7,6 @@ import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
   getStoredSession,
-  clearStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -4097,6 +4096,23 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
   );
 }
 
+function AuthStatusScreen({ title, message, actionLabel = null, onAction = null }) {
+  return (
+    <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <style>{CSS}</style>
+      <Card className="glass su" style={{ width: '100%', maxWidth: 420, padding: 24, background: C.cardElevated }}>
+        <h1 style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.15, marginBottom: 10 }}>{title}</h1>
+        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: actionLabel ? 16 : 0 }}>{message}</p>
+        {actionLabel && (
+          <Btn onClick={onAction} style={{ width: '100%' }}>
+            {actionLabel}
+          </Btn>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -4212,6 +4228,12 @@ export default function MassIQ() {
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
   const [profileHydrated, setProfileHydrated] = useState(false);
+  const [authStatus, setAuthStatus] = useState('auth_loading');
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
+
+  const isProfileComplete = (p) => Boolean(
+    p?.name && p?.age && p?.weightLbs && p?.heightCm && p?.goal && p?.activity && p?.gender
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -4220,9 +4242,11 @@ export default function MassIQ() {
         const s = await initializeSession();
         if (!mounted) return;
         setSession(s);
+        setAuthStatus(s?.access_token ? 'auth_loading' : 'logged_out');
       } catch (err) {
         if (!mounted) return;
         setAuthError(err.message || 'Could not restore session.');
+        setAuthStatus('recoverable_error');
       } finally {
         if (mounted) setAuthReady(true);
       }
@@ -4247,12 +4271,15 @@ export default function MassIQ() {
       setProfile(null);
       setActivePlan(null);
       setProfileHydrated(false);
+      setAuthStatus('logged_out');
       setReady(true);
       return;
     }
     let mounted = true;
     const hydrate = async () => {
       setReady(false);
+      setAuthStatus('auth_loading');
+      setAuthError('');
       try {
         console.info('[sync] getUser:start');
         const user = session.user || await fetchUser(session.access_token);
@@ -4305,6 +4332,13 @@ export default function MassIQ() {
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setProfileHydrated(true);
+          if (!loadedProfile) {
+            setAuthStatus('authenticated_no_profile');
+          } else if (!isProfileComplete(loadedProfile)) {
+            setAuthStatus('authenticated_profile_incomplete');
+          } else {
+            setAuthStatus('ready');
+          }
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
@@ -4313,10 +4347,9 @@ export default function MassIQ() {
       } catch (err) {
         console.error('hydrate account data failed', err);
         if (mounted) {
-          setAuthError('We couldn’t finish syncing your account. Please log in again.');
-          setSession(null);
-          clearStoredSession();
+          setAuthError('We couldn’t finish syncing your account. Please retry.');
           setProfileHydrated(false);
+          setAuthStatus('recoverable_error');
         }
       } finally {
         if (mounted) setReady(true);
@@ -4324,7 +4357,7 @@ export default function MassIQ() {
     };
     hydrate();
     return () => { mounted = false; };
-  }, [authReady, session?.access_token]);
+  }, [authReady, session?.access_token, hydrateAttempt]);
 
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
     if (!session?.access_token) return;
@@ -4355,6 +4388,9 @@ export default function MassIQ() {
 
     const mapAuthError = (err, m) => {
       const raw = String(err?.message || '').toLowerCase();
+      if (raw.includes('email not confirmed') || raw.includes('not confirmed')) {
+        return 'Please verify your email before logging in.';
+      }
       if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
       if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
         return 'An account already exists for this email. Log in instead.';
@@ -4381,16 +4417,26 @@ export default function MassIQ() {
         ? await signUpWithPassword(normalizedEmail, userPassword)
         : await signInWithPassword(normalizedEmail, userPassword);
       if (!res?.access_token) {
-        setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
+        setAuthNotice(mode === 'signup'
+          ? 'Account created. Please check your email and verify your account before logging in.'
+          : 'Please verify your email before logging in.');
         return;
       }
-      const user = await fetchUser(res.access_token);
-      if (!user?.id) {
-        setAuthError('Could not validate your account session. Please try again.');
-        await signOutSession(res.access_token);
-        return;
+      try {
+        const user = await fetchUser(res.access_token);
+        if (user?.id) {
+          setSession({ ...res, user });
+          return;
+        }
+      } catch (userErr) {
+        if (mode === 'login') {
+          setAuthNotice('Signed in. Finishing account setup…');
+          setSession(res);
+          return;
+        }
+        throw userErr;
       }
-      setSession({ ...res, user });
+      setSession(res);
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
     } finally {
@@ -4447,7 +4493,25 @@ export default function MassIQ() {
 
   const showToast = (msg) => setToast(msg);
 
-  if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+  if (!authReady || !ready) {
+    return (
+      <AuthStatusScreen
+        title="Loading your account"
+        message="Please wait while we restore your session and profile."
+      />
+    );
+  }
+
+  if (authStatus === 'recoverable_error' && session?.access_token) {
+    return (
+      <AuthStatusScreen
+        title="We’re having trouble loading your account"
+        message={authError || 'Please retry syncing your profile.'}
+        actionLabel="Retry"
+        onAction={() => setHydrateAttempt((n) => n + 1)}
+      />
+    );
+  }
 
   if (!session?.access_token) {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
@@ -4457,7 +4521,7 @@ export default function MassIQ() {
     ? 'logged_out'
     : !profileHydrated
       ? 'authenticated_no_profile'
-      : (profile?.age && profile?.weightLbs && profile?.heightCm)
+      : isProfileComplete(profile)
         ? 'ready'
         : 'authenticated_profile_incomplete';
 
