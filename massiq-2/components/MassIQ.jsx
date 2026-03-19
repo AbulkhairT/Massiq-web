@@ -140,6 +140,7 @@ const LS_KEYS = {
   meals:       (d) => `massiq:meals:${d}`,
   workoutplan: 'massiq:workoutplan',
   logged:      (d) => `massiq:logged:${d}`,
+  reminders:   'massiq:reminders',
 };
 
 /* ─── Macro Calculator ───────────────────────────────────────────────────── */
@@ -446,6 +447,25 @@ const StatusPill = ({ tone = 'neutral', label }) => {
     </span>
   );
 };
+
+function DetailSheet({ title, subtitle, onClose, children }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 330, background: 'rgba(6,10,7,0.85)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', padding: 14, overflowY: 'auto' }}>
+      <div style={{ maxWidth: 620, margin: '8px auto 28px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <Card style={{ background: '#111813' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 740 }}>{title}</div>
+              {subtitle && <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>{subtitle}</div>}
+            </div>
+            <button className="bp" onClick={onClose} style={{ width: 34, height: 34, borderRadius: '50%', border: `1px solid ${C.border}`, background: C.cardElevated, color: C.muted, fontSize: 16 }}>×</button>
+          </div>
+        </Card>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 const ProgressBar = ({ value, max, color = C.green, height = 6 }) => {
   const pct = Math.min(100, max > 0 ? Math.round((value / max) * 100) : 0);
@@ -2080,6 +2100,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const weekKey = getWeekKey();
   const [selectedMeal,  setSelectedMeal]  = useState(null);
   const [swappingKey,   setSwappingKey]   = useState(null);
+  const [detailView,    setDetailView]    = useState(null);
   const [mealPlanDays,  setMealPlanDays]  = useState(() => {
     const stored = LS.get(LS_KEYS.mealplan, null);
     return stored?.days || null;
@@ -2189,6 +2210,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     `Training: ${trainDays} strength sessions`,
     `Recovery: ${sleepHrs} h sleep + ${waterL} L water daily`,
   ];
+  const workoutDays = LS.get(LS_KEYS.workoutplan, []) || [];
 
   return (
     <div className="screen">
@@ -2243,6 +2265,17 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         <div style={{ paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Coaching note</div>
           <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{coachingNote}</p>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 12 }}>
+          {[
+            { key: 'workout', label: 'Workout Plan' },
+            { key: 'cardio', label: 'Cardio Structure' },
+            { key: 'nutrition', label: 'Nutrition Guide' },
+          ].map((item) => (
+            <button key={item.key} className="bp" onClick={() => setDetailView(item.key)} style={{ fontSize: 12, fontWeight: 620, borderRadius: 10, border: `1px solid ${C.border}`, background: C.cardElevated, color: C.white, padding: '9px 8px' }}>
+              {item.label}
+            </button>
+          ))}
         </div>
       </Card>
 
@@ -2421,7 +2454,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 11, color: C.muted }}>Scheduled</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>{nextScanDate}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>{fmt.date(nextScanDate)}</div>
           </div>
         </div>
         <div style={{ marginBottom: 16 }}>
@@ -2547,6 +2580,91 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             );
           })()}
         </div>
+      )}
+
+      {detailView === 'workout' && (
+        <DetailSheet
+          title="Weekly Workout Structure"
+          subtitle="Phase-aligned split based on your current plan and training frequency."
+          onClose={() => setDetailView(null)}
+        >
+          <Card>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {(workoutDays.length ? workoutDays : []).map((day, idx) => (
+                <div key={`${day.day}-${idx}`} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: day.isTrainingDay ? C.cardElevated : 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{day.day} · {day.workoutType}</div>
+                    <span style={{ fontSize: 11, color: day.isTrainingDay ? C.green : C.muted }}>{day.duration}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>{day.focus?.join(' • ') || 'Recovery focus'}</div>
+                  {day.isTrainingDay ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                      {(day.exercises || []).slice(0, 5).map((ex) => (
+                        <div key={ex.name} style={{ fontSize: 12, color: C.white, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <span>{ex.name}</span>
+                          <span style={{ color: C.muted }}>{ex.sets}×{ex.reps}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>Recovery day. Optional low-intensity walk and mobility work.</div>
+                  )}
+                </div>
+              ))}
+              {!workoutDays.length && <div style={{ fontSize: 13, color: C.muted }}>Workout split is being prepared. Re-open after plan generation completes.</div>}
+            </div>
+          </Card>
+        </DetailSheet>
+      )}
+
+      {detailView === 'cardio' && (
+        <DetailSheet
+          title="Cardio Structure"
+          subtitle="Cardio is calibrated to support the active phase without interfering with strength progression."
+          onClose={() => setDetailView(null)}
+        >
+          <Card>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.cardElevated }}>
+                <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>Frequency</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{cardioDays} sessions / week</div>
+              </div>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.cardElevated }}>
+                <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>Session Guidance</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+                  20–30 min low-intensity steady cardio on non-leg days. Keep effort conversational. If recovery is reduced, lower duration before lowering strength volume.
+                </div>
+              </div>
+            </div>
+          </Card>
+        </DetailSheet>
+      )}
+
+      {detailView === 'nutrition' && (
+        <DetailSheet
+          title="How to Hit Today's Targets"
+          subtitle="Practical macro distribution based on your active phase targets."
+          onClose={() => setDetailView(null)}
+        >
+          <Card>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>Protein pacing target: ~{Math.round((macros.protein || 150) / 4)} g per main meal across 4 feedings.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {[
+                { label: 'Meal 1', protein: 0.25, carbs: 0.22, fats: 0.25 },
+                { label: 'Meal 2', protein: 0.25, carbs: 0.33, fats: 0.25 },
+                { label: 'Meal 3', protein: 0.25, carbs: 0.28, fats: 0.25 },
+                { label: 'Meal 4', protein: 0.25, carbs: 0.17, fats: 0.25 },
+              ].map((m) => (
+                <div key={m.label} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, background: C.cardElevated }}>
+                  <div style={{ fontSize: 12, fontWeight: 650, marginBottom: 4 }}>{m.label}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>Protein {Math.round((macros.protein || 150) * m.protein)} g</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>Carbs {Math.round((macros.carbs || 200) * m.carbs)} g</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>Fat {Math.round((macros.fat || 55) * m.fats)} g</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </DetailSheet>
       )}
 
       {selectedMeal && (
@@ -2680,6 +2798,13 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
   const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
   const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
   const [confirmReset, setConfirmReset] = useState(false);
+  const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
+    workout: { enabled: true, time: '17:30' },
+    cardio: { enabled: false, time: '07:30' },
+    protein: { enabled: true, time: '19:00' },
+    hydration: { enabled: false, time: '14:00' },
+    checkpoint: { enabled: true, time: '09:00' },
+  }));
 
   const aiMissions = LS.get('massiq:missions', null);
   const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
@@ -2732,6 +2857,11 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
+  const updateReminder = (key, patch) => {
+    const next = { ...reminders, [key]: { ...reminders[key], ...patch } };
+    setReminders(next);
+    LS.set(LS_KEYS.reminders, next);
+  };
 
   return (
     <div className="screen">
@@ -2951,7 +3081,39 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
         </div>
       </Card>
 
-      {/* 5 ── Reset ── */}
+      {/* 5 ── Reminder Preferences ── */}
+      <Card className="su" style={{ animationDelay: '.14s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Reminder Preferences</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[
+            ['workout', 'Workout Window', 'Workout window starts in 30 minutes.'],
+            ['cardio', 'Cardio Session', 'Cardio session scheduled for today.'],
+            ['protein', 'Protein Check', 'Protein target is behind pace.'],
+            ['hydration', 'Hydration', 'Hydration target check-in.'],
+            ['checkpoint', 'Scan Checkpoint', 'Review checkpoint is due tomorrow.'],
+          ].map(([key, label, preview]) => (
+            <div key={key} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: '10px 12px', background: C.cardElevated }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 620 }}>{label}</div>
+                <button className="bp" onClick={() => updateReminder(key, { enabled: !reminders[key]?.enabled })} style={{ fontSize: 11, fontWeight: 650, borderRadius: 999, padding: '4px 10px', border: `1px solid ${reminders[key]?.enabled ? C.greenDim : C.border}`, background: reminders[key]?.enabled ? C.greenBg : 'transparent', color: reminders[key]?.enabled ? C.green : C.muted }}>
+                  {reminders[key]?.enabled ? 'Enabled' : 'Off'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: C.muted }}>{preview}</span>
+                <input
+                  type="time"
+                  value={reminders[key]?.time || '09:00'}
+                  onChange={(e) => updateReminder(key, { time: e.target.value })}
+                  style={{ background: C.card, border: `1px solid ${C.border}`, color: C.white, borderRadius: 8, padding: '4px 8px', fontSize: 12 }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* 6 ── Reset ── */}
       <div style={{ paddingTop: 8, textAlign: 'center' }}>
         {!confirmReset ? (
           <button className="bp" onClick={() => setConfirmReset(true)} style={{ background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '10px 0' }}>
