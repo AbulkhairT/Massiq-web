@@ -564,10 +564,10 @@ const GOALS = [
   { key: 'Maintain', emoji: '⚖️', label: 'Maintain', desc: 'Stay lean at current weight' },
 ];
 const ACTIVITIES = [
-  { key: 'Sedentary', label: 'Sedentary',      desc: 'Desk job, minimal movement',    mult: '×1.2' },
-  { key: 'Light',     label: 'Lightly Active', desc: 'Light exercise 1–3x per week',  mult: '×1.375' },
-  { key: 'Moderate',  label: 'Moderately Active', desc: 'Exercise 3–5x per week',     mult: '×1.55' },
-  { key: 'Active',    label: 'Very Active',    desc: 'Hard training 6–7x per week',   mult: '×1.725' },
+  { key: 'Sedentary', label: 'Sedentary',         desc: 'Mostly sitting, minimal movement',          insight: 'Lower baseline calorie needs.' },
+  { key: 'Light',     label: 'Lightly Active',    desc: 'Daily movement with light exercise',        insight: 'Slightly higher daily energy demand.' },
+  { key: 'Moderate',  label: 'Moderately Active', desc: 'Consistent training most weeks',            insight: 'Moderate calorie needs for performance and recovery.' },
+  { key: 'Active',    label: 'Very Active',       desc: 'High training frequency or physical work',  insight: 'Higher energy demand to sustain output.' },
 ];
 
 /* Animated counter used on ready screen */
@@ -881,8 +881,11 @@ function Onboarding({ onComplete }) {
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 16, color: data.activity === a.key ? C.green : C.white }}>{a.label}</div>
                   <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>{a.desc}</div>
+                  <div style={{ fontSize: 12, color: C.dimmed, marginTop: 5 }}>{a.insight}</div>
                 </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.green, fontFamily: 'monospace', background: C.greenBg, padding: '4px 10px', borderRadius: 8 }}>{a.mult}</div>
+                <div style={{ width: 22, height: 22, borderRadius: '50%', border: `1px solid ${data.activity === a.key ? C.green : C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: data.activity === a.key ? C.green : C.dimmed, fontSize: 12, fontWeight: 700 }}>
+                  {data.activity === a.key ? '✓' : '›'}
+                </div>
               </div>
             ))}
           </div>
