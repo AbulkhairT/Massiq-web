@@ -2413,14 +2413,6 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
 /* ─── Plan Tab ───────────────────────────────────────────────────────────── */
 
-/* Get ISO week number */
-function getWeekKey() {
-  const d = new Date();
-  const jan1 = new Date(d.getFullYear(), 0, 1);
-  const week = Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7);
-  return `${d.getFullYear()}-W${week}`;
-}
-
 function daysBetween(a, b) {
   return Math.round((new Date(b) - new Date(a)) / 86400000);
 }
@@ -2433,14 +2425,7 @@ const PHASE_COLORS = {
   Recomp:   C.purple,
 };
 
-const DEFAULT_MISSIONS = [
-  'Hit your daily protein target every day this week',
-  'Complete all scheduled training sessions',
-  'Get 7+ hours of sleep at least 5 nights',
-];
-
 function PlanTab({ profile, activePlan, setTab, showToast }) {
-  const weekKey = getWeekKey();
   const [selectedMeal,  setSelectedMeal]  = useState(null);
   const [swappingKey,   setSwappingKey]   = useState(null);
   const [detailView,    setDetailView]    = useState(null);
@@ -2455,18 +2440,6 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     return idx >= 0 ? idx : 0;
   });
   const [loggedMeals,   setLoggedMeals]   = useState(() => LS.get(LS_KEYS.logged(todayStr()), {}));
-  const [missions, setMissions] = useState(() => {
-    const saved = LS.get(`massiq:missions:${weekKey}`, null);
-    const texts = activePlan?.weeklyMissions || DEFAULT_MISSIONS;
-    if (saved && saved.length === texts.length) return saved;
-    return texts.map((text, i) => ({ id: i, text, done: false }));
-  });
-
-  const toggleMission = (id) => {
-    const updated = missions.map(m => m.id === id ? { ...m, done: !m.done } : m);
-    setMissions(updated);
-    LS.set(`massiq:missions:${weekKey}`, updated);
-  };
 
   /* ── No active plan ── */
   if (!activePlan) {
@@ -2553,6 +2526,9 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     `Training: ${trainDays} strength sessions`,
     `Recovery: ${sleepHrs} h sleep + ${waterL} L water daily`,
   ];
+  const weeklyPriorities = (Array.isArray(activePlan?.weeklyMissions) && activePlan.weeklyMissions.length > 0)
+    ? activePlan.weeklyMissions.slice(0, 3)
+    : thisWeekChecklist.slice(0, 3);
   const workoutDays = LS.get(LS_KEYS.workoutplan, []) || [];
 
   return (
@@ -2710,28 +2686,18 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         </div>
       </div>
 
-      {/* 5 ── Weekly Missions ── */}
+      {/* 5 ── Weekly Priorities ── */}
       <div className="su" style={{ animationDelay: '.16s' }}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>This Week&apos;s Priorities</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {missions.map(m => (
-            <div key={m.id} className="bp" onClick={() => toggleMission(m.id)} style={{
-              display: 'flex', alignItems: 'center', gap: 14,
+          {weeklyPriorities.map((text, idx) => (
+            <div key={`${text}-${idx}`} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10,
               background: C.card, borderRadius: 14, padding: '14px 16px',
-              border: `1px solid ${m.done ? C.greenDim : C.border}`,
+              border: `1px solid ${C.border}`,
             }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
-                border: `2px solid ${m.done ? C.green : C.dimmed}`,
-                background: m.done ? C.greenBg : 'transparent',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                {m.done && <span style={{ fontSize: 13, color: C.green }}>✓</span>}
-              </div>
-              <span style={{
-                fontSize: 14, color: m.done ? C.muted : C.white, lineHeight: 1.4,
-                textDecoration: m.done ? 'line-through' : 'none',
-              }}>{m.text}</span>
+              <span style={{ color: C.green, marginTop: 1 }}>•</span>
+              <span style={{ fontSize: 14, color: C.white, lineHeight: 1.4 }}>{text}</span>
             </div>
           ))}
         </div>
