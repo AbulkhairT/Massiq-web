@@ -363,12 +363,12 @@ const STEPS = [
   {
     n: '01', label: 'Scan',
     title: 'Upload a physique photo',
-    body: 'AI estimates body fat %, lean mass, muscle group development, symmetry score, and key imbalances — from a single photo.',
+    body: 'MassIQ estimates body-fat range, lean mass, muscle development, and symmetry from a single photo.',
   },
   {
     n: '02', label: 'Diagnose',
-    title: 'Get a precise reading',
-    body: 'MassIQ identifies your limiting factor — whether that\'s too much fat, not enough lean mass, or a phase mismatch — and names it clearly.',
+    title: 'Get a calibrated assessment',
+    body: 'MassIQ highlights likely limiting factors based on your scan signal and profile context.',
   },
   {
     n: '03', label: 'Execute',
@@ -378,7 +378,7 @@ const STEPS = [
   {
     n: '04', label: 'Adapt',
     title: 'Scan again. Update everything.',
-    body: 'Every scan refreshes your diagnosis and regenerates your plan. As your body changes, your system stays current.',
+    body: 'Each scan can refresh your plan targets so your execution stays aligned with current progress.',
   },
 ];
 
@@ -426,7 +426,7 @@ export default function LandingPage() {
               }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
                 <span style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>
-                  AI Physique Intelligence
+                  Physique Intelligence
                 </span>
               </div>
             </div>
@@ -449,10 +449,9 @@ export default function LandingPage() {
             </div>
 
             <p className="fu d2 hero-sub">
-              MassIQ scans your body, diagnoses what&apos;s actually
-              happening, and gives you a precise plan — then updates
-              every time you scan again. Not a calorie counter.
-              Not a step tracker. A system.
+              MassIQ uses photo-based scan estimates plus deterministic
+              planning logic to set weekly calorie, protein, training,
+              and recovery targets. It is built for structured iteration.
             </p>
 
             <div className="fu d3 hero-ctas">
@@ -478,7 +477,7 @@ export default function LandingPage() {
         <div className="proof-inner">
           {[
             { stat: 'Private Beta',     sub: 'Early access only'               },
-            { stat: 'AI-Powered',       sub: 'Claude Sonnet model'             },
+            { stat: 'Photo + Engine',   sub: 'Vision estimate + rules engine'  },
             { stat: 'Body Scan + Plan', sub: 'Full system, not just tracking'  },
           ].map((p, i) => (
             <>

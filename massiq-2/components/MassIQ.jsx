@@ -6,6 +6,7 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
+  clearStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -1539,93 +1540,10 @@ function useAISuggestions(profile, activePlan, meals) {
 
 /* Log Meal Modal */
 function LogMealModal({ onClose, onAdd, macros, profile }) {
-  const [aiTab,     setAiTab]     = useState('describe');
-  const [descText,  setDescText]  = useState('');
-  const [analyzing, setAnalyzing] = useState(false);
   const [form,    setForm]    = useState({ name: '', calories: '', protein: '', carbs: '', fat: '' });
-  const [comment, setComment] = useState('');
   const [category, setCategory] = useState('Lunch');
-  const [error, setError] = useState('');
-  const fileRef = useRef(null);
 
   const setField = (k, v) => setForm(p => ({ ...p, [k]: v }));
-
-  const analyzeText = async () => {
-    if (!descText.trim()) return;
-    if (!ENABLE_NON_SCAN_AI) {
-      setError('Auto meal analysis is unavailable in this release. Enter values manually.');
-      return;
-    }
-    setAnalyzing(true); setError('');
-    try {
-      const res = await fetch('/api/claude', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          messages: [{
-            role: 'user',
-            content: `Analyze nutrition for: ${descText}. Goal: ${profile?.goal||'general fitness'}. Return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their goal"}`,
-          }],
-          max_tokens: 200,
-        }),
-      });
-      const { text } = await res.json();
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        const raw = JSON.parse(match[0]);
-        const d = sanitizeMeal(raw, macros, profile);
-        setForm({ name: d?.name || descText, calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
-        setComment(raw?.comment || '');
-      }
-    } catch { setError('Analysis failed — fill in manually.'); }
-    setAnalyzing(false);
-  };
-
-  const analyzePhoto = (file) => {
-    if (!file) return;
-    if (!ENABLE_NON_SCAN_AI) {
-      setError('Photo meal analysis is unavailable in this release. Enter values manually.');
-      return;
-    }
-    setAnalyzing(true); setError('');
-    const reader = new FileReader();
-    reader.onerror = () => { setError('Could not read image file.'); setAnalyzing(false); };
-    reader.onload = async (e) => {
-      try {
-        const base64 = e.target.result.split(',')[1];
-        const res = await fetch('/api/claude', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
-                { type: 'text', text: `Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their ${profile?.goal||'fitness'} goal"}` },
-              ],
-            }],
-            max_tokens: 200,
-          }),
-        });
-        if (!res.ok) throw new Error(`API error ${res.status}`);
-        const { text, error: apiErr } = await res.json();
-        if (apiErr) throw new Error(apiErr);
-        const match = text.match(/\{[\s\S]*\}/);
-        if (match) {
-          const raw = JSON.parse(match[0]);
-          const d = sanitizeMeal(raw, macros, profile);
-          setForm({ name: d?.name || 'Food', calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
-          setComment(raw?.comment || '');
-        }
-      } catch (err) {
-        console.error('Photo analysis error:', err);
-        setError('Photo analysis failed — fill in manually.');
-      } finally {
-        setAnalyzing(false);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
 
   const handleAdd = () => {
     if (!form.name.trim()) return;
@@ -1675,52 +1593,13 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
             <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer' }}>×</button>
           </div>
 
-          {/* AI Analyze */}
-          <div style={{ background: C.cardElevated, borderRadius: 16, padding: 16, marginBottom: 20 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: C.green, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 12 }}>AI Analyze</div>
-            {/* Tab toggle */}
-            <div style={{ display: 'flex', background: C.card, borderRadius: 10, padding: 3, marginBottom: 14 }}>
-              {[['describe','📝 Describe'],['photo','📷 Photo']].map(([k, lbl]) => (
-                <button key={k} className="bp" onClick={() => setAiTab(k)} style={{
-                  flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                  background: aiTab === k ? C.green : 'transparent',
-                  color: aiTab === k ? '#000' : C.muted,
-                }}>{lbl}</button>
-              ))}
-            </div>
+          <Card style={{ background: C.cardElevated, marginBottom: 14 }}>
+            <p style={{ margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+              Meal entry is manual in this release. Enter label + macros for accurate daily targets.
+            </p>
+          </Card>
 
-            {aiTab === 'describe' ? (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input style={{ ...inputStyle, flex: 1 }} placeholder="e.g. grilled chicken breast 200g with rice"
-                  value={descText} onChange={e => setDescText(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && analyzeText()} />
-                <Btn onClick={analyzeText} disabled={analyzing || !descText.trim()}
-                  style={{ padding: '12px 16px', borderRadius: 12, flexShrink: 0 }}>
-                  {analyzing ? '…' : '✦'}
-                </Btn>
-              </div>
-            ) : (
-              <div>
-                <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                  onChange={e => analyzePhoto(e.target.files?.[0])} />
-                <button className="bp" onClick={() => fileRef.current?.click()} style={{
-                  width: '100%', padding: '28px 0', borderRadius: 12, border: `1.5px dashed ${C.green}`,
-                  background: C.greenBg, color: C.green, fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                }}>
-                  {analyzing ? '⏳ Analyzing…' : '📷 Take or upload a photo'}
-                </button>
-              </div>
-            )}
-            {error && <p style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{error}</p>}
-          </div>
-
-          {comment && (
-            <div style={{ background: C.greenBg, border: `1px solid ${C.greenDim}`, borderRadius: 12, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.green, lineHeight: 1.5 }}>
-              💬 {comment}
-            </div>
-          )}
-
-          {/* Manual fields */}
+          {/* Manual fields only */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
             <input style={inputStyle} placeholder="Meal name" value={form.name} onChange={e => setField('name', e.target.value)} />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -3450,6 +3329,9 @@ const MG_META = {
 const getMG = (level) => MG_META[level?.toLowerCase?.() ?? ''] ?? MG_META['moderate'];
 
 function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
+  const MAX_UPLOAD_MB = 12;
+  const MIN_SCAN_IMAGE_SIDE = 360;
+  const SUPPORTED_SCAN_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -3459,9 +3341,42 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [viewOld,   setViewOld]   = useState(null); // index of old scan being viewed
 
+  const validateScanProfile = () => {
+    const age = Number(profile?.age);
+    const weight = Number(profile?.weightLbs);
+    const height = Number(profile?.heightIn);
+    const gender = String(profile?.gender || '').trim();
+    if (!Number.isFinite(age) || age < 16 || age > 85) {
+      return 'Update profile before scanning: age must be between 16 and 85.';
+    }
+    if (!Number.isFinite(weight) || weight < 80 || weight > 420) {
+      return 'Update profile before scanning: weight must be between 80 and 420 lb.';
+    }
+    if (!Number.isFinite(height) || height < 54 || height > 84) {
+      return 'Update profile before scanning: height must be between 54 and 84 inches.';
+    }
+    if (!gender) {
+      return 'Update profile before scanning: gender is required for calibrated body-fat ranges.';
+    }
+    return '';
+  };
+
   const handleFile = (file) => {
     if (!file) return;
     setError('');
+    const profileError = validateScanProfile();
+    if (profileError) {
+      setError(profileError);
+      return;
+    }
+    if (!SUPPORTED_SCAN_TYPES.includes(String(file.type || '').toLowerCase())) {
+      setError('Unsupported image type. Please upload JPG, PNG, or WEBP.');
+      return;
+    }
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(`Image is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Use a file under ${MAX_UPLOAD_MB} MB.`);
+      return;
+    }
 
     // Compress image client-side before sending — Next.js Route Handler body limits
     // apply before our code runs, so we resize on the client to stay under 1 MB.
@@ -3469,6 +3384,10 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
     const objectUrl = URL.createObjectURL(file);
     img.onload = async () => {
       URL.revokeObjectURL(objectUrl);
+      if (img.width < MIN_SCAN_IMAGE_SIDE || img.height < MIN_SCAN_IMAGE_SIDE) {
+        setError(`Image resolution is too low. Use at least ${MIN_SCAN_IMAGE_SIDE}×${MIN_SCAN_IMAGE_SIDE}px for scan reliability.`);
+        return;
+      }
 
       // Resize to max 1024px on the longest side — enough detail for physique analysis
       const MAX = 1024;
@@ -3921,7 +3840,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     <div className="screen">
       <div>
         <h1 className="screen-title" style={{ marginBottom: 6 }}>Scan</h1>
-        <p style={{ fontSize: 14, color: C.muted }}>AI physique analysis from a single photo</p>
+        <p style={{ fontSize: 14, color: C.muted }}>Photo-based physique estimate with plan calibration</p>
       </div>
 
       {/* What you'll get */}
@@ -4181,7 +4100,7 @@ function Sidebar({ active, setTab, profile }) {
       {/* Logo */}
       <div style={{ padding: '28px 20px 24px', borderBottom: `1px solid ${C.border}` }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase' }}>MASSIQ</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 5, letterSpacing: '.02em' }}>AI Physique OS</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 5, letterSpacing: '.02em' }}>Physique Tracking System</div>
       </div>
 
       {/* Nav */}
@@ -4233,16 +4152,47 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const [verifiedUserId, setVerifiedUserId] = useState(null);
+
+  const isProfileComplete = (p) => Boolean(
+    p &&
+    Number.isFinite(Number(p.age)) &&
+    Number.isFinite(Number(p.weightLbs)) &&
+    Number.isFinite(Number(p.heightCm)) &&
+    String(p.gender || '').trim() &&
+    String(p.goal || '').trim() &&
+    String(p.activity || '').trim()
+  );
 
   useEffect(() => {
     let mounted = true;
     const boot = async () => {
+      console.info('[startup] boot:start');
       try {
         console.info('[auth] session restore:start');
         const s = await initializeSession();
         if (!mounted) return;
-        console.info('[auth] session restore:done', { hasSession: Boolean(s?.access_token) });
-        setSession(s);
+        if (!s?.access_token) {
+          console.info('[startup] session:missing');
+          setSession(null);
+          setVerifiedUserId(null);
+          return;
+        }
+        console.info('[startup] session:restored');
+        try {
+          const user = await fetchUser(s.access_token);
+          if (!mounted) return;
+          const userId = user?.id || null;
+          if (!userId) throw new Error('Missing authenticated user id');
+          console.info('[startup] auth:getUser success', { userId });
+          setSession({ ...s, user });
+          setVerifiedUserId(userId);
+        } catch (authErr) {
+          console.error('[startup] auth:getUser fail', authErr);
+          clearStoredSession();
+          setSession(null);
+          setVerifiedUserId(null);
+        }
       } catch (err) {
         if (!mounted) return;
         console.error('[auth] session restore:error', err);
@@ -4257,9 +4207,10 @@ export default function MassIQ() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
+    if (!session?.access_token || !verifiedUserId) {
       setProfile(null);
       setActivePlan(null);
+      console.info('[startup] route:auth');
       setReady(true);
       return;
     }
@@ -4268,10 +4219,8 @@ export default function MassIQ() {
       setReady(false);
       try {
         console.info('[sync] getUser:start');
-        const user = session.user || await fetchUser(session.access_token);
-        console.info('[sync] getUser:ok', { userId: user?.id || null });
-        const userId = user?.id;
-        if (!userId) throw new Error('Missing user session.');
+        const userId = verifiedUserId;
+        console.info('[sync] getUser:ok', { userId });
 
         let loadedProfile = null;
         let loadedPlan = null;
@@ -4318,7 +4267,7 @@ export default function MassIQ() {
           console.info('[auth] route decision', {
             hasProfile: Boolean(loadedProfile),
             hasPlan: Boolean(loadedPlan),
-            destination: loadedProfile ? 'app' : 'onboarding',
+            destination: isProfileComplete(loadedProfile) ? 'app' : 'onboarding',
           });
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
@@ -4336,16 +4285,18 @@ export default function MassIQ() {
     };
     hydrate();
     return () => { mounted = false; };
-  }, [authReady, session?.access_token]);
+  }, [authReady, session?.access_token, verifiedUserId]);
 
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null, source = 'unknown_ui_action') => {
-    if (!session?.access_token) return;
+    if (!session?.access_token || !verifiedUserId) return;
     try {
       setSyncing(true);
-      const user = session.user || await fetchUser(session.access_token);
+      const user = await fetchUser(session.access_token);
       const userId = user?.id;
       const sessionId = session?.session_id || null;
-      if (!userId) return;
+      if (!userId || userId !== verifiedUserId) {
+        throw new Error('Session identity mismatch while persisting account state.');
+      }
       console.info('[sync] persistUserState:start', { source, userId, sessionId, hasPlan: Boolean(nextPlan), hasProfile: Boolean(nextProfile) });
       if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
       if (nextPlan) {
@@ -4407,7 +4358,10 @@ export default function MassIQ() {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
+      const authUser = res.user || await fetchUser(res.access_token);
+      if (!authUser?.id) throw new Error('Authentication succeeded but user identity could not be verified.');
       setSession(res);
+      setVerifiedUserId(authUser.id);
     } catch (err) {
       const raw = String(err?.message || '').toLowerCase();
       if (mode === 'signup' && (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered'))) {
@@ -4415,7 +4369,10 @@ export default function MassIQ() {
           console.info('[auth] signup:duplicate_try_login', { email: normalizedEmail });
           const loginRes = await signInWithPassword(normalizedEmail, userPassword);
           if (loginRes?.access_token) {
+            const authUser = loginRes.user || await fetchUser(loginRes.access_token);
+            if (!authUser?.id) throw new Error('Login fallback could not verify user identity.');
             setSession(loginRes);
+            setVerifiedUserId(authUser.id);
             return;
           }
         } catch (loginErr) {
@@ -4437,6 +4394,7 @@ export default function MassIQ() {
       console.error('Logout failed:', err);
     }
     setSession(null);
+    setVerifiedUserId(null);
     setProfile(null);
     setActivePlan(null);
     setEditing(false);
@@ -4480,11 +4438,11 @@ export default function MassIQ() {
 
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
-  if (!session?.access_token) {
+  if (!session?.access_token || !verifiedUserId) {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
-  if (!profile || editing) return (
+  if (!profile || !isProfileComplete(profile) || editing) return (
     <>
       <style>{CSS}</style>
       <Onboarding onComplete={handleOnboardingComplete} />
