@@ -5,15 +5,15 @@ import { useEffect } from "react";
 const C = {
   bg:          '#080C08',
   bg2:         '#0B0F0B',
-  card:        'rgba(255,255,255,0.03)',
-  cardSolid:   '#0D120D',
-  border:      'rgba(255,255,255,0.07)',
-  borderHi:    'rgba(0,200,83,0.22)',
-  green:       '#00C853',
-  greenBg:     'rgba(0,200,83,0.10)',
+  card:        'rgba(255,255,255,0.028)',
+  cardSolid:   '#111611',
+  border:      'rgba(255,255,255,0.09)',
+  borderHi:    'rgba(52,209,123,0.24)',
+  green:       '#34D17B',
+  greenBg:     'rgba(52,209,123,0.12)',
   white:       '#FFFFFF',
-  muted:       'rgba(255,255,255,0.48)',
-  dim:         'rgba(255,255,255,0.22)',
+  muted:       'rgba(255,255,255,0.62)',
+  dim:         'rgba(255,255,255,0.3)',
   orange:      '#FF6B35',
 };
 
@@ -107,10 +107,10 @@ const CSS = `
     transition: transform .15s ease, box-shadow .15s ease;
     width: fit-content;
   }
-  .btn-primary:hover { transform: scale(1.03); box-shadow: 0 0 48px rgba(0,200,83,0.42); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 40px rgba(52,209,123,0.35); }
   .btn-ghost {
     display: inline-flex; align-items: center; justify-content: center;
-    background: rgba(255,255,255,0.06); color: ${C.muted}; font-weight: 600;
+    background: rgba(255,255,255,0.04); color: ${C.muted}; font-weight: 600;
     font-size: 14px; padding: 14px 28px; border-radius: 99px;
     border: 1px solid ${C.border};
     transition: background .15s ease, color .15s ease;
