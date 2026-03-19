@@ -4220,7 +4220,7 @@ export default function MassIQ() {
   const [authBusy,   setAuthBusy]   = useState(false);
   const [authError,  setAuthError]  = useState('');
   const [authNotice, setAuthNotice] = useState('');
-  const [profile,    setProfile]    = useState(null);
+  const [profile,    setProfile]    = useState(undefined);
   const [activePlan, setActivePlan] = useState(null);
   const [tab,        setTab]        = useState('home');
   const [ready,      setReady]      = useState(false);
@@ -4268,7 +4268,7 @@ export default function MassIQ() {
   useEffect(() => {
     if (!authReady) return;
     if (!session?.access_token) {
-      setProfile(null);
+      setProfile(undefined);
       setActivePlan(null);
       setProfileHydrated(false);
       setAuthStatus('logged_out');
@@ -4329,7 +4329,7 @@ export default function MassIQ() {
         }
 
         if (mounted) {
-          setProfile(loadedProfile);
+          setProfile(loadedProfile ?? null);
           setActivePlan(loadedPlan);
           setProfileHydrated(true);
           if (!loadedProfile) {
@@ -4348,6 +4348,7 @@ export default function MassIQ() {
         console.error('hydrate account data failed', err);
         if (mounted) {
           setAuthError('We couldn’t finish syncing your account. Please retry.');
+          setProfile(undefined);
           setProfileHydrated(false);
           setAuthStatus('recoverable_error');
         }
@@ -4451,7 +4452,7 @@ export default function MassIQ() {
       console.error('Logout failed:', err);
     }
     setSession(null);
-    setProfile(null);
+    setProfile(undefined);
     setActivePlan(null);
     setProfileHydrated(false);
     setEditing(false);
@@ -4517,11 +4518,22 @@ export default function MassIQ() {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
+  if (profile === undefined) {
+    return (
+      <AuthStatusScreen
+        title="Loading your profile"
+        message="Please wait while we finish loading your account details."
+      />
+    );
+  }
+
   const authState = !session?.access_token
     ? 'logged_out'
     : !profileHydrated
       ? 'authenticated_no_profile'
-      : isProfileComplete(profile)
+      : profile === null
+        ? 'authenticated_no_profile'
+        : isProfileComplete(profile)
         ? 'ready'
         : 'authenticated_profile_incomplete';
 
