@@ -14,6 +14,8 @@ import {
   getProfile,
   upsertPlan,
   getPlan,
+  createScan,
+  getScans,
 } from '../lib/supabase/client';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
@@ -344,6 +346,30 @@ function getPrimaryLimiters(scan, activePlan) {
 function getActiveTargets(activePlan, profile) {
   const targets = activePlan?.dailyTargets || activePlan?.macros || calcMacros(profile);
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+}
+
+function buildBaselinePlanFromProfile(profile) {
+  const targets = getActiveTargets(null, profile);
+  const nextScan = new Date();
+  nextScan.setDate(nextScan.getDate() + 28);
+  return {
+    phase: profile?.goal || 'Maintain',
+    phaseName: `${profile?.goal || 'Maintain'} Phase`,
+    objective: 'Baseline phase generated from your profile inputs.',
+    week: 1,
+    startDate: todayStr(),
+    nextScanDate: nextScan.toISOString().slice(0, 10),
+    macros: {
+      calories: targets.calories,
+      protein: targets.protein,
+      carbs: targets.carbs,
+      fat: targets.fat,
+    },
+    dailyTargets: targets,
+    trainDays: targets.trainingDaysPerWeek || 4,
+    sleepHrs: targets.sleepHours || 8,
+    waterL: targets.waterLiters || 3,
+  };
 }
 
 function sanitizeMeal(meal, targets, profile, idx = 0) {
@@ -4208,25 +4234,33 @@ export default function MassIQ() {
         const userId = user?.id;
         if (!userId) throw new Error('Missing user session.');
 
-        const [profileRow, planRow] = await Promise.all([
+        const [profileRow, planRow, scans] = await Promise.all([
           getProfile(session.access_token, userId),
           getPlan(session.access_token, userId),
+          getScans(session.access_token, userId),
         ]);
 
-        const loadedProfile = profileRow?.profile || null;
-        const loadedPlan = planRow?.plan || null;
-        const loadedScanHistory = Array.isArray(planRow?.scan_history) ? planRow.scan_history : [];
+        const loadedProfile = profileRow || null;
+        let loadedPlan = planRow || null;
+        const loadedScanHistory = Array.isArray(scans) ? scans : [];
+
+        if (loadedProfile && !loadedPlan) {
+          const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
+          await upsertPlan(session.access_token, userId, fallbackPlan);
+          loadedPlan = fallbackPlan;
+        }
 
         if (mounted) {
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
-          setTab(loadedProfile && loadedPlan ? 'home' : 'home');
+          setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
           LS.set(LS_KEYS.scanHistory, loadedScanHistory);
         }
       } catch (err) {
-        if (mounted) setAuthError(err.message || 'Could not load account data.');
+        console.error('hydrate account data failed', err);
+        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
       } finally {
         if (mounted) setReady(true);
       }
@@ -4244,12 +4278,15 @@ export default function MassIQ() {
       if (!userId) return;
       if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
       if (nextPlan) {
-        const scans = scanHistory ?? LS.get(LS_KEYS.scanHistory, []);
-        await upsertPlan(session.access_token, userId, nextPlan, scans);
+        await upsertPlan(session.access_token, userId, nextPlan);
+      }
+      if (Array.isArray(scanHistory) && scanHistory.length) {
+        const latestScan = scanHistory[scanHistory.length - 1];
+        await createScan(session.access_token, userId, latestScan);
       }
     } catch (err) {
       console.error('Persist failed:', err);
-      showToast(`⚠️ Sync issue: ${err.message || 'Failed to save to cloud.'}`);
+      showToast('We couldn’t finish syncing your account. Please try again.');
     } finally {
       setSyncing(false);
     }
