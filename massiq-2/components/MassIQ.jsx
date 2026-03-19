@@ -4274,7 +4274,7 @@ export default function MassIQ() {
           loadedScanHistory = [];
         }
 
-        if (loadedProfile && !loadedPlan) {
+        if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
             console.info('[sync] createDefaultPlan:start', { userId });
@@ -4426,7 +4426,8 @@ export default function MassIQ() {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
-  if (!profile || editing) return (
+  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
       <Onboarding onComplete={handleOnboardingComplete} />
