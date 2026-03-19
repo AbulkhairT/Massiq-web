@@ -277,6 +277,20 @@ const fmt = {
   pct: (v, d = 1) => `${Number(v || 0).toFixed(d)}%`,
   lbs: (v, d = 0) => `${Number(v || 0).toFixed(d)} lb`,
   range: (a, b) => `${Math.round(a)}–${Math.round(b)}`,
+  weight: (lbs, unit = 'imperial') => unit === 'metric'
+    ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
+    : `${Number(lbs || 0).toFixed(1)} lb`,
+  leanMass: (lbs, unit = 'imperial') => unit === 'metric'
+    ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
+    : `${Number(lbs || 0).toFixed(1)} lb`,
+  height: (cm, unit = 'imperial') => {
+    const n = Number(cm || 0);
+    if (unit === 'metric') return `${Math.round(n)} cm`;
+    const totalIn = n / 2.54;
+    const ft = Math.floor(totalIn / 12);
+    const inch = Math.round(totalIn % 12);
+    return `${ft}'${inch}"`;
+  },
 };
 
 const PHASE_META = {
@@ -421,6 +435,37 @@ const Card = ({ children, style = {}, className = '', ...rest }) => (
   </div>
 );
 
+const SummaryCard = ({ label, title, subtitle, progressPct, metrics = [], insight, nextStep, tone = C.green, children }) => (
+  <Card className="glass" style={{ background: '#152019', border: `1px solid ${tone}55` }}>
+    <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>{label}</div>
+    <div style={{ fontSize: 28, fontWeight: 780, lineHeight: 1.05, marginBottom: 4 }}>{title}</div>
+    {subtitle && <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>{subtitle}</div>}
+    {typeof progressPct === 'number' && (
+      <div style={{ marginBottom: 10 }}>
+        <ProgressBar value={progressPct} max={100} color={tone} height={6} />
+      </div>
+    )}
+    {metrics.length > 0 && (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(metrics.length, 4)}, 1fr)`, gap: 8, marginBottom: 10 }}>
+        {metrics.map((m) => (
+          <div key={m.label} style={{ textAlign: 'left', border: `1px solid ${C.border}`, borderRadius: 10, padding: '8px 9px', background: 'rgba(0,0,0,0.15)' }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{m.value}</div>
+            <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
+          </div>
+        ))}
+      </div>
+    )}
+    {insight && (
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, background: 'rgba(255,255,255,0.02)', padding: '9px 10px', marginBottom: nextStep ? 8 : 0 }}>
+        <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>System Insight</div>
+        <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{insight}</div>
+      </div>
+    )}
+    {nextStep && <div style={{ fontSize: 12, color: C.green }}>Next step: {nextStep}</div>}
+    {children}
+  </Card>
+);
+
 const Chip = ({ label, active, onClick }) => (
   <button className="bp" onClick={onClick} style={{
     padding: '7px 14px', borderRadius: 50, border: `1px solid ${active ? C.green : C.border}`,
@@ -546,7 +591,8 @@ function Onboarding({ onComplete }) {
   const [visible,  setVisible]  = useState(true);   // for fade animation
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
   const [data, setData] = useState({
-    name: '', age: '', gender: 'Male', weightLbs: '', heightCm: '',
+    name: '', age: '', gender: 'Male', unitSystem: 'imperial',
+    weightLbs: '', weightKg: '', heightCm: '', heightFt: '5', heightInch: '10',
     goal: '', activity: '', dietPrefs: [], cuisines: [], avoid: [],
   });
 
@@ -560,7 +606,9 @@ function Onboarding({ onComplete }) {
   const canNext = [
     !!data.name.trim(),                        // 0 name
     !!data.goal,                               // 1 goal
-    !!(data.weightLbs && data.heightCm && data.age && data.gender), // 2 stats
+    !!(((data.unitSystem === 'metric' ? data.weightKg : data.weightLbs)
+      && (data.unitSystem === 'metric' ? data.heightCm : (data.heightFt && data.heightInch))
+      && data.age && data.gender)), // 2 stats
     !!data.activity,                           // 3 activity
     true,                                      // 4 dietary (skippable)
     true,                                      // 5 cuisine (skippable)
@@ -592,12 +640,16 @@ function Onboarding({ onComplete }) {
   const [generating, setGenerating] = useState(false);
 
   const finish = async () => {
+    const normalizedWeightLbs = data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0);
+    const normalizedHeightCm = data.unitSystem === 'imperial'
+      ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
+      : Number(data.heightCm || 0);
     const profile = {
       ...data,
       age: Number(data.age),
-      weightLbs: Number(data.weightLbs),
-      heightCm: Number(data.heightCm),
-      heightIn: Number(data.heightCm) / 2.54,
+      weightLbs: Number(normalizedWeightLbs.toFixed(1)),
+      heightCm: Number(normalizedHeightCm.toFixed(1)),
+      heightIn: Number((normalizedHeightCm / 2.54).toFixed(1)),
     };
     LS.set(LS_KEYS.profile, profile);
 
@@ -676,7 +728,10 @@ function Onboarding({ onComplete }) {
 
   const macros = calcMacros({
     ...data, age: Number(data.age),
-    weightLbs: Number(data.weightLbs), heightIn: Number(data.heightCm) / 2.54,
+    weightLbs: data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0),
+    heightIn: data.unitSystem === 'imperial'
+      ? (Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)
+      : Number(data.heightCm || 0) / 2.54,
   });
 
   /* ── Dot progress ── */
@@ -755,15 +810,50 @@ function Onboarding({ onComplete }) {
         <div style={{ width: '100%' }}>
           <AILabel />
           <AiMsg>To calculate your exact targets,<br />I need a few numbers.</AiMsg>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 14 }}>
+            {[
+              { key: 'imperial', label: 'Imperial (lb, ft/in)' },
+              { key: 'metric', label: 'Metric (kg, cm)' },
+            ].map(u => (
+              <button
+                key={u.key}
+                className={`ob-chip${data.unitSystem === u.key ? ' selected' : ''}`}
+                onClick={() => set('unitSystem', u.key)}
+              >
+                {u.label}
+              </button>
+            ))}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
             <div>
-              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Weight (lbs)</div>
-              <input type="number" className="ob-num-input" placeholder="185" value={data.weightLbs} onChange={e => set('weightLbs', e.target.value)} />
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>
+                Weight ({data.unitSystem === 'metric' ? 'kg' : 'lb'})
+              </div>
+              <input
+                type="number"
+                className="ob-num-input"
+                placeholder={data.unitSystem === 'metric' ? '84' : '185'}
+                value={data.unitSystem === 'metric' ? data.weightKg : data.weightLbs}
+                onChange={e => set(data.unitSystem === 'metric' ? 'weightKg' : 'weightLbs', e.target.value)}
+              />
             </div>
-            <div>
-              <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (cm)</div>
-              <input type="number" className="ob-num-input" placeholder="178" value={data.heightCm} onChange={e => set('heightCm', e.target.value)} />
-            </div>
+            {data.unitSystem === 'metric' ? (
+              <div>
+                <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (cm)</div>
+                <input type="number" className="ob-num-input" placeholder="178" value={data.heightCm} onChange={e => set('heightCm', e.target.value)} />
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (ft)</div>
+                  <input type="number" className="ob-num-input" placeholder="5" value={data.heightFt} onChange={e => set('heightFt', e.target.value)} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Height (in)</div>
+                  <input type="number" className="ob-num-input" placeholder="10" value={data.heightInch} onChange={e => set('heightInch', e.target.value)} />
+                </div>
+              </div>
+            )}
           </div>
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Age</div>
@@ -1085,7 +1175,7 @@ function HomeTab({ profile, activePlan, setTab }) {
             <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
               {[
                 { label: 'Body Fat', value: lastScan?.bodyFat ? fmt.pct(lastScan.bodyFat, 1) : '—', unit: '' },
-                { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.lbs(lastScan.leanMass) : '—', unit: '' },
+                { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.leanMass(lastScan.leanMass, profile?.unitSystem) : '—', unit: '' },
                 { label: 'Next Scan', value: fmt.date(activePlan?.nextScanDate), unit: '' },
               ].map((s, i) => (
                 <div key={s.label} style={{
@@ -1179,37 +1269,81 @@ function useAISuggestions(profile, activePlan, meals) {
   const cacheKey = `massiq:suggestions:${hourKey()}`;
   const [reloadKey, setReloadKey] = useState(0);
   const cached = SS.get(cacheKey, null);
-  const [suggestions, setSuggestions] = useState(cached);
-  const [loading,     setLoading]     = useState(!cached);
+  const hasCached = Array.isArray(cached) && cached.length > 0;
+  const [suggestions, setSuggestions] = useState(hasCached ? cached : null);
+  const [loading,     setLoading]     = useState(!hasCached);
   const [error,       setError]       = useState('');
-  const fallbackSuggestions = [
-    { id: 'fb1', time: 'Lunch', icon: '🍗', name: 'Lean protein bowl', calories: 540, protein: 45, carbs: 48, fat: 18, whyNow: 'Supports protein target with moderate calories.' },
-    { id: 'fb2', time: 'Dinner', icon: '🥩', name: 'Steak + potato plate', calories: 620, protein: 46, carbs: 52, fat: 24, whyNow: 'Balanced evening meal aligned to your plan.' },
-    { id: 'fb3', time: 'Snack', icon: '🥣', name: 'Greek yogurt + berries', calories: 290, protein: 26, carbs: 24, fat: 8, whyNow: 'Efficient protein top-up without excess calories.' },
-  ];
+  const buildFallbackSuggestions = () => {
+    const m = activePlan?.macros || activePlan?.dailyTargets || { calories: 2000, protein: 150, carbs: 210, fat: 60 };
+    const cals = Number(m.calories || 2000);
+    const prot = Number(m.protein || 150);
+    const phase = profile?.goal || activePlan?.phase || 'Maintain';
+    const mealsByPhase = {
+      Cut: [
+        { name: 'Chicken + greens bowl', icon: '🥗', ratio: 0.28 },
+        { name: 'Greek yogurt protein snack', icon: '🥣', ratio: 0.16 },
+        { name: 'Salmon + vegetables plate', icon: '🐟', ratio: 0.33 },
+      ],
+      Bulk: [
+        { name: 'Rice + lean beef bowl', icon: '🍚', ratio: 0.34 },
+        { name: 'Oats + whey + berries', icon: '🥣', ratio: 0.22 },
+        { name: 'Pasta + chicken plate', icon: '🍝', ratio: 0.36 },
+      ],
+      Recomp: [
+        { name: 'Egg + toast breakfast plate', icon: '🍳', ratio: 0.25 },
+        { name: 'Turkey rice bowl', icon: '🍲', ratio: 0.3 },
+        { name: 'Steak + potato dinner', icon: '🥩', ratio: 0.32 },
+      ],
+      Maintain: [
+        { name: 'Balanced protein bowl', icon: '🍱', ratio: 0.3 },
+        { name: 'High-protein wrap', icon: '🌯', ratio: 0.24 },
+        { name: 'Fish + grains plate', icon: '🐟', ratio: 0.31 },
+      ],
+    }[phase] || [];
+    return mealsByPhase.map((x, i) => {
+      const mealCal = Math.round(cals * x.ratio);
+      const mealProt = Math.round(prot * 0.32);
+      return {
+        id: `fb${i + 1}`,
+        time: i === 0 ? 'Lunch' : i === 1 ? 'Snack' : 'Dinner',
+        icon: x.icon,
+        name: x.name,
+        calories: mealCal,
+        protein: mealProt,
+        carbs: Math.max(12, Math.round((mealCal * 0.4) / 4)),
+        fat: Math.max(6, Math.round((mealCal * 0.3) / 9)),
+        whyNow: 'Generated from your active phase targets while live suggestions refresh.',
+      };
+    });
+  };
   useEffect(() => {
-    if (cached) { setLoading(false); return; }
+    if (hasCached && reloadKey === 0) { setLoading(false); return; }
     let ok = true;
     setLoading(true);
     setError('');
-    generateSuggestions(profile, activePlan, meals)
-      .then(data => {
-        if (!ok) return;
-        const normalized = Array.isArray(data) ? data.map((s, i) => ({ id: s.id||`s${i}`, time: s.time||s.mealType||'Meal', icon: s.icon||'🍽️', ...s })) : [];
-        setSuggestions(normalized);
-        SS.set(cacheKey, normalized);
-        setLoading(false);
-      })
-      .catch(err => {
-        if (ok) {
-          console.error('Suggestions failed:', err);
-          setSuggestions(fallbackSuggestions);
-          setError('Suggestions unavailable right now. Using plan-aligned fallback meals.');
-          setLoading(false);
-        }
-      });
+    const run = async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const data = await generateSuggestions(profile, activePlan, meals);
+          const normalized = Array.isArray(data) ? data.map((s, i) => ({ id: s.id||`s${i}`, time: s.time||s.mealType||'Meal', icon: s.icon||'🍽️', ...s })) : [];
+          if (normalized.length) {
+            if (!ok) return;
+            setSuggestions(normalized);
+            SS.set(cacheKey, normalized);
+            setLoading(false);
+            return;
+          }
+        } catch {}
+      }
+      if (!ok) return;
+      const fallback = buildFallbackSuggestions();
+      setSuggestions(fallback);
+      setError('Using baseline nutrition structure for your current phase.');
+      setLoading(false);
+    };
+    run();
     return () => { ok = false; };
-  }, [reloadKey]);
+  }, [reloadKey, hasCached]);
   return { suggestions: suggestions || [], loading, error, retry: () => setReloadKey(v => v + 1) };
 }
 
@@ -2217,36 +2351,23 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
       <h1 className="screen-title">Your Plan</h1>
 
       {/* 1 ── Phase Hero ── */}
-      <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${phaseColor}55`, position: 'relative' }}>
-        {/* Week badge */}
-        <div style={{ position: 'absolute', top: 16, right: 16, background: C.cardElevated, borderRadius: 10, padding: '5px 12px', fontSize: 12, fontWeight: 600, color: C.muted }}>
-          Week {week} of 12
-        </div>
-        {/* Phase pill */}
-        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: `${phaseColor}22`, color: phaseColor, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${phaseColor}55`, marginBottom: 14, textTransform: 'uppercase', letterSpacing: '.06em' }}>
-          <span>✓</span> {phase}
-        </div>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
-          {phase === 'Cut' ? 'Fat Loss Phase' : phase === 'Bulk' || phase === 'Build' ? 'Muscle Building Phase' : phase === 'Recomp' ? 'Recomposition Phase' : 'Maintenance Phase'}
-        </div>
-        <p style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.5 }}>{objective}</p>
-        {/* Progress bar */}
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.muted, marginBottom: 6 }}>
-            <span style={{ color: C.green, fontWeight: 600 }}>{phasePct}% complete</span>
-          </div>
-          <ProgressBar value={week} max={12} color={phaseColor} height={8} />
-        </div>
-        {/* Target row */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-          <span style={{ fontSize: 12, color: C.muted }}>
-            Target: <span style={{ color: C.white }}>{fmt.date(nextScanDate)}</span>
-          </span>
-          <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-            On Track ✓
-          </span>
-        </div>
-      </Card>
+      <div className="su">
+        <SummaryCard
+          label={`Plan Summary · Week ${week} of 12`}
+          title={`${PHASE_META[phase]?.label || phase} Phase`}
+          subtitle={`${phasePct}% complete → next review ${fmt.date(nextScanDate)}`}
+          progressPct={phasePct}
+          tone={phaseColor}
+          metrics={[
+            { label: 'Body Fat', value: `${startBF}% → ${targetBF}%` },
+            { label: 'Training', value: `${trainDays} sessions` },
+            { label: 'Cardio', value: `${cardioDays} sessions` },
+            { label: 'Sleep', value: `${sleepHrs} h` },
+          ]}
+          insight={objective || PHASE_META[phase]?.target}
+          nextStep={trajectory.note}
+        />
+      </div>
 
       {/* 2 ── This Week (decision layer) ── */}
       <Card className="su" style={{ animationDelay: '.02s' }}>
@@ -2363,7 +2484,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
 
       {/* 4 ── Daily Targets Grid ── */}
       <div className="su" style={{ animationDelay: '.12s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Daily Targets</div>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today&apos;s Execution Targets</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {DAILY_TILES.map(t => (
             <div key={t.label} style={tileStyle(t.color)}>
@@ -2382,7 +2503,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
 
       {/* 5 ── Weekly Missions ── */}
       <div className="su" style={{ animationDelay: '.16s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Weekly Missions</div>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>This Week&apos;s Priorities</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {missions.map(m => (
             <div key={m.id} className="bp" onClick={() => toggleMission(m.id)} style={{
@@ -3040,8 +3161,8 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
           {[
             ['Name',     profile?.name],
             ['Age',      profile?.age ? `${profile.age} years` : '—'],
-            ['Weight',   profile?.weightLbs ? `${profile.weightLbs} lbs` : '—'],
-            ['Height',   profile?.heightCm  ? `${profile.heightCm} cm`  : '—'],
+            ['Weight',   profile?.weightLbs ? fmt.weight(profile.weightLbs, profile?.unitSystem) : '—'],
+            ['Height',   profile?.heightCm  ? fmt.height(profile.heightCm, profile?.unitSystem)  : '—'],
             ['Activity', profile?.activity],
           ].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
@@ -3366,21 +3487,23 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
         </div>
 
         {/* 1 – Phase Hero */}
-        <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${phColor}55` }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: `${phColor}22`, color: phColor, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${phColor}55`, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>
-            ✓ {ph.label || 'Maintain'}
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{ph.name || 'Maintenance Phase'}</div>
-          <p style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>{ph.objective}</p>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: C.green, fontWeight: 600, marginBottom: 6 }}>0% complete · Week 1 of 12</div>
-            <ProgressBar value={0} max={12} color={phColor} height={8} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-            <span style={{ fontSize: 12, color: C.muted }}>Target: <span style={{ color: C.white }}>{fmt.date(result.nextScanDate)}</span></span>
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99 }}>On Track ✓</span>
-          </div>
-        </Card>
+        <div className="su">
+          <SummaryCard
+            label={`Body Scan · ${fmt.date(todayStr())}`}
+            title={fmt.pct(result.bodyFatPct, 1)}
+            subtitle={`Estimated body fat → target review ${fmt.date(result.nextScanDate)}`}
+            progressPct={Math.min(100, Math.max(0, (result.physiqueScore || 0)))}
+            tone={phColor}
+            metrics={[
+              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem) },
+              { label: 'Symmetry', value: `${result.symmetryScore || '—'}/100` },
+              { label: 'Phase', value: ph.label || 'Maintain' },
+              { label: 'Score', value: `${result.physiqueScore || '—'}/100` },
+            ]}
+            insight={ph.objective || result.diagnosis}
+            nextStep={result.recommendation || 'Apply this update and execute this week’s targets.'}
+          />
+        </div>
 
         {/* 2 – Why this works */}
         <Card className="su" style={{ animationDelay: '.03s' }}>
@@ -3418,7 +3541,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
 
         {/* 3 – Daily Targets */}
         <div className="su" style={{ animationDelay: '.06s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Daily Targets</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Execution Targets</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             {[
               { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
@@ -3444,7 +3567,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
               { label: 'Body Fat',  value: `${result.bodyFatPct}%`,       color: C.orange },
-              { label: 'Lean Mass', value: `${result.leanMass} lbs`,      color: C.blue },
+              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem), color: C.blue },
               { label: 'Score',     value: `${result.physiqueScore}/100`,  color: C.green },
               { label: 'Symmetry',  value: `${result.symmetryScore}/100`,  color: C.purple },
             ].map(m => (
@@ -3653,7 +3776,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
               <div key={i} className="bp" onClick={() => setViewOld(realIdx)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{fmt.date(s.date)}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {Number(s.bodyFat || 0).toFixed(1)}% · Lean {Number(s.leanMass || 0).toFixed(1)} lb</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {Number(s.bodyFat || 0).toFixed(1)}% · Lean {fmt.leanMass(s.leanMass || 0, profile?.unitSystem)}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
@@ -3668,6 +3791,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
         <ScanDetailModal
           scan={scanHistory[viewOld]}
           prevScan={viewOld > 0 ? scanHistory[viewOld - 1] : null}
+          unitSystem={profile?.unitSystem}
           onClose={() => setViewOld(null)}
         />
       )}
@@ -3675,10 +3799,11 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
   );
 }
 
-function ScanDetailModal({ scan, prevScan, onClose }) {
+function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   if (!scan) return null;
   const bfDelta = prevScan ? Number(scan.bodyFat || 0) - Number(prevScan.bodyFat || 0) : null;
   const lmDelta = prevScan ? Number(scan.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
+  const lmDeltaDisplay = unitSystem === 'metric' ? (lmDelta || 0) * 0.453592 : (lmDelta || 0);
   const trajectory = getTrajectoryStatus(prevScan ? [prevScan, scan] : [], scan.phase || 'Maintain');
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 320, background: 'rgba(6,9,7,0.88)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', padding: 16, overflowY: 'auto' }}>
@@ -3699,7 +3824,7 @@ function ScanDetailModal({ scan, prevScan, onClose }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
               { label: 'Body Fat', value: fmt.pct(scan.bodyFat || 0, 1), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
-              { label: 'Lean Mass', value: `${Number(scan.leanMass || 0).toFixed(1)} lb`, tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
+              { label: 'Lean Mass', value: fmt.leanMass(scan.leanMass || 0, unitSystem), tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
               { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
               { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
             ].map((m) => (
@@ -3708,7 +3833,7 @@ function ScanDetailModal({ scan, prevScan, onClose }) {
                 <div style={{ fontSize: 19, fontWeight: 700, color: m.tone }}>{m.value}</div>
                 {m.delta !== undefined && m.delta !== null && (
                   <div style={{ fontSize: 11, color: m.tone, marginTop: 3 }}>
-                    {m.delta >= 0 ? '+' : ''}{m.delta.toFixed(1)}{m.lb ? ' lb' : '%'} vs previous
+                    {m.delta >= 0 ? '+' : ''}{(m.lb ? lmDeltaDisplay : m.delta).toFixed(1)}{m.lb ? (unitSystem === 'metric' ? ' kg' : ' lb') : '%'} vs previous
                   </div>
                 )}
               </div>
