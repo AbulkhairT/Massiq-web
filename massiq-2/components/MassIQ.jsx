@@ -6,6 +6,8 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
+  getStoredSession,
+  clearStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -1255,7 +1257,7 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
-function HomeTab({ profile, activePlan, setTab }) {
+function HomeTab({ profile, activePlan, setTab, session }) {
   const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
@@ -1296,7 +1298,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           {/* ── Command center hero ── */}
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
+              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || session?.user?.email || 'there'}.</div>
               <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
@@ -4185,7 +4187,7 @@ function Sidebar({ active, setTab, profile }) {
       {/* User footer */}
       {profile && (
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Your account'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
             {goalEmoji} {profile.goal}
           </div>
@@ -4209,6 +4211,7 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const [profileHydrated, setProfileHydrated] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -4229,10 +4232,21 @@ export default function MassIQ() {
   }, []);
 
   useEffect(() => {
+    const syncFromStorage = (e) => {
+      if (e?.key !== 'massiq:auth:session') return;
+      const next = getStoredSession();
+      setSession(next?.access_token ? next : null);
+    };
+    window.addEventListener('storage', syncFromStorage);
+    return () => window.removeEventListener('storage', syncFromStorage);
+  }, []);
+
+  useEffect(() => {
     if (!authReady) return;
     if (!session?.access_token) {
       setProfile(null);
       setActivePlan(null);
+      setProfileHydrated(false);
       setReady(true);
       return;
     }
@@ -4290,6 +4304,7 @@ export default function MassIQ() {
         if (mounted) {
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
+          setProfileHydrated(true);
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
@@ -4297,7 +4312,12 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
+        if (mounted) {
+          setAuthError('We couldn’t finish syncing your account. Please log in again.');
+          setSession(null);
+          clearStoredSession();
+          setProfileHydrated(false);
+        }
       } finally {
         if (mounted) setReady(true);
       }
@@ -4364,7 +4384,13 @@ export default function MassIQ() {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
-      setSession(res);
+      const user = await fetchUser(res.access_token);
+      if (!user?.id) {
+        setAuthError('Could not validate your account session. Please try again.');
+        await signOutSession(res.access_token);
+        return;
+      }
+      setSession({ ...res, user });
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
     } finally {
@@ -4381,6 +4407,7 @@ export default function MassIQ() {
     setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setProfileHydrated(false);
     setEditing(false);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
@@ -4426,7 +4453,15 @@ export default function MassIQ() {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
-  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  const authState = !session?.access_token
+    ? 'logged_out'
+    : !profileHydrated
+      ? 'authenticated_no_profile'
+      : (profile?.age && profile?.weightLbs && profile?.heightCm)
+        ? 'ready'
+        : 'authenticated_profile_incomplete';
+
+  const profileComplete = authState === 'ready';
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
@@ -4436,7 +4471,7 @@ export default function MassIQ() {
 
   const renderTab = () => {
     switch (tab) {
-      case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
+      case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} session={session} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
       case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
