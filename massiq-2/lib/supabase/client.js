@@ -26,7 +26,8 @@ async function supabaseFetch(path, opts = {}, retries = 1) {
       await new Promise(r => setTimeout(r, 350));
       return supabaseFetch(path, opts, retries - 1);
     }
-    throw new Error(payload?.msg || payload?.error_description || payload?.message || `Request failed (${res.status})`);
+    const message = payload?.msg || payload?.error_description || payload?.message || `Request failed (${res.status})`;
+    throw new Error(`[supabase:${path}] ${message}`);
   }
   return payload;
 }
@@ -59,6 +60,17 @@ function normalizeStringArray(value) {
     return value.split(',').map(v => v.trim()).filter(Boolean);
   }
   return [];
+}
+
+function toPhaseValue(phase) {
+  const p = String(phase || '').trim().toLowerCase();
+  if (p === 'bulk' || p === 'cut' || p === 'recomp' || p === 'maintain') return p;
+  return 'maintain';
+}
+
+function toPhaseLabel(phase) {
+  const p = toPhaseValue(phase);
+  return p.charAt(0).toUpperCase() + p.slice(1);
 }
 
 function serializeProfile(userId, profile) {
@@ -101,7 +113,7 @@ function serializePlan(userId, plan) {
   const macros = plan?.dailyTargets || plan?.macros || {};
   return {
     user_id: userId,
-    phase: plan?.phase || 'Maintain',
+    phase: toPhaseValue(plan?.phase),
     calories: toNumber(macros.calories),
     protein: toNumber(macros.protein),
     carbs: toNumber(macros.carbs),
@@ -116,6 +128,7 @@ function serializePlan(userId, plan) {
 
 function deserializePlan(row) {
   if (!row) return null;
+  const phaseLabel = toPhaseLabel(row.phase);
   const macros = {
     calories: toNumber(row.calories, 2200),
     protein: toNumber(row.protein, 160),
@@ -123,8 +136,8 @@ function deserializePlan(row) {
     fat: toNumber(row.fat, 65),
   };
   return {
-    phase: row.phase || 'Maintain',
-    phaseName: `${row.phase || 'Maintain'} Phase`,
+    phase: phaseLabel,
+    phaseName: `${phaseLabel} Phase`,
     objective: row.rationale || '',
     macros,
     dailyTargets: {
@@ -247,7 +260,25 @@ export async function getProfile(token, userId) {
   return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
 }
 
-export async function upsertPlan(token, userId, plan, scanHistory = []) {
+export async function ensureProfile(token, userId) {
+  const existing = await getProfile(token, userId);
+  if (existing) return existing;
+  await upsertProfile(token, userId, {
+    age: 25,
+    weightLbs: 170,
+    heightCm: 178,
+    gender: 'Male',
+    goal: 'Maintain',
+    activity: 'Moderate',
+    unitSystem: 'imperial',
+    dietPrefs: [],
+    avoid: [],
+    reminders: {},
+  });
+  return getProfile(token, userId);
+}
+
+export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
   return supabaseFetch('/rest/v1/plans?on_conflict=user_id', {
     method: 'POST',

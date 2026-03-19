@@ -11,7 +11,7 @@ import {
   signOut as signOutSession,
   fetchUser,
   upsertProfile,
-  getProfile,
+  ensureProfile,
   upsertPlan,
   getPlan,
   createScan,
@@ -349,12 +349,22 @@ function getActiveTargets(activePlan, profile) {
 }
 
 function buildBaselinePlanFromProfile(profile) {
-  const targets = getActiveTargets(null, profile);
+  const targets = {
+    calories: 2500,
+    protein: 150,
+    carbs: 250,
+    fat: 70,
+    steps: 9000,
+    sleepHours: 8,
+    waterLiters: 3,
+    trainingDaysPerWeek: 4,
+    cardioDays: 2,
+  };
   const nextScan = new Date();
   nextScan.setDate(nextScan.getDate() + 28);
   return {
-    phase: profile?.goal || 'Maintain',
-    phaseName: `${profile?.goal || 'Maintain'} Phase`,
+    phase: 'Maintain',
+    phaseName: 'Maintain Phase',
     objective: 'Baseline phase generated from your profile inputs.',
     week: 1,
     startDate: todayStr(),
@@ -4234,19 +4244,36 @@ export default function MassIQ() {
         const userId = user?.id;
         if (!userId) throw new Error('Missing user session.');
 
-        const [profileRow, planRow, scans] = await Promise.all([
-          getProfile(session.access_token, userId),
-          getPlan(session.access_token, userId),
-          getScans(session.access_token, userId),
-        ]);
-
-        const loadedProfile = profileRow || null;
-        let loadedPlan = planRow || null;
-        const loadedScanHistory = Array.isArray(scans) ? scans : [];
+        let loadedProfile = null;
+        let loadedPlan = null;
+        let loadedScanHistory = [];
+        try {
+          loadedProfile = await ensureProfile(session.access_token, userId);
+        } catch (profileErr) {
+          console.error('sync:ensureProfile failed', profileErr);
+          throw profileErr;
+        }
+        try {
+          loadedPlan = await getPlan(session.access_token, userId);
+        } catch (planErr) {
+          console.error('sync:getPlan failed', planErr);
+          throw planErr;
+        }
+        try {
+          loadedScanHistory = await getScans(session.access_token, userId);
+        } catch (scanErr) {
+          console.error('sync:getScans failed (continuing without scans)', scanErr);
+          loadedScanHistory = [];
+        }
 
         if (loadedProfile && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
-          await upsertPlan(session.access_token, userId, fallbackPlan);
+          try {
+            await upsertPlan(session.access_token, userId, fallbackPlan);
+          } catch (createPlanErr) {
+            console.error('sync:createDefaultPlan failed', createPlanErr);
+            throw createPlanErr;
+          }
           loadedPlan = fallbackPlan;
         }
 
