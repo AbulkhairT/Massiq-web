@@ -37,6 +37,10 @@ const C = {
   gold: '#FFD60A',
 };
 
+const ENABLE_NON_SCAN_AI = false;
+const ENABLE_GAMIFICATION = false;
+const DAILY_SCAN_SOFT_LIMIT = 8;
+
 /* ─── Global CSS ─────────────────────────────────────────────────────────── */
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -431,11 +435,9 @@ function sanitizeScanData(scan, profile) {
   };
 }
 
-/* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
-   All plan/mission/tip/insight generation is now deterministic.
-   LLM is reserved ONLY for: physique scan (vision), meal suggestions,
-   recipe details, meal swaps, and food photo analysis.
-   Cost: ~$0.005/session (down from ~$0.17 with all-Sonnet approach).
+/* ─── Content Generators — Deterministic-first ─────────────────────────────
+   Plan/mission/tip/insight generation is deterministic.
+   Non-scan AI is disabled by default for production cost control.
 ─────────────────────────────────────────────────────────────────────────── */
 
 async function generateInitialPlan(profile, macros, engineOutput = null) {
@@ -457,6 +459,27 @@ async function generateMealPlan(profile, activePlan) {
 }
 
 async function generateSuggestions(profile, activePlan, todayMeals) {
+  // Deterministic only for production cost control.
+  if (!ENABLE_NON_SCAN_AI) {
+    const m = getActiveTargets(activePlan, profile);
+    const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal + (x.calories || 0), prot: a.prot + (x.protein || 0) }), { cal: 0, prot: 0 });
+    const remCal = Math.max(0, (m.calories || 2000) - eaten.cal);
+    const remProt = Math.max(0, (m.protein || 150) - eaten.prot);
+    const split = [0.38, 0.24, 0.38];
+    return ['Lunch', 'Snack', 'Dinner'].map((slot, i) => ({
+      id: `det-${slot.toLowerCase()}`,
+      name: slot === 'Snack' ? 'Greek yogurt + berries' : slot === 'Lunch' ? 'Chicken rice bowl' : 'Salmon + potatoes',
+      mealType: slot.toLowerCase(),
+      time: slot,
+      icon: slot === 'Snack' ? '🥣' : '🍽️',
+      calories: Math.max(180, Math.round(remCal * split[i])),
+      protein: Math.max(18, Math.round(remProt * split[i])),
+      carbs: Math.max(20, Math.round((remCal * split[i] * 0.45) / 4)),
+      fat: Math.max(8, Math.round((remCal * split[i] * 0.25) / 9)),
+      description: 'Generated from your active macro targets.',
+      whyNow: 'Built from remaining calories and protein for today.',
+    }));
+  }
   // Keep LLM but use Haiku — context-aware meal suggestions still benefit from AI.
   const m = getActiveTargets(activePlan, profile);
   const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
@@ -498,6 +521,12 @@ async function generateWorkoutPlan(profile, activePlan) {
 }
 
 async function generateRecipeDetails(meal, profile) {
+  if (!ENABLE_NON_SCAN_AI) {
+    return {
+      ingredients: ['Lean protein source', 'Primary carb source', 'Vegetables', 'Olive oil'],
+      steps: [{ text: `Cook and assemble ${meal.name} to match your logged macros.`, timerSeconds: null }],
+    };
+  }
   // Use Haiku — recipe generation is simple structured output, no complex reasoning needed.
   const text = await callClaude([{ role: 'user', content:
     `Recipe for: ${meal.name} (${meal.calories} kcal, ${meal.protein}g P, ${meal.carbs}g C, ${meal.fat}g F). Goal: ${profile?.goal||'fitness'}.
@@ -507,6 +536,19 @@ Return ONLY JSON: {"ingredients":["200g chicken breast"],"steps":[{"text":"Cook 
 }
 
 async function swapMealAPI(currentMeal, profile) {
+  if (!ENABLE_NON_SCAN_AI) {
+    return {
+      name: `${currentMeal.name} (alternate)`,
+      description: 'Equivalent macro swap generated locally.',
+      icon: currentMeal.icon || '🍽️',
+      calories: currentMeal.calories,
+      protein: currentMeal.protein,
+      carbs: currentMeal.carbs || 0,
+      fat: currentMeal.fat || 0,
+      prepTime: '15 min',
+      whyThisMeal: 'Maintains your current target split.',
+    };
+  }
   // Use Haiku — simple substitution task with structured output.
   const mealType = currentMeal.mealType || currentMeal.time || 'Meal';
   const text = await callClaude([{ role: 'user', content:
@@ -1296,7 +1338,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           {/* ── Command center hero ── */}
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
+              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'there'}.</div>
               <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
@@ -1510,6 +1552,10 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
 
   const analyzeText = async () => {
     if (!descText.trim()) return;
+    if (!ENABLE_NON_SCAN_AI) {
+      setError('Auto meal analysis is unavailable in this release. Enter values manually.');
+      return;
+    }
     setAnalyzing(true); setError('');
     try {
       const res = await fetch('/api/claude', {
@@ -1537,6 +1583,10 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
 
   const analyzePhoto = (file) => {
     if (!file) return;
+    if (!ENABLE_NON_SCAN_AI) {
+      setError('Photo meal analysis is unavailable in this release. Enter values manually.');
+      return;
+    }
     setAnalyzing(true); setError('');
     const reader = new FileReader();
     reader.onerror = () => { setError('Could not read image file.'); setAnalyzing(false); };
@@ -3233,7 +3283,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
       </Card>
 
       {/* 3 ── XP + Missions ── */}
-      <div className="su" style={{ animationDelay: '.08s' }}>
+      {ENABLE_GAMIFICATION && <div className="su" style={{ animationDelay: '.08s' }}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Physique Missions</div>
 
         {/* Hero stats */}
@@ -3305,7 +3355,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
             );
           })}
         </div>
-      </div>
+      </div>}
 
       {/* 3.5 ── AI Patterns ── */}
       <AIPatterns profile={profile} activePlan={activePlan} />
@@ -3482,6 +3532,12 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null);
     try {
+      const key = `massiq:scan-usage:${todayStr()}`;
+      const count = Number(LS.get(key, 0) || 0);
+      if (count >= DAILY_SCAN_SOFT_LIMIT) {
+        throw new Error('You have reached today’s scan limit. Please continue tomorrow for best accuracy and consistency.');
+      }
+
       const age    = profile?.age      || 25;
       const gender = profile?.gender   || 'Male';
       const height = profile?.heightIn || 70;
@@ -3544,6 +3600,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
         engineOutput,    // attach full engine output for applyPlan to use
       };
       setResult(data);
+      LS.set(key, count + 1);
     } catch (err) {
       setError(err.message || 'Scan failed. Please try again.');
     }
