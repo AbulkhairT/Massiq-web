@@ -266,6 +266,54 @@ function weekKey2() {
   return `${d.getFullYear()}-W${Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7)}`;
 }
 
+const fmt = {
+  date: (iso) => {
+    if (!iso) return '—';
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return iso;
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  },
+  pct: (v, d = 1) => `${Number(v || 0).toFixed(d)}%`,
+  lbs: (v, d = 0) => `${Number(v || 0).toFixed(d)} lb`,
+  range: (a, b) => `${Math.round(a)}–${Math.round(b)}`,
+};
+
+const PHASE_META = {
+  Cut:     { label: 'Cut',     emoji: '📉', target: 'Reduce body fat while preserving lean tissue' },
+  Bulk:    { label: 'Bulk',    emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
+  Build:   { label: 'Build',   emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
+  Recomp:  { label: 'Recomp',  emoji: '🔄', target: 'Improve composition while maintaining bodyweight range' },
+  Maintain:{ label: 'Maintain',emoji: '⚖️', target: 'Hold conditioning and improve weak points' },
+};
+
+function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
+  if (!Array.isArray(scanHistory) || scanHistory.length < 2) return { tone: 'neutral', label: 'Insufficient data', note: 'Complete your next scan to validate trajectory.' };
+  const prev = scanHistory[scanHistory.length - 2];
+  const curr = scanHistory[scanHistory.length - 1];
+  const bfDelta = Number(curr.bodyFat || 0) - Number(prev.bodyFat || 0);
+  const lmDelta = Number(curr.leanMass || 0) - Number(prev.leanMass || 0);
+  if (phase === 'Cut') {
+    if (bfDelta < -0.3 && lmDelta >= -1) return { tone: 'good', label: 'On track', note: 'Body fat is trending down while lean mass is stable.' };
+    if (bfDelta < -1.2 && lmDelta < -1) return { tone: 'warn', label: 'Too aggressive', note: 'Rate of loss may compromise lean tissue; increase calories slightly.' };
+    if (bfDelta >= -0.3) return { tone: 'warn', label: 'Behind', note: 'Fat loss pace is slower than expected; tighten adherence and activity.' };
+  }
+  if (phase === 'Bulk' || phase === 'Build') {
+    if (lmDelta > 0.6 && bfDelta <= 0.7) return { tone: 'good', label: 'On track', note: 'Lean tissue is increasing without excessive fat gain.' };
+    if (lmDelta <= 0.2) return { tone: 'warn', label: 'Behind', note: 'Growth signal is low; increase surplus or training stimulus.' };
+    if (bfDelta > 1) return { tone: 'warn', label: 'Off balance', note: 'Fat gain is outpacing lean growth; reduce surplus slightly.' };
+  }
+  if (Math.abs(bfDelta) <= 0.6 && lmDelta >= 0) return { tone: 'good', label: 'On track', note: 'Current trend aligns with phase objective.' };
+  return { tone: 'neutral', label: 'Re-evaluate', note: 'Collect another scan under similar conditions for a clearer signal.' };
+}
+
+function getPrimaryLimiters(scan, activePlan) {
+  const fromScan = scan?.priorityAreas || scan?.weakestGroups || [];
+  if (Array.isArray(fromScan) && fromScan.length) return fromScan.slice(0, 3);
+  const actions = activePlan?.engineDiagnosis?.primary?.primary_issue ? [activePlan.engineDiagnosis.primary.primary_issue] : [];
+  if (actions.length) return actions;
+  return ['Execution consistency is the current bottleneck.'];
+}
+
 /* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
    All plan/mission/tip/insight generation is now deterministic.
    LLM is reserved ONLY for: physique scan (vision), meal suggestions,
@@ -379,6 +427,25 @@ const Chip = ({ label, active, onClick }) => (
     fontSize: 12, fontWeight: 550, cursor: 'pointer',
   }}>{label}</button>
 );
+
+const StatusPill = ({ tone = 'neutral', label }) => {
+  const toneMap = {
+    good:    { fg: C.green, bg: C.greenBg, bd: C.greenDim },
+    warn:    { fg: C.gold,  bg: 'rgba(255,214,10,0.14)', bd: 'rgba(255,214,10,0.3)' },
+    issue:   { fg: C.red,   bg: 'rgba(255,90,95,0.12)',  bd: 'rgba(255,90,95,0.32)' },
+    neutral: { fg: C.muted, bg: 'rgba(255,255,255,0.05)', bd: C.border },
+  }[tone] || { fg: C.muted, bg: 'rgba(255,255,255,0.05)', bd: C.border };
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 999,
+      padding: '4px 10px', fontSize: 11, fontWeight: 650, color: toneMap.fg,
+      background: toneMap.bg, border: `1px solid ${toneMap.bd}`, letterSpacing: '.02em',
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneMap.fg }} />
+      {label}
+    </span>
+  );
+};
 
 const ProgressBar = ({ value, max, color = C.green, height = 6 }) => {
   const pct = Math.min(100, max > 0 ? Math.round((value / max) * 100) : 0);
@@ -938,6 +1005,11 @@ function HomeTab({ profile, activePlan, setTab }) {
   const macros = calcMacros(profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const lastScan = scanHistory[scanHistory.length - 1];
+  const trajectory = getTrajectoryStatus(scanHistory, activePlan?.phase || profile?.goal);
+  const limiters = getPrimaryLimiters(lastScan, activePlan);
+  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Complete your next scan to calibrate your weekly strategy.';
   const todayStats = todayMeals.reduce(
     (a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }),
     { calories: 0, protein: 0 }
@@ -967,32 +1039,41 @@ function HomeTab({ profile, activePlan, setTab }) {
         </div>
       ) : (
         <>
-          {/* ── Greeting card ── */}
+          {/* ── Command center hero ── */}
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: C.white }}>
-                Good {getGreeting()}, {profile?.name || 'Athlete'}.
-              </span>
-              <span style={{
-                background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700,
-                padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}`,
-              }}>{phase}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
+              <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
             </div>
-            <p style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>Your body data is live.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
+                {PHASE_META[phase]?.emoji || '🎯'} {phase}
+              </span>
+              <span style={{ fontSize: 12, color: C.muted }}>Week {week} of 12</span>
+            </div>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: 16 }}>{trajectory.note}</p>
 
-            {/* 3 inline stats */}
+            <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
+              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Primary limiter</div>
+              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{limiters[0]}</div>
+            </div>
+            <div style={{ marginBottom: 18, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
+              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>This week’s priority</div>
+              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{nextAction}</div>
+            </div>
+
             <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
               {[
-                { label: 'Lean Mass', value: activePlan?.leanMass ?? '—', unit: 'lbs' },
-                { label: 'Calories',  value: todayStats.calories,          unit: 'kcal' },
-                { label: 'Protein',   value: todayStats.protein,           unit: 'g' },
+                { label: 'Body Fat', value: lastScan?.bodyFat ? fmt.pct(lastScan.bodyFat, 1) : '—', unit: '' },
+                { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.lbs(lastScan.leanMass) : '—', unit: '' },
+                { label: 'Next Scan', value: fmt.date(activePlan?.nextScanDate), unit: '' },
               ].map((s, i) => (
                 <div key={s.label} style={{
                   flex: 1, textAlign: 'center',
                   borderLeft: i > 0 ? `1px solid ${C.border}` : 'none',
                 }}>
-                <div className="metric" style={{ fontSize: 21, color: C.white }}>{s.value}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{s.unit}</div>
+                <div className="metric" style={{ fontSize: 18, color: C.white }}>{s.value}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>{s.unit}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 2 }}>{s.label}</div>
                 </div>
               ))}
@@ -2067,6 +2148,25 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     { icon: '💧', label: 'Water',    value: waterL,                  unit: 'L',    color: '#4AD4FF' },
     { icon: '🏋️', label: 'Training', value: trainDays,              unit: 'x/wk', color: C.red },
   ];
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const currentScan = scanHistory[scanHistory.length - 1];
+  const previousScan = scanHistory[scanHistory.length - 2];
+  const trajectory = getTrajectoryStatus(scanHistory, phase);
+  const focusAreas = getPrimaryLimiters(currentScan, activePlan);
+  const bfDelta = (currentScan && previousScan) ? Number(currentScan.bodyFat || 0) - Number(previousScan.bodyFat || 0) : null;
+  const lmDelta = (currentScan && previousScan) ? Number(currentScan.leanMass || 0) - Number(previousScan.leanMass || 0) : null;
+  const coachingNote = trajectory.tone === 'good'
+    ? 'Progress is aligned with current phase. Keep training execution consistent.'
+    : trajectory.tone === 'warn'
+      ? 'Trajectory needs adjustment this week. Prioritize adherence and tighten recovery consistency.'
+      : 'Signal is still early. Keep execution stable and confirm trend on next scan.';
+  const thisWeekChecklist = [
+    `Calories: ${macros.calories || 2000} kcal/day`,
+    `Protein: ${macros.protein || 150} g/day`,
+    `Steps/Cardio: ${steps.toLocaleString()} steps + ${cardioDays} cardio sessions`,
+    `Training: ${trainDays} strength sessions`,
+    `Recovery: ${sleepHrs} h sleep + ${waterL} L water daily`,
+  ];
 
   return (
     <div className="screen">
@@ -2096,7 +2196,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         {/* Target row */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
           <span style={{ fontSize: 12, color: C.muted }}>
-            Target: <span style={{ color: C.white }}>{nextScanDate}</span>
+            Target: <span style={{ color: C.white }}>{fmt.date(nextScanDate)}</span>
           </span>
           <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
             On Track ✓
@@ -2104,11 +2204,44 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         </div>
       </Card>
 
+      {/* 2 ── This Week (decision layer) ── */}
+      <Card className="su" style={{ animationDelay: '.02s' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>This Week</span>
+          <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
+        </div>
+        <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+          {thisWeekChecklist.map((line) => (
+            <div key={line} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, color: C.white }}>
+              <span style={{ color: C.green, marginTop: 1 }}>•</span>
+              <span style={{ lineHeight: 1.5 }}>{line}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Coaching note</div>
+          <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{coachingNote}</p>
+        </div>
+      </Card>
+
+      {/* 3 ── Focus Areas ── */}
+      <Card className="su" style={{ animationDelay: '.03s' }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Focus Areas</div>
+        <div style={{ display: 'grid', gap: 9 }}>
+          {focusAreas.slice(0, 3).map((f, idx) => (
+            <div key={`${f}-${idx}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
+              <span style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{idx + 1}</span>
+              <span style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{f}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+
       {/* 2 ── Transformation Timeline ── */}
       <Card className="su" style={{ animationDelay: '.04s' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <span style={{ fontWeight: 700, fontSize: 16 }}>Transformation Timeline</span>
-          <span style={{ fontSize: 12, color: C.muted }}>8–12 weeks</span>
+          <span style={{ fontSize: 12, color: C.muted }}>{daysLeft} days to next review</span>
         </div>
         {/* Progress bar with dots */}
         <div style={{ position: 'relative', marginBottom: 8 }}>
@@ -2136,6 +2269,32 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             </div>
           ))}
         </div>
+      </Card>
+
+      {/* 2.5 ── Progress Update ── */}
+      <Card className="su" style={{ animationDelay: '.05s' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>Progress Since Last Scan</span>
+          <span style={{ fontSize: 11, color: C.muted }}>{scanHistory.length > 1 ? `${fmt.date(previousScan?.date)} → ${fmt.date(currentScan?.date)}` : 'Awaiting comparison'}</span>
+        </div>
+        {scanHistory.length > 1 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Body Fat Change</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: (bfDelta || 0) <= 0 ? C.green : C.orange }}>
+                {(bfDelta || 0) > 0 ? '+' : ''}{(bfDelta || 0).toFixed(1)}%
+              </div>
+            </div>
+            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Lean Mass Change</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: (lmDelta || 0) >= 0 ? C.green : C.orange }}>
+                {(lmDelta || 0) >= 0 ? '+' : ''}{(lmDelta || 0).toFixed(1)} lb
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>You need at least two scans to quantify trend and adaptation impact.</p>
+        )}
       </Card>
 
       {/* 3 ── Why This Works ── */}
@@ -2581,7 +2740,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
                 const improving = prev ? s.physiqueScore >= prev.physiqueScore : true;
                 return (
                   <div key={i} style={{ flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 120, border: `1px solid ${C.border}` }}>
-                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>{s.date || `Scan ${i + 1}`}</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>{s.date ? fmt.date(s.date) : `Scan ${i + 1}`}</div>
                     <div style={{ fontSize: 18, fontWeight: 700, color: C.white }}>{s.physiqueScore || '—'}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score</div>
                     <div style={{ fontSize: 12, color: C.green, marginTop: 4 }}>{s.bodyFat}% BF</div>
@@ -2599,9 +2758,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, showT
               <PhysiqueChart scans={scanHistory} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: C.dimmed, marginTop: 4 }}>
-              <span>{scanHistory[0]?.date}</span>
+              <span>{fmt.date(scanHistory[0]?.date)}</span>
               <span style={{ color: C.muted }}>Physique Score</span>
-              <span>{scanHistory[scanHistory.length - 1]?.date}</span>
+              <span>{fmt.date(scanHistory[scanHistory.length - 1]?.date)}</span>
             </div>
           </Card>
         )}
@@ -2993,6 +3152,15 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     const phColor = PHASE_LABEL_COLORS[ph.label] || C.green;
     const dt      = result.dailyTargets || {};
     const mg      = result.muscleGroups || {};
+    const prevScan = scanHistory[scanHistory.length - 1];
+    const bfTrend = prevScan ? Number(result.bodyFatPct || 0) - Number(prevScan.bodyFat || 0) : null;
+    const lmTrend = prevScan ? Number(result.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
+    const predictedTrajectory = getTrajectoryStatus(prevScan ? [...scanHistory, { bodyFat: result.bodyFatPct, leanMass: result.leanMass }] : scanHistory, profile.goal);
+    const nextDecision = result.confidence === 'low'
+      ? 'Retake scan with improved lighting before committing plan updates.'
+      : predictedTrajectory.tone === 'warn'
+        ? 'Apply plan with adjustment and review again in 2–3 weeks.'
+        : 'Apply plan and continue current phase until next checkpoint.';
 
     return (
       <div className="screen" style={{ gap: 18 }}>
@@ -3013,7 +3181,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
             <ProgressBar value={0} max={12} color={phColor} height={8} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-            <span style={{ fontSize: 12, color: C.muted }}>Target: <span style={{ color: C.white }}>{result.nextScanDate}</span></span>
+            <span style={{ fontSize: 12, color: C.muted }}>Target: <span style={{ color: C.white }}>{fmt.date(result.nextScanDate)}</span></span>
             <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenBg, padding: '3px 10px', borderRadius: 99 }}>On Track ✓</span>
           </div>
         </Card>
@@ -3025,6 +3193,31 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
             <span style={{ fontWeight: 700 }}>Why this plan works</span>
           </div>
           <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7 }}>{result.whyThisWorks}</p>
+        </Card>
+
+        {/* 2.5 – Progress delta */}
+        <Card className="su" style={{ animationDelay: '.04s' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontWeight: 700, fontSize: 15 }}>Change vs Previous Scan</span>
+            <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
+          </div>
+          {prevScan ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
+                  <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Body Fat</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: (bfTrend || 0) <= 0 ? C.green : C.orange }}>{bfTrend > 0 ? '+' : ''}{(bfTrend || 0).toFixed(1)}%</div>
+                </div>
+                <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
+                  <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Lean Mass</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: (lmTrend || 0) >= 0 ? C.green : C.orange }}>{lmTrend >= 0 ? '+' : ''}{(lmTrend || 0).toFixed(1)} lb</div>
+                </div>
+              </div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: 0 }}>{predictedTrajectory.note}</p>
+            </>
+          ) : (
+            <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>This is your baseline scan. Your next scan will unlock trajectory analysis.</p>
+          )}
         </Card>
 
         {/* 3 – Daily Targets */}
@@ -3190,6 +3383,10 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
 
         {/* 10 – Apply button */}
         <Btn onClick={applyPlan} style={{ width: '100%', marginTop: 4 }}>Apply This Plan →</Btn>
+        <Card className="su" style={{ animationDelay: '.171s' }}>
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Next decision</div>
+          <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: 0 }}>{nextDecision}</p>
+        </Card>
         <div style={{ textAlign: 'center', marginTop: -4 }}>
           <button className="bp" onClick={() => setResult(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 14, cursor: 'pointer' }}>Retake Scan</button>
         </div>
