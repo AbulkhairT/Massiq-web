@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
+import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -147,41 +148,24 @@ const LS_KEYS = {
 /* ─── Physiological macro calculator (Mifflin-St Jeor / ISSN guidelines) ── */
 function calcMacros(profile) {
   if (!profile) return null;
-  const { weightLbs, heightIn, heightCm, age, gender, activity, goal } = profile;
-  const kg  = weightLbs * 0.453592;
-  const cm  = heightCm  || (heightIn * 2.54);
-
-  // Mifflin-St Jeor BMR (more accurate than Harris-Benedict, ±10% for 82% of adults)
-  const bmrBase = 10 * kg + 6.25 * cm - 5 * age;
-  const bmr     = gender === 'Female' ? bmrBase - 161 : bmrBase + 5;
-
-  const mult     = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 }[activity] || 1.55;
-  const tdee     = Math.round(bmr * mult);
-
-  // Phase deficit: target 0.6% BW/week fat loss for cuts (sustainable, muscle-safe)
-  // Bulk: +300 kcal lean surplus. Recomp: -100 kcal mild deficit.
-  const deficitMap = {
-    Cut:      Math.min(500, Math.max(250, Math.round(weightLbs * 0.006 * 3500 / 7))),
-    Bulk:     -300,    // negative = surplus added below
-    Recomp:   100,
-    Maintain: 0,
-  };
-  const adj      = deficitMap[goal] || 0;
-  const calories = goal === 'Bulk' ? tdee + 300 : tdee - adj;
-
-  // ISSN protein: 2.2g/kg LBM for cuts, 1.8g/kg BW for bulk
-  const bfEst    = gender === 'Female' ? 27 : 20;   // conservative estimate without scan
-  const lbmKg    = kg * (1 - bfEst / 100);
-  const protein  = Math.round(goal === 'Bulk' ? kg * 1.8 : lbmKg * 2.2 / 5) * 5;
-
-  // Fat: max(0.8g/kg BW, 25% of calories) — hormonal floor
-  const fatFromPct = Math.round((calories * 0.25) / 9);
-  const fatMin     = Math.round(kg * 0.8);
-  const fat        = Math.round(Math.max(fatFromPct, fatMin) / 5) * 5;
-
-  const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4 / 5) * 5);
-
-  return { calories: Math.round(calories), protein, fat, carbs };
+  try {
+    const physio = runCalculations(profile);
+    const macroTargets = buildMacroTargets(physio, profile.goal);
+    return {
+      calories: macroTargets.calories,
+      protein: macroTargets.protein,
+      carbs: macroTargets.carbs,
+      fat: macroTargets.fat,
+      steps: macroTargets.steps,
+      sleepHours: macroTargets.sleepHours,
+      waterLiters: macroTargets.waterLiters,
+      trainingDaysPerWeek: macroTargets.trainingDaysPerWeek,
+      cardioDays: macroTargets.cardioDays,
+      tdee: physio.tdee,
+    };
+  } catch {
+    return { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+  }
 }
 
 /* ─── Macro sanity clamp ─────────────────────────────────────────────────
@@ -192,14 +176,31 @@ function calcMacros(profile) {
 ─────────────────────────────────────────────────────────────────────────── */
 function clampMacros(macros, profile) {
   if (!macros) return macros;
-  const kg = (profile?.weightLbs || 180) * 0.453592;
-  const maxProtein  = Math.round(kg * 3.5);
-  const minCalories = 800;
-  const maxCalories = 6000;
+  const kg = Math.max(40, (profile?.weightLbs || 180) * 0.453592);
+  const tdee = Number(macros?.tdee || calcMacros(profile)?.tdee || 2400);
+  const goal = profile?.goal || 'Maintain';
+  const minCalories = Math.round(tdee * (goal === 'Cut' ? 0.65 : 0.75));
+  const maxCalories = Math.round(tdee * (goal === 'Bulk' ? 1.25 : 1.15));
+  const calories = Math.max(minCalories, Math.min(Number(macros.calories || 2000), maxCalories));
+  const minProtein = Math.round(kg * 1.4);
+  const maxProtein = Math.round(kg * 2.8);
+  const protein = Math.max(minProtein, Math.min(Number(macros.protein || 150), maxProtein));
+  const fatFloor = Math.round(kg * 0.8);
+  const fatFromCalories = Math.round((calories * 0.35) / 9);
+  const fat = Math.max(fatFloor, Math.min(Number(macros.fat || 60), fatFromCalories));
+  const recalculatedCarbs = Math.round(Math.max(0, (calories - (protein * 4 + fat * 9)) / 4));
+  const carbs = Math.max(30, Number.isFinite(recalculatedCarbs) ? recalculatedCarbs : Number(macros.carbs || 180));
   return {
     ...macros,
-    protein:  Math.min(macros.protein  || 0, maxProtein),
-    calories: Math.max(minCalories, Math.min(macros.calories || 2000, maxCalories)),
+    calories,
+    protein,
+    fat,
+    carbs,
+    steps: Math.min(15000, Math.max(5000, Number(macros.steps || 9000))),
+    sleepHours: Math.min(10, Math.max(7, Number(macros.sleepHours || 8))),
+    waterLiters: Math.min(6, Math.max(2, Number(macros.waterLiters || 3))),
+    trainingDaysPerWeek: Math.min(6, Math.max(3, Number(macros.trainingDaysPerWeek || 4))),
+    cardioDays: Math.min(4, Math.max(0, Number(macros.cardioDays || 2))),
   };
 }
 
@@ -330,9 +331,57 @@ function getPrimaryLimiters(scan, activePlan) {
 }
 
 function getActiveTargets(activePlan, profile) {
-  const targets = activePlan?.dailyTargets || activePlan?.macros;
-  if (targets?.calories && targets?.protein) return targets;
-  return calcMacros(profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60 };
+  const targets = activePlan?.dailyTargets || activePlan?.macros || calcMacros(profile);
+  return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+}
+
+function sanitizeMeal(meal, targets, profile, idx = 0) {
+  if (!meal || typeof meal !== 'object') return null;
+  const kcalCap = Math.round((targets?.calories || 2000) * 0.7);
+  const calories = Math.min(kcalCap, Math.max(120, Math.round(Number(meal.calories || 0))));
+  const protein = Math.min(80, Math.max(10, Math.round(Number(meal.protein || 0))));
+  let fat = Math.min(45, Math.max(4, Math.round(Number(meal.fat || 0))));
+  let carbs = Math.min(120, Math.max(8, Math.round(Number(meal.carbs || 0))));
+  const macroCalories = protein * 4 + fat * 9 + carbs * 4;
+  if (Math.abs(macroCalories - calories) > 140) {
+    const adjustedCarbs = Math.round(Math.max(8, (calories - protein * 4 - fat * 9) / 4));
+    carbs = Math.min(120, adjustedCarbs);
+    const revisedMacroCalories = protein * 4 + fat * 9 + carbs * 4;
+    if (Math.abs(revisedMacroCalories - calories) > 120) {
+      fat = Math.max(4, Math.round((calories - protein * 4 - carbs * 4) / 9));
+    }
+  }
+  const text = String(meal.name || '').trim();
+  const isVegan = (profile?.dietPrefs || []).includes('Vegan');
+  const safeName = text || `Suggested meal ${idx + 1}`;
+  const invalidVegan = isVegan && /\b(chicken|beef|salmon|tuna|egg|turkey|prawn|yogurt)\b/i.test(safeName);
+  return {
+    id: meal.id || `sg-${idx + 1}`,
+    time: meal.time || meal.mealType || (idx === 1 ? 'Snack' : idx === 0 ? 'Lunch' : 'Dinner'),
+    icon: meal.icon || '🍽️',
+    name: invalidVegan ? 'Plant protein bowl' : safeName,
+    calories,
+    protein,
+    carbs,
+    fat,
+    description: meal.description || '',
+    whyNow: meal.whyNow || 'Matched to your remaining calorie and protein budget.',
+  };
+}
+
+function sanitizeScanData(scan, profile) {
+  if (!scan) return scan;
+  const bodyFatPct = Math.min(55, Math.max(4, Number(scan.bodyFatPct || scan.bodyFat || (profile?.gender === 'Female' ? 28 : 20))));
+  const weight = Number(profile?.weightLbs || 180);
+  const leanMass = Math.min(weight * 0.96, Math.max(weight * 0.35, Number(scan.leanMass || (weight * (1 - bodyFatPct / 100)))));
+  return {
+    ...scan,
+    bodyFatPct: Number(bodyFatPct.toFixed(1)),
+    leanMass: Number(leanMass.toFixed(1)),
+    physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || 60))),
+    symmetryScore: Math.min(95, Math.max(60, Number(scan.symmetryScore || 75))),
+    confidence: ['low', 'medium', 'high'].includes(scan.confidence) ? scan.confidence : 'medium',
+  };
 }
 
 /* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
@@ -349,8 +398,8 @@ async function generateInitialPlan(profile, macros, engineOutput = null) {
 
 async function generateMealPlan(profile, activePlan) {
   // Synchronous — no LLM call. Template database with macro-matching.
-  const m          = activePlan?.macros || activePlan?.dailyTargets || {};
-  const trainDays  = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const m          = getActiveTargets(activePlan, profile);
+  const trainDays  = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
   return buildMealPlan(
     m.calories || 2000,
     m.protein  || 150,
@@ -362,7 +411,7 @@ async function generateMealPlan(profile, activePlan) {
 
 async function generateSuggestions(profile, activePlan, todayMeals) {
   // Keep LLM but use Haiku — context-aware meal suggestions still benefit from AI.
-  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const m = getActiveTargets(activePlan, profile);
   const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
   const h = new Date().getHours();
   const timeOfDay = h < 11 ? 'Breakfast' : h < 15 ? 'Lunch' : 'Dinner';
@@ -375,29 +424,29 @@ Return ONLY JSON array of 3: [{"id":"s1","name":"","mealType":"${timeOfDay.toLow
 
 async function generateDailyTip(profile, activePlan, todayMeals) {
   // Fully template-based — no LLM call.
-  const m = activePlan?.macros || activePlan?.dailyTargets || {};
+  const m = getActiveTargets(activePlan, profile);
   const eaten = todayMeals.reduce((a, x) => ({ cal: a.cal+(x.calories||0), prot: a.prot+(x.protein||0) }), { cal:0, prot:0 });
   return getDailyTip(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, eaten, new Date().getDay());
 }
 
 async function generatePatterns(profile, activePlan) {
   // Synchronous — no LLM call. Returns same shape as previous Claude version.
-  const m         = activePlan?.macros || activePlan?.dailyTargets || {};
-  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const m         = getActiveTargets(activePlan, profile);
+  const trainDays = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
   const insights  = buildInsights(profile, { calories: m.calories||2000, protein: m.protein||150 }, trainDays, null);
   return { insights };
 }
 
 async function generateMissions(profile, activePlan) {
   // Synchronous — no LLM call. Template-based tier system.
-  const m         = activePlan?.macros || activePlan?.dailyTargets || {};
-  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const m         = getActiveTargets(activePlan, profile);
+  const trainDays = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
   return buildMissions(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, trainDays);
 }
 
 async function generateWorkoutPlan(profile, activePlan) {
   // Synchronous — no LLM call. Evidence-based split selection by training days.
-  const trainDays = activePlan?.dailyTargets?.trainingDaysPerWeek || activePlan?.trainDays || 4;
+  const trainDays = getActiveTargets(activePlan, profile)?.trainingDaysPerWeek || activePlan?.trainDays || 4;
   return buildWorkoutPlan(profile.goal, trainDays);
 }
 
@@ -1374,7 +1423,10 @@ function useAISuggestions(profile, activePlan, meals) {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const data = await generateSuggestions(profile, activePlan, meals);
-          const normalized = Array.isArray(data) ? data.map((s, i) => ({ id: s.id||`s${i}`, time: s.time||s.mealType||'Meal', icon: s.icon||'🍽️', ...s })) : [];
+          const targets = getActiveTargets(activePlan, profile);
+          const normalized = Array.isArray(data)
+            ? data.map((s, i) => sanitizeMeal(s, targets, profile, i)).filter(Boolean)
+            : [];
           if (normalized.length) {
             if (!ok) return;
             setSuggestions(normalized);
@@ -1427,9 +1479,10 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
       const { text } = await res.json();
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
-        const d = JSON.parse(match[0]);
-        setForm({ name: d.name || descText, calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
-        setComment(d.comment || '');
+        const raw = JSON.parse(match[0]);
+        const d = sanitizeMeal(raw, macros, profile);
+        setForm({ name: d?.name || descText, calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
+        setComment(raw?.comment || '');
       }
     } catch { setError('Analysis failed — fill in manually.'); }
     setAnalyzing(false);
@@ -1462,9 +1515,10 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
         if (apiErr) throw new Error(apiErr);
         const match = text.match(/\{[\s\S]*\}/);
         if (match) {
-          const d = JSON.parse(match[0]);
-          setForm({ name: d.name || 'Food', calories: String(d.calories || ''), protein: String(d.protein || ''), carbs: String(d.carbs || ''), fat: String(d.fat || '') });
-          setComment(d.comment || '');
+          const raw = JSON.parse(match[0]);
+          const d = sanitizeMeal(raw, macros, profile);
+          setForm({ name: d?.name || 'Food', calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
+          setComment(raw?.comment || '');
         }
       } catch (err) {
         console.error('Photo analysis error:', err);
@@ -1487,8 +1541,9 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
       carbs: Number(form.carbs) || 0,
       fat: Number(form.fat) || 0,
     };
-    LS.set(LS_KEYS.meals(today), [...meals, meal]);
-    onAdd(meal);
+    const safeMeal = sanitizeMeal(meal, macros, profile);
+    LS.set(LS_KEYS.meals(today), [...meals, safeMeal]);
+    onAdd(safeMeal);
     onClose();
   };
 
@@ -2052,14 +2107,14 @@ function NutritionTab({ profile, activePlan, showToast }) {
   };
 
   const logSuggestion = (s) => {
-    const meal = { id: Date.now(), name: s.name, category: s.time, calories: s.calories, protein: s.protein, carbs: s.carbs, fat: s.fat };
+    const meal = sanitizeMeal({ id: Date.now(), name: s.name, category: s.time, calories: s.calories, protein: s.protein, carbs: s.carbs, fat: s.fat }, macros, profile);
     const updated = [...meals, meal];
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
   };
 
   const handleLogMeal = (m) => {
-    const meal = { id: Date.now(), name: m.name, category: m.mealType || m.time || m.category || 'Meal', calories: m.calories || 0, protein: m.protein || 0, carbs: m.carbs || 0, fat: m.fat || 0 };
+    const meal = sanitizeMeal({ id: Date.now(), name: m.name, category: m.mealType || m.time || m.category || 'Meal', calories: m.calories || 0, protein: m.protein || 0, carbs: m.carbs || 0, fat: m.fat || 0 }, macros, profile);
     const updated = [...meals, meal];
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
@@ -2071,7 +2126,8 @@ function NutritionTab({ profile, activePlan, showToast }) {
     setSwappingId(s.id);
     try {
       const newMeal = await swapMealAPI(s, profile, activePlan);
-      setSuggestions(prev => prev.map(sg => sg.id === s.id ? { ...sg, ...newMeal, id: s.id, icon: newMeal.icon || sg.icon } : sg));
+      const safeMeal = sanitizeMeal(newMeal, macros, profile) || newMeal;
+      setSuggestions(prev => prev.map(sg => sg.id === s.id ? { ...sg, ...safeMeal, id: s.id, icon: safeMeal.icon || sg.icon } : sg));
       showToast?.('✓ Meal swapped');
     } catch (err) {
       console.error('Swap failed:', err);
@@ -2104,6 +2160,13 @@ function NutritionTab({ profile, activePlan, showToast }) {
               <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label} kcal</div>
             </div>
           ))}
+        </div>
+        <div style={{ marginTop: 12, fontSize: 12, color: C.muted }}>
+          {profile?.goal === 'Bulk'
+            ? 'Calories are set above maintenance to support lean mass gain while keeping fat gain controlled.'
+            : profile?.goal === 'Cut'
+              ? 'Calories are set below maintenance with high protein to support fat loss while preserving muscle.'
+              : 'Targets are calibrated around maintenance with phase-aware protein and recovery floors.'}
         </div>
       </Card>
 
@@ -2329,7 +2392,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   }
 
   /* ── Derive plan values ── */
-  const macros      = activePlan.macros || calcMacros(profile) || {};
+  const macros      = getActiveTargets(activePlan, profile);
   const phase       = activePlan.phase  || profile?.goal || 'Maintain';
   const phaseColor  = PHASE_COLORS[phase] || C.green;
   const week        = activePlan.week   || 1;
@@ -3412,7 +3475,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
 
       const match = text.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not parse scan result');
-      const visualData = JSON.parse(match[0]);
+      const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
 
       // Step 2: Run the engine with this scan data to get precise targets
       const currentHistory = LS.get(LS_KEYS.scanHistory, []);
@@ -3423,7 +3486,7 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
       const data = {
         ...visualData,
         // Engine-calculated targets (authoritative)
-        dailyTargets:    engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal }),
+        dailyTargets:    clampMacros(engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal }), profile),
         phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
         whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || visualData.diagnosis,
         weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
@@ -3441,7 +3504,18 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     if (!result) return;
     const today  = new Date().toISOString().slice(0, 10);
     const eng    = result.engineOutput;          // engine output attached by runScan
-    const m      = clampMacros(eng?.macro_targets || result.dailyTargets || calcMacros(profile), profile);
+    const previousPlanTargets = getActiveTargets(LS.get(LS_KEYS.activePlan, null), profile);
+    const baseTargets = clampMacros(eng?.macro_targets || result.dailyTargets || calcMacros(profile), profile);
+    const isLowConfidence = (result.confidence || '').toLowerCase() === 'low';
+    const m = isLowConfidence
+      ? clampMacros({
+          ...baseTargets,
+          calories: Math.round((previousPlanTargets.calories * 0.7) + (baseTargets.calories * 0.3)),
+          protein: Math.round((previousPlanTargets.protein * 0.7) + (baseTargets.protein * 0.3)),
+          carbs: Math.round((previousPlanTargets.carbs * 0.7) + (baseTargets.carbs * 0.3)),
+          fat: Math.round((previousPlanTargets.fat * 0.7) + (baseTargets.fat * 0.3)),
+        }, profile)
+      : baseTargets;
 
     const plan = {
       phase:          profile.goal,
@@ -3479,6 +3553,8 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
       dailyTargets: {
         calories: m.calories,
         protein: m.protein,
+        carbs: m.carbs,
+        fat: m.fat,
         steps: m.steps || 9000,
         trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
       },
