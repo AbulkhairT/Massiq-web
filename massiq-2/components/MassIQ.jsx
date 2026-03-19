@@ -4256,22 +4256,43 @@ export default function MassIQ() {
   };
 
   const handleAuthSubmit = async (mode, email, password) => {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const userPassword = String(password || '');
+
+    const mapAuthError = (err, m) => {
+      const raw = String(err?.message || '').toLowerCase();
+      if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
+      if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
+        return 'An account already exists for this email. Log in instead.';
+      }
+      if (raw.includes('password') && (raw.includes('weak') || raw.includes('6'))) {
+        return 'Use a stronger password with at least 6 characters.';
+      }
+      if (raw.includes('rate limit') || raw.includes('too many requests')) {
+        return 'Too many attempts right now. Please wait and try again.';
+      }
+      if (raw.includes('failed to fetch') || raw.includes('network') || raw.includes('request failed (5')) {
+        return 'Connection issue. Please try again.';
+      }
+      return m === 'signup'
+        ? 'Could not create account right now.'
+        : 'Could not log in right now.';
+    };
+
     setAuthBusy(true);
     setAuthError('');
     setAuthNotice('');
     try {
       const res = mode === 'signup'
-        ? await signUpWithPassword(email, password)
-        : await signInWithPassword(email, password);
+        ? await signUpWithPassword(normalizedEmail, userPassword)
+        : await signInWithPassword(normalizedEmail, userPassword);
       if (!res?.access_token) {
-        setAuthNotice(mode === 'signup'
-          ? 'Account created. Check your email if confirmation is required, then log in.'
-          : 'Login succeeded but no active session was returned.');
+        setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
       setSession(res);
     } catch (err) {
-      setAuthError(err.message || 'Authentication failed.');
+      setAuthError(mapAuthError(err, mode));
     } finally {
       setAuthBusy(false);
     }
