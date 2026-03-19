@@ -1157,13 +1157,21 @@ function MacroRing({ label, current, target, color, size = 90 }) {
 /* ─── AI Suggestions Hook ───────────────────────────────────────────────── */
 function useAISuggestions(profile, activePlan, meals) {
   const cacheKey = `massiq:suggestions:${hourKey()}`;
+  const [reloadKey, setReloadKey] = useState(0);
   const cached = SS.get(cacheKey, null);
   const [suggestions, setSuggestions] = useState(cached);
   const [loading,     setLoading]     = useState(!cached);
   const [error,       setError]       = useState('');
+  const fallbackSuggestions = [
+    { id: 'fb1', time: 'Lunch', icon: '🍗', name: 'Lean protein bowl', calories: 540, protein: 45, carbs: 48, fat: 18, whyNow: 'Supports protein target with moderate calories.' },
+    { id: 'fb2', time: 'Dinner', icon: '🥩', name: 'Steak + potato plate', calories: 620, protein: 46, carbs: 52, fat: 24, whyNow: 'Balanced evening meal aligned to your plan.' },
+    { id: 'fb3', time: 'Snack', icon: '🥣', name: 'Greek yogurt + berries', calories: 290, protein: 26, carbs: 24, fat: 8, whyNow: 'Efficient protein top-up without excess calories.' },
+  ];
   useEffect(() => {
     if (cached) { setLoading(false); return; }
     let ok = true;
+    setLoading(true);
+    setError('');
     generateSuggestions(profile, activePlan, meals)
       .then(data => {
         if (!ok) return;
@@ -1172,10 +1180,17 @@ function useAISuggestions(profile, activePlan, meals) {
         SS.set(cacheKey, normalized);
         setLoading(false);
       })
-      .catch(err => { if (ok) { console.error('Suggestions failed:', err); setError('Could not load suggestions.'); setLoading(false); } });
+      .catch(err => {
+        if (ok) {
+          console.error('Suggestions failed:', err);
+          setSuggestions(fallbackSuggestions);
+          setError('Suggestions unavailable right now. Using plan-aligned fallback meals.');
+          setLoading(false);
+        }
+      });
     return () => { ok = false; };
-  }, []);
-  return { suggestions: suggestions || [], loading, error };
+  }, [reloadKey]);
+  return { suggestions: suggestions || [], loading, error, retry: () => setReloadKey(v => v + 1) };
 }
 
 /* Log Meal Modal */
@@ -1816,7 +1831,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
   const [showModal,    setShowModal]    = useState(false);
   const [selectedMeal, setSelectedMeal] = useState(null);
   const [swappingId,   setSwappingId]   = useState(null);
-  const { suggestions: rawSuggestions, loading: suggestionsLoading, error: suggestionsError } = useAISuggestions(profile, activePlan, meals);
+  const { suggestions: rawSuggestions, loading: suggestionsLoading, error: suggestionsError, retry: retrySuggestions } = useAISuggestions(profile, activePlan, meals);
   const [suggestions, setSuggestions] = useState([]);
   useEffect(() => { if (rawSuggestions.length > 0) setSuggestions(rawSuggestions); }, [rawSuggestions.length]);
 
@@ -1892,7 +1907,14 @@ function NutritionTab({ profile, activePlan, showToast }) {
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
-        {suggestionsError && <div style={{ color: C.red, fontSize: 13, marginBottom: 8 }}>{suggestionsError}</div>}
+        {suggestionsError && (
+          <div style={{ marginBottom: 10, background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 12, padding: '10px 12px' }}>
+            <div style={{ color: C.gold, fontSize: 12, lineHeight: 1.5, marginBottom: 8 }}>{suggestionsError}</div>
+            <button className="bp" onClick={retrySuggestions} style={{ fontSize: 12, color: C.white, background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 9, padding: '6px 10px' }}>
+              Refresh recommendations
+            </button>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
           {suggestionsLoading ? (
             [1,2,3].map(i => (
@@ -3116,6 +3138,18 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
     const entry = {
       date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
       physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore,
+      phase: profile.goal,
+      confidence: result.confidence || 'medium',
+      muscleGroups: result.muscleGroups || {},
+      assessment: result.bodyFatSummary || result.diagnosis || '',
+      focusAreas: result.priorityAreas || result.weakestGroups || [],
+      recommendation: result.recommendation || eng?.diagnosis?.primary?.recommended_action || '',
+      dailyTargets: {
+        calories: m.calories,
+        protein: m.protein,
+        steps: m.steps || 9000,
+        trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
+      },
     };
     const history = [...LS.get(LS_KEYS.scanHistory, []), entry];
     LS.set(LS_KEYS.activePlan, plan);
@@ -3451,20 +3485,103 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
         <div style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Previous Scans</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {[...scanHistory].reverse().map((s, i) => (
-              <div key={i} className="bp" onClick={() => setViewOld(i)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
+            {[...scanHistory].reverse().map((s, i) => {
+              const realIdx = scanHistory.length - 1 - i;
+              return (
+              <div key={i} className="bp" onClick={() => setViewOld(realIdx)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{s.date}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>BF {s.bodyFat}% · Lean {s.leanMass} lbs</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{fmt.date(s.date)}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {Number(s.bodyFat || 0).toFixed(1)}% · Lean {Number(s.leanMass || 0).toFixed(1)} lb</div>
+                  <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
                   {s.physiqueScore}/100
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         </div>
       )}
+      {typeof viewOld === 'number' && (
+        <ScanDetailModal
+          scan={scanHistory[viewOld]}
+          prevScan={viewOld > 0 ? scanHistory[viewOld - 1] : null}
+          onClose={() => setViewOld(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ScanDetailModal({ scan, prevScan, onClose }) {
+  if (!scan) return null;
+  const bfDelta = prevScan ? Number(scan.bodyFat || 0) - Number(prevScan.bodyFat || 0) : null;
+  const lmDelta = prevScan ? Number(scan.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
+  const trajectory = getTrajectoryStatus(prevScan ? [prevScan, scan] : [], scan.phase || 'Maintain');
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 320, background: 'rgba(6,9,7,0.88)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', padding: 16, overflowY: 'auto' }}>
+      <div style={{ maxWidth: 560, margin: '10px auto 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <Card style={{ background: '#121915', border: `1px solid ${C.border}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em' }}>Scan Detail</div>
+              <div style={{ fontSize: 20, fontWeight: 740, marginTop: 4 }}>{fmt.date(scan.date)}</div>
+            </div>
+            <button className="bp" onClick={onClose} style={{ width: 34, height: 34, borderRadius: '50%', border: `1px solid ${C.border}`, background: C.cardElevated, color: C.muted, fontSize: 16 }}>×</button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
+            <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>{scan.phase || 'Phase not recorded'}</span>
+            <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>Confidence: {scan.confidence || 'medium'}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {[
+              { label: 'Body Fat', value: fmt.pct(scan.bodyFat || 0, 1), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
+              { label: 'Lean Mass', value: `${Number(scan.leanMass || 0).toFixed(1)} lb`, tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
+              { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
+              { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
+            ].map((m) => (
+              <div key={m.label} style={{ background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 5 }}>{m.label}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, color: m.tone }}>{m.value}</div>
+                {m.delta !== undefined && m.delta !== null && (
+                  <div style={{ fontSize: 11, color: m.tone, marginTop: 3 }}>
+                    {m.delta >= 0 ? '+' : ''}{m.delta.toFixed(1)}{m.lb ? ' lb' : '%'} vs previous
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Assessment Summary</div>
+          <p style={{ margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{scan.assessment || 'Historical scan available for comparison. Detailed narrative was not stored for this scan.'}</p>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Focus Areas at this scan</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {(scan.focusAreas?.length ? scan.focusAreas : ['No specific focus areas were recorded']).slice(0, 4).map((f, i) => (
+                <span key={`${f}-${i}`} style={{ fontSize: 12, color: C.white, background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 999, padding: '5px 10px' }}>{f}</span>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Plan Context</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 10 }}>
+              <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Calories</div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{scan.dailyTargets?.calories ?? '—'} kcal</div>
+            </div>
+            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 10 }}>
+              <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Protein</div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{scan.dailyTargets?.protein ?? '—'} g</div>
+            </div>
+          </div>
+          <p style={{ margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{scan.recommendation || 'Recommendation details were not stored for this scan snapshot.'}</p>
+        </Card>
+      </div>
     </div>
   );
 }
