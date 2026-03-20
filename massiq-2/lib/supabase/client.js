@@ -289,11 +289,11 @@ export async function ensureProfile(token, userId) {
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
   console.info('[sync] plans.insert payload', row);
-  return supabaseFetch('/rest/v1/plans', {
+  return supabaseFetch('/rest/v1/plans?on_conflict=user_id', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'return=representation',
+      Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify(row),
   });

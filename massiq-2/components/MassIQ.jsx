@@ -345,41 +345,102 @@ function getPrimaryLimiters(scan, activePlan) {
 }
 
 function getActiveTargets(activePlan, profile) {
-  const targets = activePlan?.dailyTargets || activePlan?.macros || calcMacros(profile);
-  return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+  const targets = activePlan?.dailyTargets || activePlan?.macros;
+  if (targets) return targets;
+  if (!profile) return null;
+  return buildBaselinePlanFromProfile(profile).dailyTargets;
 }
 
-function buildBaselinePlanFromProfile(profile) {
-  const weightKg = Number(((profile?.weightLbs || 0) * 0.453592).toFixed(2));
-  const heightCm = Number(profile?.heightCm || 0);
-  const age = Number(profile?.age || 0);
+function activityBand(activity) {
+  const a = String(activity || '').toLowerCase();
+  if (a.includes('sedentary') || a.includes('light') || a === 'low') return 'low';
+  if (a.includes('active') || a === 'high') return 'high';
+  return 'medium';
+}
+
+function normalizeGoal(goal) {
+  const g = String(goal || '').toLowerCase();
+  if (g.includes('bulk') || g.includes('gain')) return 'bulk';
+  if (g.includes('cut') || g.includes('lose')) return 'cut';
+  return 'maintain';
+}
+
+function validateProfileForPlan(profile) {
+  if (!profile) throw new Error('Missing profile');
+  const age = Number(profile.age);
+  const weightKg = Number(((profile.weightLbs || 0) * 0.453592).toFixed(2));
+  const heightCm = Number(profile.heightCm);
+  if (!Number.isFinite(age) || age <= 0) throw new Error('Invalid age');
+  if (!Number.isFinite(weightKg) || weightKg < 40 || weightKg > 200) throw new Error('Invalid weight');
+  if (!Number.isFinite(heightCm) || heightCm < 140 || heightCm > 220) throw new Error('Invalid height');
+  return { age, weightKg, heightCm };
+}
+
+function generateDeterministicPlan(profile) {
+  const { age, weightKg, heightCm } = validateProfileForPlan(profile);
   const gender = profile?.gender === 'Female' ? 'female' : 'male';
-  const activityMap = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 };
-  const activityMultiplier = activityMap[profile?.activity] || 1.55;
+  const activityMultiplier = { low: 1.4, medium: 1.6, high: 1.75 }[activityBand(profile?.activity)] || 1.6;
+  const goal = normalizeGoal(profile?.goal);
   const bmr = (10 * weightKg) + (6.25 * heightCm) - (5 * age) + (gender === 'male' ? 5 : -161);
   const tdee = bmr * activityMultiplier;
-  const goalKey = String(profile?.goal || 'Maintain').toLowerCase();
-  const targetCalories = goalKey === 'cut' ? (tdee * 0.8) : goalKey === 'bulk' ? (tdee * 1.12) : goalKey === 'recomp' ? (tdee * 0.9) : tdee;
-  const calories = Math.max(1200, Math.round(targetCalories));
-  const protein = Math.max(60, Math.round(weightKg * 2.0));
-  const fat = Math.max(35, Math.round(((calories * 0.28) / 9)));
-  const carbs = Math.max(50, Math.round((calories - (protein * 4) - (fat * 9)) / 4));
-  const targets = {
-    calories,
+  const phaseAdjustment = goal === 'cut' ? -400 : goal === 'bulk' ? 300 : 0;
+  const calories = Math.max(1200, Math.round(tdee + phaseAdjustment));
+
+  const proteinPerKgRaw = goal === 'cut' ? 2.2 : goal === 'bulk' ? 1.8 : 2.0;
+  const proteinPerKg = Math.min(2.4, Math.max(1.6, proteinPerKgRaw));
+  const protein = Math.round(weightKg * proteinPerKg);
+
+  const fatPerKgRaw = 0.9;
+  const fatPerKg = Math.min(1.2, Math.max(0.6, fatPerKgRaw));
+  const fat = Math.round(weightKg * fatPerKg);
+
+  const proteinKcal = protein * 4;
+  const fatKcal = fat * 9;
+  const carbKcal = Math.max(0, calories - proteinKcal - fatKcal);
+  const carbs = Math.round(carbKcal / 4);
+  const finalCalories = Math.round((protein * 4) + (fat * 9) + (carbs * 4));
+
+  if (![bmr, tdee, finalCalories, protein, carbs, fat].every(Number.isFinite)) {
+    throw new Error('Non-finite plan output');
+  }
+
+  return {
+    phase: goal === 'cut' ? 'Cut' : goal === 'bulk' ? 'Bulk' : 'Maintain',
+    bmr: Math.round(bmr),
+    tdee: Math.round(tdee),
+    calories: finalCalories,
     protein,
     carbs,
     fat,
-    steps: goalKey === 'cut' ? 10000 : 8500,
+    expectedWeeklyWeightKg: goal === 'cut' ? -0.4 : goal === 'bulk' ? 0.25 : 0,
+  };
+}
+
+function buildBaselinePlanFromProfile(profile) {
+  let plan;
+  try {
+    plan = generateDeterministicPlan(profile);
+  } catch (err) {
+    console.error('Baseline plan generation failed, falling back to maintenance:', err);
+    const safeProfile = { ...profile, goal: 'Maintain' };
+    plan = generateDeterministicPlan({ ...safeProfile, age: Math.max(18, Number(safeProfile?.age || 18)), weightLbs: Math.min(440, Math.max(88, Number(safeProfile?.weightLbs || 170))), heightCm: Math.min(220, Math.max(140, Number(safeProfile?.heightCm || 175))) });
+  }
+  const targets = {
+    calories: plan.calories,
+    protein: plan.protein,
+    carbs: plan.carbs,
+    fat: plan.fat,
+    steps: plan.phase === 'Cut' ? 10000 : 8500,
     sleepHours: 8,
     waterLiters: 3,
-    trainingDaysPerWeek: goalKey === 'bulk' ? 5 : 4,
-    cardioDays: goalKey === 'bulk' ? 1 : 2,
+    trainingDaysPerWeek: plan.phase === 'Bulk' ? 5 : 4,
+    cardioDays: plan.phase === 'Bulk' ? 1 : 2,
   };
   const nextScan = new Date();
   nextScan.setDate(nextScan.getDate() + 28);
   return {
-    phase: profile?.goal || 'Maintain',
-    phaseName: `${profile?.goal || 'Maintain'} Phase`,
+    phase: plan.phase,
+    phaseName: `${plan.phase} Phase`,
     objective: 'Baseline phase generated from validated profile inputs.',
     week: 1,
     startDate: todayStr(),
@@ -394,6 +455,9 @@ function buildBaselinePlanFromProfile(profile) {
     trainDays: targets.trainingDaysPerWeek || 4,
     sleepHrs: targets.sleepHours || 8,
     waterL: targets.waterLiters || 3,
+    expectedWeeklyWeightKg: plan.expectedWeeklyWeightKg,
+    tdee: plan.tdee,
+    bmr: plan.bmr,
   };
 }
 
@@ -1181,44 +1245,6 @@ function CalcScreen() {
 }
 
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function getGreeting() {
-  const h = new Date().getHours();
-  return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
-}
-
-// Unwrap tip strings that were stored as JSON from the old Claude-based system.
-// e.g. '{"tip":"Adam, eat 800..."}' → 'Adam, eat 800...'
-function safeTip(raw) {
-  if (!raw || typeof raw !== 'string') return raw;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('{')) return trimmed;
-  try {
-    const p = JSON.parse(trimmed);
-    if (typeof p === 'object' && p !== null) {
-      return String(p.tip || p.text || p.message || Object.values(p)[0] || raw);
-    }
-  } catch {}
-  return trimmed;
-}
-
-function AIDailyTip({ profile, activePlan, todayMeals }) {
-  const dayIdx  = new Date().getDay();
-  // safeTip handles old cached JSON strings from the previous Claude-based system
-  const planTip = safeTip(activePlan?.dailyTips?.[dayIdx] || activePlan?.dailyTips?.[0] || null);
-  const cacheKey = `massiq:dailytip:${todayStr()}`;
-  const [tip, setTip] = useState(() => planTip || safeTip(LS.get(cacheKey, null)));
-  const [loading, setLoading] = useState(!planTip && !safeTip(LS.get(cacheKey, null)));
-  useEffect(() => {
-    if (!loading) return;
-    let ok = true;
-    generateDailyTip(profile, activePlan, todayMeals)
-      .then(t => { if (ok) { setTip(t); LS.set(cacheKey, t); setLoading(false); } })
-      .catch(() => { if (ok) { setTip('Stay consistent with your targets today.'); setLoading(false); } });
-    return () => { ok = false; };
-  }, []);
-  if (loading) return <div className="skeleton" style={{ height: 14, width: '70%', borderRadius: 6 }} />;
-  return <span>💡 {tip}</span>;
-}
 
 function TargetTile({ icon, label, current, target, unit, color, showProgress = true }) {
   return (
@@ -1260,6 +1286,37 @@ function HomeTab({ profile, activePlan, setTab }) {
 
   const phase = activePlan?.phase || 'Foundation';
   const week  = activePlan?.week  || 1;
+  const currentWeightLbs = Number(profile?.weightLbs || 0);
+  const currentWeightKg = Number((currentWeightLbs * 0.453592).toFixed(1));
+  const currentBF = Number(lastScan?.bodyFat || 0);
+  const currentLeanMass = Number(lastScan?.leanMass || 0);
+  const targetBF = Number(activePlan?.targetBF || (phase === 'Cut' ? (profile?.gender === 'Female' ? 24 : 14) : currentBF || 0));
+  const expectedWeekly = Number(activePlan?.expectedWeeklyWeightKg ?? (phase === 'Cut' ? -0.4 : phase === 'Bulk' ? 0.25 : 0));
+  const estimatedWeeks = currentBF > 0 && targetBF > 0 && expectedWeekly < 0
+    ? Math.max(1, Math.ceil((currentBF - targetBF) / 0.4))
+    : expectedWeekly > 0 ? Math.max(1, Math.ceil(4)) : 0;
+  const prevScan = scanHistory.length > 1 ? scanHistory[scanHistory.length - 2] : null;
+  const prevWeight = prevScan?.leanMass && prevScan?.bodyFat
+    ? prevScan.leanMass / (1 - (prevScan.bodyFat / 100))
+    : null;
+  const lastWeight = lastScan?.leanMass && lastScan?.bodyFat
+    ? lastScan.leanMass / (1 - (lastScan.bodyFat / 100))
+    : null;
+  const actualWeeklyChange = Number.isFinite(prevWeight) && Number.isFinite(lastWeight) ? Number((lastWeight - prevWeight).toFixed(2)) : null;
+  const progressStatus = actualWeeklyChange === null
+    ? 'Insufficient data'
+    : expectedWeekly < 0
+      ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind')
+      : expectedWeekly > 0
+        ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind')
+        : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
+  const adjustment = progressStatus === 'Behind' && phase === 'Cut'
+    ? 'Reduce calories by 150 kcal/day and add 1,500 steps/day for 7 days.'
+    : progressStatus === 'Behind' && phase === 'Bulk'
+      ? 'Increase calories by 150 kcal/day and ensure +1 training session this week.'
+      : progressStatus === 'Ahead' && phase === 'Cut'
+        ? 'Increase calories by 100 kcal/day to reduce lean-mass risk.'
+        : 'Keep current targets and rescan next week.';
 
   return (
     <div className="screen">
@@ -1282,72 +1339,56 @@ function HomeTab({ profile, activePlan, setTab }) {
         </div>
       ) : (
         <>
-          {/* ── Command center hero ── */}
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
-              <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Current state</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentBF ? `${currentBF.toFixed(1)}%` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Body fat</div></div>
+              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentLeanMass ? `${currentLeanMass.toFixed(1)} lb` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Lean mass</div></div>
+              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentWeightKg ? `${currentWeightKg} kg` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Body weight</div></div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-              <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
-                {PHASE_META[phase]?.emoji || '🎯'} {phase}
-              </span>
-              <span style={{ fontSize: 12, color: C.muted }}>Week {week} of 12</span>
-            </div>
-            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: 16 }}>{trajectory.note}</p>
-
-            <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Primary limiter</div>
-              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{limiters[0]}</div>
-            </div>
-            <div style={{ marginBottom: 18, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>This week’s priority</div>
-              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{nextAction}</div>
-            </div>
-
-            <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-              {[
-                { label: 'Body Fat', value: lastScan?.bodyFat ? fmt.pct(lastScan.bodyFat, 1) : '—', unit: '' },
-                { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.leanMass(lastScan.leanMass, profile?.unitSystem) : '—', unit: '' },
-                { label: 'Next Scan', value: fmt.date(activePlan?.nextScanDate), unit: '' },
-              ].map((s, i) => (
-                <div key={s.label} style={{
-                  flex: 1, textAlign: 'center',
-                  borderLeft: i > 0 ? `1px solid ${C.border}` : 'none',
-                }}>
-                <div className="metric" style={{ fontSize: 18, color: C.white }}>{s.value}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>{s.unit}</div>
-                  <div style={{ fontSize: 11, color: C.dimmed, marginTop: 2 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-
-            <p style={{ fontSize: 13, color: C.green, marginTop: 16, lineHeight: 1.5 }}>
-              <AIDailyTip profile={profile} activePlan={activePlan} todayMeals={todayMeals} />
-            </p>
           </Card>
 
-          {/* ── Phase card ── */}
           <Card className="su glass" style={{ animationDelay: '.05s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Goal state</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <div style={{ fontSize: 13, color: C.muted, fontWeight: 500, marginBottom: 4 }}>Current Phase</div>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>
-                  {phase === 'Cut' ? '📉' : phase === 'Bulk' ? '📈' : '🔄'} {phase}
-                </div>
-                <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>Week {week} of 12</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{PHASE_META[phase]?.emoji || '🎯'} {phase}</div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Target body fat: {targetBF ? `${targetBF.toFixed(1)}%` : 'Not set'}</div>
               </div>
-              <button className="bp" onClick={() => setTab('plan')} style={{
-                background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
-                padding: '8px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              }}>
-                See roadmap →
+              <button className="bp" onClick={() => setTab('plan')} style={{ background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`, padding: '8px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                Edit route →
               </button>
             </div>
           </Card>
 
-          {/* ── Today's Targets ── */}
+          <Card className="su glass" style={{ animationDelay: '.08s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>ETA</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: C.green }}>{estimatedWeeks > 0 ? `${estimatedWeeks} weeks` : 'Re-scan needed'}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Expected weekly change: {expectedWeekly.toFixed(2)} kg/week</div>
+          </Card>
+
           <Card className="su glass" style={{ animationDelay: '.1s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Weekly action</div>
+            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{nextAction}</div>
+          </Card>
+
+          <Card className="su glass" style={{ animationDelay: '.12s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Progress vs route</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <StatusPill tone={progressStatus === 'On track' ? 'good' : progressStatus === 'Ahead' ? 'warn' : 'issue'} label={progressStatus} />
+              <div style={{ fontSize: 12, color: C.muted }}>Actual: {actualWeeklyChange === null ? '—' : `${actualWeeklyChange.toFixed(2)} kg/week`}</div>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>{trajectory.note}</div>
+          </Card>
+
+          <Card className="su glass" style={{ animationDelay: '.14s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Adjustment recommendation</div>
+            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{adjustment}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Limiter: {limiters[0]}</div>
+          </Card>
+
+          {/* ── Today's Targets ── */}
+          <Card className="su glass" style={{ animationDelay: '.16s' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <span style={{ fontWeight: 700, fontSize: 16 }}>Today's Targets</span>
               <span style={{ color: C.muted, fontSize: 18, letterSpacing: 2 }}>···</span>
