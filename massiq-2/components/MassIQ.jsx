@@ -195,8 +195,10 @@ function clampMacros(macros, profile) {
   const minCalories = Math.round(tdee * (goal === 'Cut' ? 0.65 : 0.75));
   const maxCalories = Math.round(tdee * (goal === 'Bulk' ? 1.25 : 1.15));
   const calories = Math.max(minCalories, Math.min(Number(macros.calories || 2000), maxCalories));
-  const minProtein = Math.round(kg * 1.4);
-  const maxProtein = Math.round(kg * 2.8);
+  // Absolute floor = 0.7 g/lb bodyweight (bare minimum for nitrogen balance)
+  // Engine already calculates 1.0-1.1 g/lb LBM, so this floor rarely triggers
+  const minProtein = Math.round(kg * 1.55);   // ~0.7 g/lb — safety net only
+  const maxProtein = Math.round(kg * 3.0);
   const protein = Math.max(minProtein, Math.min(Number(macros.protein || 150), maxProtein));
   const fatFloor = Math.round(kg * 0.8);
   const fatFromCalories = Math.round((calories * 0.35) / 9);
@@ -423,16 +425,37 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
 
 function sanitizeScanData(scan, profile) {
   if (!scan) return scan;
-  const bodyFatPct = Math.min(55, Math.max(4, Number(scan.bodyFatPct || scan.bodyFat || (profile?.gender === 'Female' ? 28 : 20))));
+  // Support bodyFatRange object from new prompt OR flat bodyFatPct from old prompt
+  const bfLow  = Number(scan.bodyFatRange?.low  || 0);
+  const bfHigh = Number(scan.bodyFatRange?.high || 0);
+  const bfMid  = bfLow && bfHigh ? (bfLow + bfHigh) / 2 : 0;
+  const rawBf  = bfMid || Number(scan.bodyFatPct || scan.bodyFat || (profile?.gender === 'Female' ? 28 : 20));
+  const bodyFatPct = Math.min(55, Math.max(4, rawBf));
+  const bodyFatRange = bfLow && bfHigh
+    ? { low: Math.max(4, bfLow), high: Math.min(55, bfHigh), midpoint: Number(bodyFatPct.toFixed(1)) }
+    : { low: Math.max(4, bodyFatPct - 2), high: Math.min(55, bodyFatPct + 2), midpoint: Number(bodyFatPct.toFixed(1)) };
   const weight = Number(profile?.weightLbs || 180);
   const leanMass = Math.min(weight * 0.96, Math.max(weight * 0.35, Number(scan.leanMass || (weight * (1 - bodyFatPct / 100)))));
+  const confidence = ['low', 'medium', 'high'].includes(scan.bodyFatConfidence || scan.confidence)
+    ? (scan.bodyFatConfidence || scan.confidence)
+    : 'medium';
   return {
     ...scan,
     bodyFatPct: Number(bodyFatPct.toFixed(1)),
+    bodyFatRange,
+    bodyFatConfidence: confidence,
+    bodyFatReasoning: scan.bodyFatReasoning || '',
     leanMass: Number(leanMass.toFixed(1)),
+    leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
     physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || 60))),
     symmetryScore: Math.min(95, Math.max(60, Number(scan.symmetryScore || 75))),
-    confidence: ['low', 'medium', 'high'].includes(scan.confidence) ? scan.confidence : 'medium',
+    symmetryDetails: scan.symmetryDetails || '',
+    confidence,
+    limitingFactor: scan.limitingFactor || '',
+    limitingFactorExplanation: scan.limitingFactorExplanation || '',
+    photoQualityIssues: Array.isArray(scan.photoQualityIssues) ? scan.photoQualityIssues : [],
+    trainingFocus: scan.trainingFocus || null,
+    nutritionKeyChange: scan.nutritionKeyChange || '',
   };
 }
 
@@ -1275,7 +1298,7 @@ function AIDailyTip({ profile, activePlan, todayMeals }) {
   return <span>💡 {tip}</span>;
 }
 
-function TargetTile({ icon, label, current, target, unit, color, showProgress = true }) {
+function TargetTile({ icon, label, current, target, unit, color, showProgress = true, sourceLabel }) {
   return (
     <div style={{
       background: C.cardElevated, borderRadius: 16, padding: '14px 14px 16px',
@@ -1295,6 +1318,9 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
         <span style={{ fontSize: 12, color: C.muted }}>/ {target} {unit}</span>
       </div>
       {showProgress && <ProgressBar value={current} max={target} color={color} />}
+      {sourceLabel && (
+        <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{sourceLabel}</div>
+      )}
     </div>
   );
 }
@@ -1358,7 +1384,7 @@ function HomeTab({ profile, activePlan, setTab }) {
               <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{limiters[0]}</div>
             </div>
             <div style={{ marginBottom: 18, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>This week’s priority</div>
+              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>This week's priority</div>
               <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{nextAction}</div>
             </div>
 
@@ -1409,12 +1435,19 @@ function HomeTab({ profile, activePlan, setTab }) {
               <span style={{ fontWeight: 700, fontSize: 16 }}>Today's Targets</span>
               <span style={{ color: C.muted, fontSize: 18, letterSpacing: 2 }}>···</span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 2000} unit="kcal" color={C.orange} />
-              <TargetTile icon="⚡" label="Protein"  current={todayStats.protein}  target={macros?.protein  || 150}  unit="g"    color={C.blue}   />
-              <TargetTile icon="🏋️" label="Training" current={activePlan?.trainDays || 3} target={activePlan?.trainDays || 3} unit="x/wk" color={C.red}    showProgress={false} />
-              <TargetTile icon="🌙" label="Sleep"    current={activePlan?.sleepHrs  || 8} target={activePlan?.sleepHrs  || 8} unit="hrs"  color={C.purple} />
-            </div>
+            {(() => {
+              const scanDate    = lastScan?.date ? fmt.date(lastScan.date) : null;
+              const scanSource  = scanDate ? `From your scan · ${scanDate}` : 'Calculated from profile';
+              const planSource  = scanDate ? `From your scan · ${scanDate}` : 'Calculated from profile';
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 2000} unit="kcal" color={C.orange} sourceLabel={scanSource} />
+                  <TargetTile icon="⚡" label="Protein"  current={todayStats.protein}  target={macros?.protein  || 150}  unit="g"    color={C.blue}   sourceLabel={scanSource} />
+                  <TargetTile icon="🏋️" label="Training" current={activePlan?.trainDays || 3} target={activePlan?.trainDays || 3} unit="x/wk" color={C.red}    showProgress={false} sourceLabel={planSource} />
+                  <TargetTile icon="🌙" label="Sleep"    current={activePlan?.sleepHrs  || 8} target={activePlan?.sleepHrs  || 8} unit="hrs"  color={C.purple} sourceLabel="Calculated from profile" />
+                </div>
+              );
+            })()}
           </Card>
 
           {/* ── Today's Workout ── */}
@@ -2333,7 +2366,26 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Today's Suggestions</div>
+        {(() => {
+          const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+          const lastScan    = scanHistory[scanHistory.length - 1];
+          const phase       = activePlan?.phase || profile?.goal || 'your current';
+          const kcal        = macros?.calories;
+          const weakPoints  = lastScan?.focusAreas?.length ? lastScan.focusAreas.slice(0, 3).join(', ') : null;
+          return (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: weakPoints ? 3 : 0 }}>
+                Generated for your <span style={{ color: C.green, fontWeight: 600 }}>{phase} phase</span>{kcal ? ` · ${kcal.toLocaleString()} kcal target` : ''}
+              </div>
+              {weakPoints && (
+                <div style={{ fontSize: 12, color: C.muted }}>
+                  Based on your weak points: <span style={{ color: C.white, fontWeight: 500 }}>{weakPoints}</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {suggestionsError && (
           <div style={{ marginBottom: 10, background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 12, padding: '10px 12px' }}>
             <div style={{ color: C.gold, fontSize: 12, lineHeight: 1.5, marginBottom: 8 }}>{suggestionsError}</div>
@@ -3527,6 +3579,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const [error,     setError]     = useState('');
   const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [viewOld,   setViewOld]   = useState(null); // index of old scan being viewed
+  const [showCalcDetails, setShowCalcDetails] = useState(false); // "How we calculate this" toggle
 
   const handleFile = (file) => {
     if (!file) return;
@@ -3572,35 +3625,38 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
       const height = profile?.heightIn || 70;
       const weight = profile?.weightLbs || 170;
 
-      // Step 1: Claude analyzes the PHYSIQUE only (visual assessment, no target generation)
-      // /api/anthropic supports large image payloads; /api/claude caps at 250 KB
-      // Use Haiku for vision — explicitly pass model to override any ANTHROPIC_MODEL env var.
-      // Haiku has full vision capability at ~10x lower cost than Sonnet for this task.
-      const BF_RANGES = gender === 'Male'
-        ? '<8% very lean|8-12% lean|12-15% mod.lean|15-20% moderate|20-25% elevated|>25% high'
-        : '<16% very lean|16-20% lean|20-25% mod.lean|25-30% moderate|30-35% elevated|>35% high';
+      // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
+      const heightCm = Math.round(height * 2.54);
+      const weightKg = Math.round(weight * 0.4536);
 
       const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
-          system: `Physique analyst. Professional coach tone, non-judgmental. Return JSON only.
+          system: `You are a physique analysis AI. Analyze this photo using visual body composition estimation techniques.
 
-RULES: Describe visible traits only. All comparisons relative to this person's own frame. Start with strengths.
-BANNED: underdeveloped, below average, above average, lacks, lacking, weak, beginner, poor, inadequate, unfortunately
-MUSCLE (5 levels only): "not yet defined"|"early"|"moderate"|"solid"|"well-developed"
-BF (${gender==='Male'?'M':'F'}): ${BF_RANGES}. Estimate conservatively — photos make people look leaner.
-SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, not generous.`,
+IMPORTANT RULES:
+- Give body fat as a RANGE not single number (e.g. low:15, high:18)
+- Be conservative — photos consistently make people look leaner than they are
+- Flag any photo quality issues that reduce accuracy
+- Explain your reasoning for each estimate with specific visual markers
+- Do not give medical advice
+- State confidence level clearly based on photo quality and visibility
+- BANNED words: underdeveloped, below average, above average, lacks, lacking, weak, beginner, poor, inadequate, unfortunately
+- Muscle levels (use exactly): "not yet defined"|"early"|"moderate"|"solid"|"well-developed"
+- SCORES: physique 30-95 (calibrated, avg 52-65), symmetry 60-95 (avg 70-85). Be honest, not generous.`,
           messages: [{
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Physique photo. ${age}yo ${gender}, ${height}in, ${weight}lbs. Return ONLY valid JSON:
-{"bodyFatPct":0,"bodyFatRange":"","leanMass":0,"fatMass":0,"physiqueScore":0,"symmetryScore":0,"confidence":"medium","muscleGroups":{"chest":"","shoulders":"","back":"","arms":"","core":"","legs":""},"weakestGroups":[],"strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"","recommendation":"","disclaimer":"Visual AI estimate — accuracy improves with consistent lighting and pose."}` },
+              { type: 'text', text: `Person details: ${age}yo ${gender}, ${heightCm}cm (${height}in), ${weightKg}kg (${weight}lbs).
+
+Return ONLY this JSON (no markdown, no extra text):
+{"bodyFatRange":{"low":0,"high":0,"midpoint":0},"bodyFatConfidence":"medium","bodyFatReasoning":"specific visual markers that led to this range","leanMass":0,"leanMassTrend":"maintaining","physiqueScore":0,"symmetryScore":0,"symmetryDetails":"specific description of balance or imbalances","muscleGroups":{"chest":"moderate","shoulders":"moderate","back":"moderate","arms":"moderate","core":"moderate","legs":"moderate"},"weakestGroups":[],"limitingFactor":"the single most important thing holding this physique back","limitingFactorExplanation":"specific explanation with reference to their stats and what is visible","strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"2-3 sentence honest assessment referencing their specific stats","photoQualityIssues":[],"recommendation":"2-3 sentence specific recommendation referencing their weight and goal","disclaimer":"Visual AI estimate based on photo. Accuracy improves with consistent lighting and front/side pose."}` },
             ],
           }],
-          max_tokens: 800,
+          max_tokens: 1000,
         }),
       });
 
@@ -3746,29 +3802,11 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           <button className="bp" onClick={() => setResult(null)} style={{ background: C.cardElevated, border: 'none', color: C.muted, padding: '6px 14px', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Retake</button>
         </div>
 
-        {/* 1 – Phase Hero */}
-        <div className="su">
-          <SummaryCard
-            label={`Body Scan · ${fmt.date(todayStr())}`}
-            title={fmt.pct(result.bodyFatPct, 1)}
-            subtitle={`Estimated body fat → target review ${fmt.date(result.nextScanDate)}`}
-            progressPct={Math.min(100, Math.max(0, (result.physiqueScore || 0)))}
-            tone={phColor}
-            metrics={[
-              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem) },
-              { label: 'Symmetry', value: `${result.symmetryScore || '—'}/100` },
-              { label: 'Phase', value: ph.label || 'Maintain' },
-              { label: 'Score', value: `${result.physiqueScore || '—'}/100` },
-            ]}
-            insight={ph.objective || result.diagnosis}
-            nextStep={result.recommendation || 'Apply this update and execute this week’s targets.'}
-          />
-        </div>
-
-        {/* 2 – Primary Diagnosis */}
+        {/* 1 – LIMITING FACTOR (most important, shown first) */}
         {(() => {
           const diag = result.engineOutput?.diagnosis?.primary;
-          if (!diag) return null;
+          const lf   = result.limitingFactor;
+          if (!diag && !lf) return null;
           const CODE_LABELS = {
             aggressive_deficit:   'Aggressive Deficit',
             insufficient_deficit: 'Insufficient Deficit',
@@ -3779,20 +3817,26 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
             default:              'Optimization Opportunity',
           };
           const SEVERITY_COLOR = { critical: C.orange, warning: C.gold, info: C.blue };
-          const label = CODE_LABELS[diag.code] || CODE_LABELS.default;
-          const color = SEVERITY_COLOR[diag.severity] || C.muted;
-          const signals = Array.isArray(diag.supporting_signals) ? diag.supporting_signals : [];
+          const label    = diag ? (CODE_LABELS[diag.code] || CODE_LABELS.default) : lf;
+          const color    = diag ? (SEVERITY_COLOR[diag.severity] || C.muted) : C.orange;
+          const severity = diag?.severity;
+          const signals  = diag && Array.isArray(diag.supporting_signals) ? diag.supporting_signals : [];
+          const explanation = result.limitingFactorExplanation || diag?.primary_issue;
           return (
-            <Card className="su" style={{ animationDelay: '.03s', borderColor: color + '44' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <Card className="su" style={{ borderColor: color + '44' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explanation ? 12 : 0 }}>
                 <span style={{ fontSize: 18 }}>🔬</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
                 </div>
-                <span style={{ fontSize: 10, fontWeight: 700, color, background: color + '22', padding: '3px 10px', borderRadius: 99, textTransform: 'capitalize', flexShrink: 0 }}>{diag.severity}</span>
+                {severity && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color, background: color + '22', padding: '3px 10px', borderRadius: 99, textTransform: 'capitalize', flexShrink: 0 }}>{severity}</span>
+                )}
               </div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, marginBottom: signals.length ? 12 : 0 }}>{diag.primary_issue}</p>
+              {explanation && (
+                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, marginBottom: signals.length ? 12 : 0 }}>{explanation}</p>
+              )}
               {signals.length > 0 && (
                 <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 8 }}>Why this conclusion</div>
@@ -3810,34 +3854,95 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           );
         })()}
 
-        {/* 2.5 – Progress delta */}
-        <Card className="su" style={{ animationDelay: '.04s' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <span style={{ fontWeight: 700, fontSize: 15 }}>Change vs Previous Scan</span>
-            <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
-          </div>
-          {prevScan ? (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-                <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-                  <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Body Fat</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: (bfTrend || 0) <= 0 ? C.green : C.orange }}>{bfTrend > 0 ? '+' : ''}{(bfTrend || 0).toFixed(1)}%</div>
+        {/* 2 – Body fat RANGE with confidence badge */}
+        {(() => {
+          const range     = result.bodyFatRange;
+          const conf      = result.bodyFatConfidence || result.confidence || 'medium';
+          const CONF_COLOR = { high: C.green, medium: C.gold, low: C.orange };
+          const confColor  = CONF_COLOR[conf] || C.muted;
+          const display    = range?.low && range?.high
+            ? `${range.low}–${range.high}%`
+            : result.bodyFatPct ? `${result.bodyFatPct}%` : '—';
+          return (
+            <Card className="su" style={{ animationDelay: '.02s' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Body Fat · {fmt.date(todayStr())}</div>
+                  <div style={{ fontSize: 36, fontWeight: 800, lineHeight: 1 }}>{display}</div>
+                  {range?.midpoint && range?.low && range?.high && (
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Midpoint estimate: {range.midpoint}%</div>
+                  )}
                 </div>
-                <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-                  <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>Lean Mass</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: (lmTrend || 0) >= 0 ? C.green : C.orange }}>{lmTrend >= 0 ? '+' : ''}{(lmTrend || 0).toFixed(1)} lb</div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: confColor, background: confColor + '22', padding: '4px 10px', borderRadius: 99, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
+                    {conf} confidence
+                  </span>
+                  <span style={{ fontSize: 11, color: C.muted }}>Score: {result.physiqueScore ?? '—'}/100</span>
                 </div>
               </div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: 0 }}>{predictedTrajectory.note}</p>
-            </>
-          ) : (
-            <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>This is your baseline scan. Your next scan will unlock trajectory analysis.</p>
+              {conf !== 'high' && (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: confColor + '12', borderRadius: 10, border: `1px solid ${confColor}33` }}>
+                  <span style={{ fontSize: 13 }}>ℹ️</span>
+                  <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
+                    {conf === 'medium'
+                      ? 'Moderate confidence — a straight-on photo with good lighting narrows this range.'
+                      : 'Limited confidence — retake with better lighting or angle for a tighter estimate.'}
+                  </span>
+                </div>
+              )}
+            </Card>
+          );
+        })()}
+
+        {/* 3 – Phase diagnosis with reasoning */}
+        <Card className="su" style={{ animationDelay: '.03s' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
+              {PHASE_META[ph.label]?.emoji || '🎯'} {ph.label || 'Maintain'}
+            </span>
+            <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
+          </div>
+          {result.bodyFatSummary && (
+            <div style={{ marginBottom: result.muscleSummary ? 12 : 0 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Body Composition</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
+            </div>
+          )}
+          {result.muscleSummary && (
+            <div style={{ paddingTop: result.bodyFatSummary ? 10 : 0, borderTop: result.bodyFatSummary ? `1px solid ${C.border}` : 'none' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Muscle Development</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
+            </div>
+          )}
+          {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
+          )}
+          {predictedTrajectory.note && (
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{predictedTrajectory.note}</p>
           )}
         </Card>
 
-        {/* 3 – Daily Targets */}
-        <div className="su" style={{ animationDelay: '.06s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Execution Targets</div>
+        {/* 4 – ADJUST NOW (before → after targets) */}
+        <div className="su" style={{ animationDelay: '.04s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>{prevScan ? 'ADJUST NOW' : 'Your Targets'}</div>
+          {prevScan && prevScan.dailyTargets && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+              {[
+                { label: 'Calories', before: prevScan.dailyTargets.calories, after: dt.calories, unit: 'kcal', color: C.orange },
+                { label: 'Protein',  before: prevScan.dailyTargets.protein,  after: dt.protein,  unit: 'g',    color: C.blue },
+              ].map(t => (
+                <div key={t.label} style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{t.before ?? '—'}</span>
+                    <span style={{ fontSize: 11, color: C.muted }}>→</span>
+                    <span style={{ fontSize: 19, fontWeight: 700, color: t.color }}>{t.after ?? '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{t.unit}</div>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             {[
               { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
@@ -3857,27 +3962,9 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           </div>
         </div>
 
-        {/* 4 – Physique Metrics */}
-        <div className="su" style={{ animationDelay: '.09s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {[
-              { label: 'Body Fat',  value: `${result.bodyFatPct}%`,       color: C.orange },
-              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem), color: C.blue },
-              { label: 'Score',     value: `${result.physiqueScore}/100`,  color: C.green },
-              { label: 'Symmetry',  value: `${result.symmetryScore}/100`,  color: C.purple },
-            ].map(m => (
-              <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
-                <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 5 – Muscle Groups */}
-        <Card className="su" style={{ animationDelay: '.12s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Development</div>
+        {/* 5 – Muscle group assessment */}
+        <Card className="su" style={{ animationDelay: '.05s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Assessment</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {Object.entries(mg).map(([name, level]) => {
               const meta       = getMG(level);
@@ -3898,70 +3985,101 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
               );
             })}
           </div>
-        </Card>
-
-        {/* 6 – Assessment */}
-        <Card className="su" style={{ animationDelay: '.14s' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Assessment</div>
-
-          {/* Body composition summary */}
-          {result.bodyFatSummary && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Body Composition</div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
-            </div>
-          )}
-
-          {/* Muscle summary */}
-          {result.muscleSummary && (
-            <div style={{ marginBottom: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Muscle Development</div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
-            </div>
-          )}
-
-          {/* Balance */}
           {result.balanceNote && (
-            <div style={{ paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Balance</div>
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Balance</div>
               <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.balanceNote}</p>
             </div>
           )}
-
-          {/* Fallback to old diagnosis field if new fields absent */}
-          {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
-            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
-          )}
         </Card>
 
-        {/* 7 – Focus areas (replaces "Priority" badge — coach framing) */}
-        {result.priorityAreas?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.15s' }}>
-            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Focus Areas</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {result.priorityAreas.map((area, i) => (
-                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <div style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, border: `1px solid ${C.green}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
-                    <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>{i + 1}</span>
+        {/* 6 – Detailed metrics (lean mass, symmetry, score) */}
+        <div className="su" style={{ animationDelay: '.06s' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {[
+              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem), color: C.blue },
+              { label: 'Score',     value: `${result.physiqueScore ?? '—'}/100`,               color: C.green },
+              { label: 'Symmetry',  value: `${result.symmetryScore ?? '—'}/100`,               color: C.purple },
+              { label: 'Body Fat',  value: `${result.bodyFatPct ?? '—'}%`,                     color: C.orange },
+            ].map(m => (
+              <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 7 – Training focus */}
+        {(result.trainingFocus || result.priorityAreas?.length > 0) && (
+          <Card className="su" style={{ animationDelay: '.07s' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Training Focus</div>
+            {result.trainingFocus && typeof result.trainingFocus === 'string' && (
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, marginBottom: result.priorityAreas?.length ? 12 : 0 }}>{result.trainingFocus}</p>
+            )}
+            {result.priorityAreas?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {result.priorityAreas.map((area, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    <div style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, border: `1px solid ${C.green}44`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                      <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>{i + 1}</span>
+                    </div>
+                    <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{area}</p>
                   </div>
-                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{area}</p>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* 8 – Weekly missions */}
+        {result.weeklyMissions?.length > 0 && (
+          <Card className="su" style={{ animationDelay: '.08s' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Weekly Missions</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {result.weeklyMissions.slice(0, 5).map((mission, i) => (
+                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: 13, color: C.green, fontWeight: 700, flexShrink: 0, marginTop: 1 }}>{i + 1}.</span>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{mission}</p>
                 </div>
               ))}
             </div>
           </Card>
         )}
 
-        {/* 8 – Recommendation */}
-        {result.recommendation && (
-          <Card className="su" style={{ animationDelay: '.155s', background: C.greenBg, border: `1px solid ${C.greenDim}` }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: C.green }}>→ Next Move</div>
-            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.recommendation}</p>
-          </Card>
-        )}
+        {/* 9 – "How we calculate this" expandable */}
+        <div className="su" style={{ animationDelay: '.09s' }}>
+          <button className="bp" onClick={() => setShowCalcDetails(o => !o)} style={{
+            width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: showCalcDetails ? '14px 14px 0 0' : 14,
+            padding: '12px 16px', cursor: 'pointer', color: C.white, fontSize: 14, fontWeight: 600,
+          }}>
+            <span>🧮 How we calculate this</span>
+            <span style={{ color: C.muted, fontSize: 13, display: 'inline-block', transition: 'transform .2s', transform: showCalcDetails ? 'rotate(180deg)' : 'none' }}>▾</span>
+          </button>
+          {showCalcDetails && (
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderTop: 'none', borderRadius: '0 0 14px 14px', padding: '14px 16px' }}>
+              {[
+                { label: 'Body Fat %',     desc: 'AI visual estimate from your photo using muscle separation, skin fold appearance, and vascularity cues. Comparable to the skinfold method ±3–4%.' },
+                { label: 'Lean Mass',      desc: 'Calculated as total body weight minus estimated fat mass, expressed in lbs.' },
+                { label: 'Symmetry Score', desc: 'Rates left/right balance of visible muscle groups — chest, arms, shoulders, and lats — on a 0–100 scale.' },
+                { label: 'Physique Score', desc: 'Composite of body fat level, lean mass development, and symmetry, weighted for your current phase goal.' },
+                { label: 'Calorie target', desc: `TDEE from your profile (weight, height, activity) with a phase-appropriate offset: ${ph.label === 'Cut' ? '−300–500 kcal deficit' : ph.label === 'Bulk' ? '+200–300 kcal surplus' : 'maintenance range'}.` },
+                { label: 'Protein target', desc: 'Set at 2.2–2.4 g per kg of lean body mass to maximise muscle retention during a cut or support growth in a bulk.' },
+              ].map(item => (
+                <div key={item.label} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 3 }}>{item.label}</div>
+                  <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, margin: 0 }}>{item.desc}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Asymmetries — shown only when flagged */}
         {result.asymmetries?.length > 0 && (
-          <Card className="su" style={{ animationDelay: '.16s', background: `${C.gold}12`, border: `1px solid ${C.gold}33` }}>
+          <Card className="su" style={{ animationDelay: '.10s', background: `${C.gold}12`, border: `1px solid ${C.gold}33` }}>
             <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold, fontSize: 13 }}>Balance note</div>
             <ul style={{ paddingLeft: 18, margin: 0 }}>
               {result.asymmetries.map((a, i) => <li key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{a}</li>)}
@@ -3969,36 +4087,9 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           </Card>
         )}
 
-        {/* Confidence indicator */}
-        {result.confidence && result.confidence !== 'high' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: `1px solid ${C.border}` }}>
-            <span style={{ fontSize: 14 }}>ℹ️</span>
-            <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
-              {result.confidence === 'medium'
-                ? 'Assessment confidence: moderate — a clearer, straight-on photo will improve accuracy.'
-                : 'Assessment confidence: limited — photo lighting or angle reduced precision. Retake for better results.'}
-            </span>
-          </div>
-        )}
-
-        {/* 9 – Milestones strip */}
-        <div className="su" style={{ animationDelay: '.17s', display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-          {[
-            { w: 'W3',  label: 'Baseline set' },
-            { w: 'W6',  label: 'Habits established' },
-            { w: 'W9',  label: 'Check-in' },
-            { w: 'W12', label: 'Final scan' },
-          ].map((m, i) => (
-            <div key={m.w} style={{ flexShrink: 0, background: i === 0 ? C.greenBg : C.cardElevated, border: `1px solid ${i === 0 ? C.green : C.border}`, borderRadius: 12, padding: '10px 14px', textAlign: 'center', minWidth: 90 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: i === 0 ? C.green : C.dimmed }}>{m.w}</div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{m.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* 10 – Apply button */}
+        {/* 10 – Apply This Plan → */}
         <Btn onClick={applyPlan} style={{ width: '100%', marginTop: 4 }}>Apply This Plan →</Btn>
-        <Card className="su" style={{ animationDelay: '.171s' }}>
+        <Card className="su" style={{ animationDelay: '.11s' }}>
           <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Next decision</div>
           <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: 0 }}>{nextDecision}</p>
         </Card>
@@ -4006,7 +4097,6 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           <button className="bp" onClick={() => setResult(null)} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 14, cursor: 'pointer' }}>Retake Scan</button>
         </div>
 
-        {/* Disclaimer */}
         {result.disclaimer && (
           <p style={{ fontSize: 11, color: C.dimmed, textAlign: 'center', lineHeight: 1.6, padding: '0 8px' }}>{result.disclaimer}</p>
         )}
@@ -4426,7 +4516,7 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
+        if (mounted) setAuthError("We couldn't finish syncing your account. Please try again.");
       } finally {
         if (mounted) setReady(true);
       }
@@ -4452,7 +4542,7 @@ export default function MassIQ() {
       }
     } catch (err) {
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      showToast('We couldn’t finish syncing your account. Please try again.');
+      showToast("We couldn't finish syncing your account. Please try again.");
     } finally {
       setSyncing(false);
     }
