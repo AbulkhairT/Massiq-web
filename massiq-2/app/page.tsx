@@ -477,8 +477,8 @@ export default function LandingPage() {
       <div className="proof-strip">
         <div className="proof-inner">
           {[
-            { stat: 'Private Beta',     sub: 'Early access only'               },
-            { stat: 'AI-Powered',       sub: 'Claude Sonnet model'             },
+            { stat: 'Public Beta',      sub: 'Free early access'               },
+            { stat: 'AI-Powered',       sub: 'Vision + physiology engine'      },
             { stat: 'Body Scan + Plan', sub: 'Full system, not just tracking'  },
           ].map((p, i) => (
             <>
@@ -864,14 +864,15 @@ export default function LandingPage() {
               borderRadius: 99, padding: '5px 14px', marginBottom: 24,
             }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
-              <span style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>Private Beta</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>Public Beta</span>
             </div>
             <h2 style={{ fontSize: 26, fontWeight: 800, color: C.white, marginBottom: 16, lineHeight: 1.3 }}>
               Built for people who are serious<br />about changing their physique.
             </h2>
             <p style={{ fontSize: 15, color: C.muted, lineHeight: 1.7, maxWidth: 520, margin: '0 auto 28px' }}>
-              MassIQ is in private beta. We&apos;re iterating with a small group of
-              physique-focused athletes. Early access is free. The feedback loop is real.
+              MassIQ is in public beta. Physique analysis uses AI vision and established
+              physiological formulas — results are as accurate as current technology allows,
+              but individual variation means estimates may not be exact. Early access is free.
             </p>
             <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap' }}>
               {['No fake transformations', 'No generic plans', 'No guesswork'].map(point => (
@@ -913,7 +914,10 @@ export default function LandingPage() {
               <a href="/app" className="btn-primary" style={{ fontSize: 16, padding: '18px 40px' }}>
                 Run Your First Scan →
               </a>
-              <div style={{ fontSize: 13, color: C.dim }}>Free to start · No credit card · Private</div>
+              <div style={{ fontSize: 13, color: C.dim }}>Free to start · No credit card · Public Beta</div>
+              <div style={{ fontSize: 11, color: C.dim, maxWidth: 360, lineHeight: 1.6, textAlign: 'center', marginTop: 4 }}>
+                Results are as accurate as current AI technology allows. Body composition estimates may vary. Always consult a qualified professional for medical decisions.
+              </div>
             </div>
           </div>
         </div>

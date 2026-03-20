@@ -91,6 +91,7 @@ function serializeProfile(userId, profile) {
   const activityKey = String(profile?.activity || profile?.activity_level || '').trim().toLowerCase();
   return {
     id: userId,
+    name: String(profile?.name || '').trim() || null,
     age: toNumber(profile?.age),
     weight: normalizedWeightKg ? Number(normalizedWeightKg.toFixed(3)) : null,
     height: normalizedHeightCm ? Number(normalizedHeightCm.toFixed(2)) : null,
@@ -99,6 +100,11 @@ function serializeProfile(userId, profile) {
     activity_level: activityMap[activityKey] || null,
     unit_system: profile?.unitSystem === 'metric' ? 'metric' : 'imperial',
   };
+}
+
+function isMissingNameColumnError(err) {
+  const raw = String(err?.message || '').toLowerCase();
+  return raw.includes('name') && raw.includes('profiles') && (raw.includes('column') || raw.includes('schema cache'));
 }
 
 function isMissingUnitSystemColumnError(err) {
@@ -119,7 +125,7 @@ function deserializeProfile(row) {
   };
   return {
     id: row.id,
-    name: '',
+    name: String(row.name || '').trim(),
     age: toNumber(row.age, null),
     weightLbs,
     weightKg,
@@ -270,9 +276,11 @@ export async function upsertProfile(token, userId, profile) {
       body: JSON.stringify(row),
     });
   } catch (err) {
-    if (!isMissingUnitSystemColumnError(err)) throw err;
+    if (!isMissingUnitSystemColumnError(err) && !isMissingNameColumnError(err)) throw err;
+    // Fallback: remove columns that may not exist in the schema yet
     const fallbackRow = { ...row };
     delete fallbackRow.unit_system;
+    delete fallbackRow.name;
     return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
       method: 'POST',
       headers: {
@@ -286,13 +294,14 @@ export async function upsertProfile(token, userId, profile) {
 
 export async function getProfile(token, userId) {
   try {
-    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
+    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,name,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
       method: 'GET',
       headers: authHeaders(token),
     });
     return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
   } catch (err) {
-    if (!isMissingUnitSystemColumnError(err)) throw err;
+    if (!isMissingUnitSystemColumnError(err) && !isMissingNameColumnError(err)) throw err;
+    // Fallback: select without columns that may not exist yet
     const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
       method: 'GET',
       headers: authHeaders(token),

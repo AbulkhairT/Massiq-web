@@ -417,6 +417,7 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
     fat,
     description: meal.description || '',
     whyNow: meal.whyNow || 'Matched to your remaining calorie and protein budget.',
+    ...(meal.photoThumb ? { photoThumb: meal.photoThumb } : {}),
   };
 }
 
@@ -1549,6 +1550,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
   const [comment, setComment] = useState('');
   const [category, setCategory] = useState('Lunch');
   const [error, setError] = useState('');
+  const [photoThumb, setPhotoThumb] = useState(null);
   const fileRef = useRef(null);
 
   const setField = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -1587,7 +1589,24 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
     reader.onerror = () => { setError('Could not read image file.'); setAnalyzing(false); };
     reader.onload = async (e) => {
       try {
-        const base64 = e.target.result.split(',')[1];
+        // Generate small thumbnail for display in meal history
+        const dataUrl = e.target.result;
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const SIZE = 56;
+            const canvas = document.createElement('canvas');
+            canvas.width = SIZE; canvas.height = SIZE;
+            const ctx = canvas.getContext('2d');
+            const side = Math.min(img.naturalWidth, img.naturalHeight);
+            const sx = (img.naturalWidth - side) / 2;
+            const sy = (img.naturalHeight - side) / 2;
+            ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
+            setPhotoThumb(canvas.toDataURL('image/jpeg', 0.6));
+          } catch { /* thumbnail generation is optional */ }
+        };
+        img.src = dataUrl;
+        const base64 = dataUrl.split(',')[1];
         const res = await fetch('/api/claude', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1632,6 +1651,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
       protein: Number(form.protein) || 0,
       carbs: Number(form.carbs) || 0,
       fat: Number(form.fat) || 0,
+      photoThumb: photoThumb || undefined,
     };
     const safeMeal = sanitizeMeal(meal, macros, profile);
     LS.set(LS_KEYS.meals(today), [...meals, safeMeal]);
@@ -1798,7 +1818,7 @@ function CountdownTimer({ seconds, onComplete }) {
 }
 
 /* ─── Exercise Card ──────────────────────────────────────────────────────── */
-function ExerciseCard({ ex, exIdx, completedSets, onToggleSet }) {
+function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onWeightChange }) {
   const [showTips, setShowTips] = useState(false);
   const sets = ex.sets || 3;
   const doneSets = Array.from({ length: sets }).filter((_, si) => completedSets[`${exIdx}-${si}`]).length;
@@ -1840,6 +1860,25 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet }) {
           );
         })}
       </div>
+      {/* Weight logger */}
+      {onWeightChange && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <span style={{ fontSize: 11, color: C.dimmed, whiteSpace: 'nowrap' }}>⚖️ Weight used</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            placeholder={ex.weight || 'e.g. 60kg'}
+            value={loggedWeight || ''}
+            onChange={e => onWeightChange(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            style={{
+              flex: 1, background: C.cardElevated, border: `1px solid ${C.border}`,
+              borderRadius: 8, padding: '5px 9px', fontSize: 12, color: C.white,
+              outline: 'none',
+            }}
+          />
+        </div>
+      )}
       {ex.technique && (
         <>
           <button className="bp" onClick={() => setShowTips(s => !s)} style={{
@@ -1999,6 +2038,8 @@ function WorkoutModal({ workout, onClose, onFinish }) {
   const [completedSets, setCompletedSets] = useState({});
   const [restTimer, setRestTimer] = useState(null);
   const [showWarmup, setShowWarmup] = useState(false);
+  // loggedWeights: { [exIdx]: string } — one weight entry per exercise
+  const [loggedWeights, setLoggedWeights] = useState({});
 
   const parseRestSecs = (s) => {
     if (!s) return 0;
@@ -2092,7 +2133,12 @@ function WorkoutModal({ workout, onClose, onFinish }) {
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
             {(workout.exercises || []).map((ex, exIdx) => (
-              <ExerciseCard key={exIdx} ex={ex} exIdx={exIdx} completedSets={completedSets} onToggleSet={handleToggleSet} />
+              <ExerciseCard
+                key={exIdx} ex={ex} exIdx={exIdx}
+                completedSets={completedSets} onToggleSet={handleToggleSet}
+                loggedWeight={loggedWeights[exIdx] || ''}
+                onWeightChange={(w) => setLoggedWeights(p => ({ ...p, [exIdx]: w }))}
+              />
             ))}
           </div>
           {workout.cooldown && (
@@ -2100,7 +2146,24 @@ function WorkoutModal({ workout, onClose, onFinish }) {
               ❄️ <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
             </div>
           )}
-          <Btn onClick={() => { onFinish?.(); onClose(); }} style={{ width: '100%' }}>
+          <Btn onClick={() => {
+            // Save workout log to localStorage
+            const dateKey = todayStr();
+            const log = {
+              date: dateKey,
+              workoutType: workout.workoutType,
+              exercises: (workout.exercises || []).map((ex, i) => ({
+                name: ex.name,
+                sets: ex.sets || 3,
+                reps: ex.reps,
+                weight: loggedWeights[i] || null,
+                setsCompleted: Array.from({ length: ex.sets || 3 }).filter((_, si) => completedSets[`${i}-${si}`]).length,
+              })),
+              completedPct: pct,
+            };
+            LS.set(`massiq:workout:${dateKey}`, log);
+            onFinish?.(); onClose();
+          }} style={{ width: '100%' }}>
             {pct === 100 ? '🏆 Workout Complete!' : `Finish Workout (${pct}% done)`}
           </Btn>
         </div>
@@ -2115,6 +2178,7 @@ function TodayWorkoutCard() {
   const workoutPlan = LS.get(LS_KEYS.workoutplan, null);
   const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
   const todayWorkout = Array.isArray(workoutPlan) ? workoutPlan.find(w => w.day === dayName) : null;
+  const todayLog = LS.get(`massiq:workout:${todayStr()}`, null);
 
   if (!todayWorkout) return null;
 
@@ -2157,9 +2221,14 @@ function TodayWorkoutCard() {
               ))}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 20, padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.muted }}>
-            {exCount > 0 && <span>🏋️ {exCount} exercises</span>}
-            {todayWorkout.duration && <span>⏱ {todayWorkout.duration}</span>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.muted }}>
+            <span style={{ display: 'flex', gap: 16 }}>
+              {exCount > 0 && <span>🏋️ {exCount} exercises</span>}
+              {todayWorkout.duration && <span>⏱ {todayWorkout.duration}</span>}
+            </span>
+            {todayLog && (
+              <span style={{ color: C.green, fontWeight: 650 }}>✓ Logged {todayLog.completedPct}%</span>
+            )}
           </div>
         </Card>
       </div>
@@ -2344,12 +2413,17 @@ function NutritionTab({ profile, activePlan, showToast }) {
                 background: C.card, borderRadius: 14, padding: '12px 14px',
                 border: `1px solid ${C.border}`, cursor: 'pointer',
               }}>
-                {/* Icon */}
+                {/* Icon / Thumbnail */}
                 <div style={{
                   width: 40, height: 40, borderRadius: 10,
                   background: C.greenBg, border: `1px solid ${C.greenDim}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
-                }}>🍽️</div>
+                  overflow: 'hidden',
+                }}>
+                  {m.photoThumb
+                    ? <img src={m.photoThumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    : '🍽️'}
+                </div>
                 {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 600, color: C.white, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
@@ -3187,11 +3261,57 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
-  const updateReminder = (key, patch) => {
+  const updateReminder = async (key, patch) => {
     const next = { ...reminders, [key]: { ...reminders[key], ...patch } };
+    // If turning on, request notification permission
+    if (patch.enabled && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      const perm = await Notification.requestPermission().catch(() => 'denied');
+      if (perm !== 'granted') {
+        showToast('Enable browser notifications in your settings to receive reminders.');
+      }
+    }
     setReminders(next);
     LS.set(LS_KEYS.reminders, next);
   };
+
+  // Schedule reminders: check every minute if a notification should fire
+  useEffect(() => {
+    if (typeof Notification === 'undefined') return;
+    const check = () => {
+      if (Notification.permission !== 'granted') return;
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const stored = LS.get(LS_KEYS.reminders, {});
+      const LABELS = {
+        workout: 'Workout Window', cardio: 'Cardio Session',
+        protein: 'Protein Check', hydration: 'Hydration', checkpoint: 'Scan Checkpoint',
+      };
+      const BODIES = {
+        workout: 'Your workout window starts soon. Time to train.',
+        cardio: 'Cardio session scheduled for today.',
+        protein: 'Check your protein intake — stay on target.',
+        hydration: 'Hydration check-in. Hit your water target.',
+        checkpoint: 'Review your progress checkpoint.',
+      };
+      const firedKey = `massiq:notif:fired:${todayStr()}`;
+      const fired = LS.get(firedKey, {});
+      Object.entries(stored).forEach(([key, cfg]) => {
+        if (cfg?.enabled && cfg?.time === hhmm && !fired[key]) {
+          try {
+            new Notification(`MassIQ — ${LABELS[key] || key}`, {
+              body: BODIES[key] || '',
+              icon: '/favicon.ico',
+              silent: false,
+            });
+            LS.set(firedKey, { ...fired, [key]: true });
+          } catch {}
+        }
+      });
+    };
+    check();
+    const interval = setInterval(check, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="screen">
@@ -3368,7 +3488,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {[
-            ['Name',     profile?.name],
+            ['Name',     profile?.name || 'Not set'],
             ['Age',      profile?.age ? `${profile.age} years` : '—'],
             ['Weight',   profile?.weightLbs ? fmt.weight(profile.weightLbs, profile?.unitSystem) : '—'],
             ['Height',   profile?.heightCm  ? fmt.height(profile.heightCm, profile?.unitSystem)  : '—'],
@@ -3413,7 +3533,23 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
 
       {/* 5 ── Reminder Preferences ── */}
       <Card className="su" style={{ animationDelay: '.14s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Reminder Preferences</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>Reminder Preferences</div>
+          {typeof Notification !== 'undefined' && Notification.permission !== 'granted' && (
+            <button className="bp" onClick={async () => {
+              const p = await Notification.requestPermission().catch(() => 'denied');
+              if (p !== 'granted') showToast('Notifications blocked — enable them in browser settings.');
+              else showToast('Notifications enabled!');
+            }} style={{ fontSize: 11, fontWeight: 650, borderRadius: 999, padding: '4px 10px', border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, cursor: 'pointer' }}>
+              Enable notifications
+            </button>
+          )}
+        </div>
+        {typeof Notification !== 'undefined' && Notification.permission === 'denied' && (
+          <div style={{ fontSize: 12, color: C.gold, marginBottom: 10, padding: '8px 10px', background: 'rgba(255,214,10,0.08)', borderRadius: 8, border: '1px solid rgba(255,214,10,0.2)' }}>
+            Notifications are blocked. Go to your browser settings to allow them.
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {[
             ['workout', 'Workout Window', 'Workout window starts in 30 minutes.'],
@@ -4235,7 +4371,7 @@ function Sidebar({ active, setTab, profile }) {
       {/* User footer */}
       {profile && (
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Athlete'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
             {goalEmoji} {profile.goal}
           </div>
@@ -4338,6 +4474,12 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          // Restore name from localStorage if DB doesn't have it yet
+          // (name column may not exist on older DB schemas)
+          if (loadedProfile && !loadedProfile.name) {
+            const cached = LS.get(LS_KEYS.profile, null);
+            if (cached?.name) loadedProfile = { ...loadedProfile, name: cached.name };
+          }
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
