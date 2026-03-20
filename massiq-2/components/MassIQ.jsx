@@ -2561,6 +2561,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const macros      = getActiveTargets(activePlan, profile);
   const phase       = activePlan.phase  || profile?.goal || 'Maintain';
   const phaseColor  = PHASE_COLORS[phase] || C.green;
+  const today        = new Date().toISOString().slice(0, 10);
   const week        = activePlan.startDate
     ? Math.min(12, Math.max(1, Math.floor(daysBetween(activePlan.startDate, today) / 7) + 1))
     : (activePlan.week || 1);
@@ -2575,11 +2576,10 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const objective   = activePlan.objective || `Optimize body composition through targeted ${phase.toLowerCase()} protocols.`;
   const whyItWorks  = activePlan.whyThisWorks || `This plan is calibrated to your current body composition and metabolic rate. By combining your calorie target with structured training, your body will prioritize the right adaptations each week.`;
 
-  const startDate    = activePlan.startDate   || new Date().toISOString().slice(0, 10);
+  const startDate    = activePlan.startDate   || today;
   const nextScanDate = activePlan.nextScanDate || (() => {
     const d = new Date(startDate); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10);
   })();
-  const today        = new Date().toISOString().slice(0, 10);
   const totalDays    = daysBetween(startDate, nextScanDate) || 84;
   const elapsed      = Math.max(0, daysBetween(startDate, today));
   const daysLeft     = Math.max(0, daysBetween(today, nextScanDate));
