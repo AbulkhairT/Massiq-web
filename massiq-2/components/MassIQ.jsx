@@ -6,6 +6,7 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
+  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -4071,6 +4072,7 @@ function Sidebar({ active, setTab, profile }) {
 /* ─── Root App ───────────────────────────────────────────────────────────── */
 export default function MassIQ() {
   const [session,    setSession]    = useState(null);
+  const [authState,  setAuthState]  = useState('logged_out'); // logged_out | logging_in | authenticated | session_invalid
   const [authReady,  setAuthReady]  = useState(false);
   const [authBusy,   setAuthBusy]   = useState(false);
   const [authError,  setAuthError]  = useState('');
@@ -4082,6 +4084,9 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const clearAppLocalState = () => {
+    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -4089,10 +4094,28 @@ export default function MassIQ() {
       try {
         const s = await initializeSession();
         if (!mounted) return;
-        setSession(s);
+        if (!s?.access_token) {
+          setSession(null);
+          setAuthState('logged_out');
+          return;
+        }
+        try {
+          const user = await fetchUser(s.access_token);
+          if (!user?.id) throw new Error('Session user missing');
+          setSession({ ...s, user });
+          setAuthState('authenticated');
+        } catch (sessionErr) {
+          console.error('Session validation failed:', sessionErr);
+          try { await signOutSession(s.access_token); } catch {}
+          clearAppLocalState();
+          setSession(null);
+          setAuthState('session_invalid');
+          setAuthError('Your previous session expired. Please sign in again.');
+        }
       } catch (err) {
         if (!mounted) return;
         setAuthError(err.message || 'Could not restore session.');
+        setAuthState('session_invalid');
       } finally {
         if (mounted) setAuthReady(true);
       }
@@ -4106,6 +4129,7 @@ export default function MassIQ() {
     if (!session?.access_token) {
       setProfile(null);
       setActivePlan(null);
+      clearAppLocalState();
       setReady(true);
       return;
     }
@@ -4129,6 +4153,9 @@ export default function MassIQ() {
         } catch (profileErr) {
           console.error('sync:getProfile failed', profileErr);
           throw profileErr;
+        }
+        if (loadedProfile && loadedProfile.id !== userId) {
+          throw new Error('Profile/user mismatch detected.');
         }
         if (!loadedProfile) {
           if (mounted) {
@@ -4172,6 +4199,7 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          setAuthState('authenticated');
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
@@ -4181,7 +4209,15 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
+        if (mounted) {
+          try { await signOutSession(session?.access_token); } catch {}
+          clearAppLocalState();
+          setSession(null);
+          setProfile(null);
+          setActivePlan(null);
+          setAuthState('session_invalid');
+          setAuthError('Session invalid. Please sign in again.');
+        }
       } finally {
         if (mounted) setReady(true);
       }
@@ -4254,19 +4290,43 @@ export default function MassIQ() {
     };
 
     setAuthBusy(true);
+    setAuthState('logging_in');
     setAuthError('');
     setAuthNotice('');
     try {
+      if (mode === 'signin') {
+        const prior = session?.access_token || getStoredSession()?.access_token;
+        if (prior) {
+          try { await signOutSession(prior); } catch (err) { console.warn('Pre-login signout failed:', err); }
+        }
+      }
       const res = mode === 'signup'
         ? await signUpWithPassword(normalizedEmail, userPassword)
         : await signInWithPassword(normalizedEmail, userPassword);
       if (!res?.access_token) {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
+        setAuthState('logged_out');
         return;
       }
-      setSession(res);
+      const freshUser = await fetchUser(res.access_token);
+      if (!freshUser?.id) {
+        throw new Error('No authenticated user returned from Supabase.');
+      }
+      if (mode === 'signin' && String(freshUser.email || '').toLowerCase() !== normalizedEmail) {
+        throw new Error('Authenticated user does not match requested credentials.');
+      }
+      clearAppLocalState();
+      setSession({ ...res, user: freshUser });
+      setAuthState('authenticated');
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
+      try {
+        const current = session?.access_token || getStoredSession()?.access_token;
+        if (current) await signOutSession(current);
+      } catch {}
+      clearAppLocalState();
+      setSession(null);
+      setAuthState('logged_out');
     } finally {
       setAuthBusy(false);
     }
@@ -4281,13 +4341,14 @@ export default function MassIQ() {
     setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setAuthState('logged_out');
     setEditing(false);
     setReady(true);
-    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    clearAppLocalState();
   };
 
   const handleReset = () => {
-    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    clearAppLocalState();
     setProfile(null); setActivePlan(null); setTab('home'); setEditing(false);
   };
 
@@ -4328,7 +4389,7 @@ export default function MassIQ() {
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   if (!session?.access_token) {
-    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
+    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy || authState === 'logging_in'} error={authError} notice={authNotice} />;
   }
 
   const profileComplete = profile
