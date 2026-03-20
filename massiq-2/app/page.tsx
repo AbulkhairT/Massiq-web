@@ -363,22 +363,22 @@ const STEPS = [
   {
     n: '01', label: 'Scan',
     title: 'Upload a physique photo',
-    body: 'AI estimates body fat %, lean mass, muscle group development, symmetry score, and key imbalances — from a single photo.',
+    body: 'AI reviews your photo and profile details to estimate body-composition ranges (body-fat %, lean mass trend, and symmetry signals). Results are confidence-based estimates, not medical diagnostics.',
   },
   {
     n: '02', label: 'Diagnose',
     title: 'Get a precise reading',
-    body: 'MassIQ identifies your limiting factor — whether that\'s too much fat, not enough lean mass, or a phase mismatch — and names it clearly.',
+    body: 'MassIQ highlights your most likely limiting factor (fat-loss rate, lean-mass risk, or phase mismatch) and explains why that conclusion was selected.',
   },
   {
     n: '03', label: 'Execute',
     title: 'Run your exact plan',
-    body: 'A 12-week program with specific calorie targets, protein targets, training focus, sleep, steps, and weekly missions tailored to your scan.',
+    body: 'Get a structured 12-week plan with calorie and protein targets, training priorities, sleep guidance, step goals, and weekly checkpoints tailored to your current data.',
   },
   {
     n: '04', label: 'Adapt',
     title: 'Scan again. Update everything.',
-    body: 'Every scan refreshes your diagnosis and regenerates your plan. As your body changes, your system stays current.',
+    body: 'Each new scan and check-in updates your estimates and recommendations so your plan stays aligned with measurable progress over time.',
   },
 ];
 
@@ -613,6 +613,9 @@ export default function LandingPage() {
           <div className="fu" style={{ marginBottom: 56, maxWidth: 520 }}>
             <Lbl>The System</Lbl>
             <h2 className="sec-h2">Scan. Diagnose. Execute. Adapt.</h2>
+            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginTop: 14 }}>
+              Built for practical coaching decisions: conservative estimates, transparent reasoning, and updates based on your latest check-ins.
+            </p>
           </div>
 
           {/* ── Mobile: vertical list ── */}
