@@ -3175,7 +3175,8 @@ const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platin
 /* Simple SVG line chart — physique score over scans */
 function PhysiqueChart({ scans }) {
   if (!scans || scans.length < 2) return null;
-  const scores = scans.map(s => s.physiqueScore || 50);
+  const sorted = [...scans].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const scores = sorted.map(s => s.physiqueScore || 50);
   const minS = Math.min(...scores) - 5;
   const maxS = Math.max(...scores) + 5;
   const W = 300, H = 72;
@@ -3249,8 +3250,10 @@ function AIPatterns({ profile, activePlan }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast }) {
-  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast, onUpdateUnits }) {
+  const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
+  // Always display in chronological order (oldest first)
+  const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
   const [confirmReset, setConfirmReset] = useState(false);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -3361,22 +3364,31 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                 {lmDelta !== null && `, ${Number(lmDelta) >= 0 ? '+' : ''}${lmDelta} lbs lean mass`}
               </div>
             )}
-            {/* Horizontal scroll of scan cards */}
+            {/* Horizontal scroll of scan cards — oldest left, newest right */}
             <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 8, marginBottom: 14 }}>
               {scanHistory.map((s, i) => {
                 const prev = scanHistory[i - 1];
-                const improving = prev ? s.physiqueScore >= prev.physiqueScore : true;
+                const bfΔ = prev ? Number((s.bodyFat || 0) - (prev.bodyFat || 0)) : null;
+                const lmΔ = prev ? Number((s.leanMass || 0) - (prev.leanMass || 0)) : null;
+                const scoreΔ = prev ? (s.physiqueScore || 0) - (prev.physiqueScore || 0) : null;
                 return (
-                  <div key={i} style={{ flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 120, border: `1px solid ${C.border}` }}>
-                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 6 }}>{s.date ? fmt.date(s.date) : `Scan ${i + 1}`}</div>
-                    <div style={{ fontSize: 18, fontWeight: 700, color: C.white }}>{s.physiqueScore || '—'}</div>
-                    <div style={{ fontSize: 10, color: C.muted }}>score</div>
-                    <div style={{ fontSize: 12, color: C.green, marginTop: 4 }}>{s.bodyFat}% BF</div>
-                    {i > 0 && (
-                      <div style={{ fontSize: 11, color: improving ? C.green : C.red, marginTop: 2 }}>
-                        {improving ? '↑' : '↓'} {Math.abs((s.physiqueScore || 0) - (prev.physiqueScore || 0))} pts
+                  <div key={i} style={{ flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 136, border: `1px solid ${s.isBaseline ? C.purple + '44' : C.border}` }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, color: C.muted }}>{s.date ? fmt.date(s.date) : `Scan ${i + 1}`}</div>
+                      {s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Base</span>}
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{s.physiqueScore || '—'}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
+                    <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ color: C.muted }}>
+                        BF: <span style={{ fontWeight: 600, color: C.white }}>{s.bodyFat}%</span>
+                        {bfΔ !== null && <span style={{ color: bfΔ <= 0 ? C.green : C.red }}> ({bfΔ > 0 ? '+' : ''}{bfΔ.toFixed(1)}%)</span>}
                       </div>
-                    )}
+                      <div style={{ color: C.muted }}>
+                        LM: <span style={{ fontWeight: 600, color: C.white }}>{fmt.leanMass(s.leanMass || 0, profile?.unitSystem)}</span>
+                        {lmΔ !== null && <span style={{ color: lmΔ >= 0 ? C.green : C.red }}> ({lmΔ >= 0 ? '+' : ''}{lmΔ.toFixed(1)})</span>}
+                      </div>
+                    </div>
                   </div>
                 );
               })}
@@ -3409,14 +3421,23 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
             </p>
           </div>
         </div>
-        {[
-          { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
-            value: `${bf}%`,         color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
-          { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
-            value: `${leanKg} kg`,   color: C.blue },
-          { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
-            value: `${fatMassLbs} lbs`, color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
-        ].map(row => (
+        {(() => {
+          const useMetric = profile?.unitSystem === 'metric';
+          const leanMassDisplay = useMetric
+            ? `${leanKg} kg`
+            : `${lastScan?.leanMass ? Number(lastScan.leanMass).toFixed(1) : Math.round(leanKg * 2.2046)} lbs`;
+          const fatMassDisplay = useMetric
+            ? `${(fatMassLbs * 0.453592).toFixed(1)} kg`
+            : `${fatMassLbs} lbs`;
+          return [
+            { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
+              value: `${bf}%`,           color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
+            { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
+              value: leanMassDisplay,    color: C.blue },
+            { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
+              value: fatMassDisplay,     color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
+          ];
+        })().map(row => (
           <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
             <div style={{ flex: 1 }}>
@@ -3476,6 +3497,30 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                 {profile.cuisines.map(c => (
                   <span key={c} style={{ fontSize: 12, color: C.muted, background: C.cardElevated, padding: '4px 10px', borderRadius: 99, border: `1px solid ${C.border}` }}>{c}</span>
                 ))}
+              </div>
+            </div>
+          )}
+          {/* Units toggle */}
+          {onUpdateUnits && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 14 }}>
+              <span style={{ fontSize: 13, color: C.muted }}>Units</span>
+              <div style={{ display: 'flex', background: C.cardElevated, borderRadius: 99, padding: 3, gap: 2, border: `1px solid ${C.border}` }}>
+                {[{ key: 'imperial', label: 'Imperial (lbs)' }, { key: 'metric', label: 'Metric (kg)' }].map(u => {
+                  const active = (profile?.unitSystem || 'imperial') === u.key;
+                  return (
+                    <button
+                      key={u.key}
+                      onClick={() => onUpdateUnits(u.key)}
+                      style={{
+                        fontSize: 12, fontWeight: active ? 700 : 500,
+                        padding: '5px 12px', borderRadius: 99, border: 'none', cursor: 'pointer',
+                        background: active ? C.green : 'transparent',
+                        color: active ? '#000' : C.muted,
+                        transition: 'all .18s',
+                      }}
+                    >{u.label}</button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -3570,16 +3615,55 @@ const MG_META = {
 };
 const getMG = (level) => MG_META[level?.toLowerCase?.() ?? ''] ?? MG_META['moderate'];
 
+/* Validates a new scan against the previous one to catch outlier estimates */
+function validateScanConsistency(newScan, prevScan, daysBetween) {
+  if (!prevScan) return [];
+  const days = Math.max(1, daysBetween);
+  const issues = [];
+  // ~0.5% BF / week max realistic change, floor 2%
+  const maxBFChange = Math.max(2, days / 14);
+  const bfChange = Math.abs((newScan.bodyFatPct || 0) - (prevScan.bodyFat || 0));
+  if (bfChange > maxBFChange) {
+    issues.push({
+      metric: 'bodyFat',
+      message: `Body fat changed ${bfChange.toFixed(1)}% since your last scan (${days} days ago). Maximum realistic change over this period is ~${maxBFChange.toFixed(1)}%. This likely reflects lighting or angle differences, not real change.`,
+      severity: 'warning',
+    });
+  }
+  // ~0.5 lb lean mass / week max, floor 3 lbs
+  const maxLMChange = Math.max(3, days / 7);
+  const lmChange = Math.abs((newScan.leanMass || 0) - (prevScan.leanMass || 0));
+  if (lmChange > maxLMChange) {
+    issues.push({
+      metric: 'leanMass',
+      message: `Lean mass changed ${lmChange.toFixed(1)} lbs since your last scan. Maximum realistic change is ~${maxLMChange.toFixed(0)} lbs. This is likely estimation variance, not real change.`,
+      severity: 'warning',
+    });
+  }
+  // Large score drop is almost always a photo quality issue
+  const scoreChange = (newScan.physiqueScore || 0) - (prevScan.physiqueScore || 0);
+  if (scoreChange < -15) {
+    issues.push({
+      metric: 'score',
+      message: `Score dropped ${Math.abs(scoreChange)} points. Drops this large are typically caused by photo angle or lighting differences, not actual physique change.`,
+      severity: 'warning',
+    });
+  }
+  return issues;
+}
+
 function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
-  const [scanning,  setScanning]  = useState(false);
-  const [result,    setResult]    = useState(null);
-  const [error,     setError]     = useState('');
-  const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
-  const [viewOld,   setViewOld]   = useState(null); // index of old scan being viewed
-  const [showCalcDetails, setShowCalcDetails] = useState(false); // "How we calculate this" toggle
+  const [scanning,          setScanning]          = useState(false);
+  const [result,            setResult]            = useState(null);
+  const [error,             setError]             = useState('');
+  const [scanHistory,       setScanHistory]       = useState(() => LS.get(LS_KEYS.scanHistory, []));
+  const [viewOld,           setViewOld]           = useState(null);
+  const [showCalcDetails,   setShowCalcDetails]   = useState(false);
+  const [consistencyWarnings, setConsistencyWarnings] = useState([]);
+  const [warningsAccepted,  setWarningsAccepted]  = useState(false);
 
   const handleFile = (file) => {
     if (!file) return;
@@ -3618,17 +3702,31 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   };
 
   const runScan = async (base64, mediaType) => {
-    setScanning(true); setResult(null);
+    setScanning(true); setResult(null); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
-      const age    = profile?.age      || 25;
-      const gender = profile?.gender   || 'Male';
-      const height = profile?.heightIn || 70;
+      const age    = profile?.age       || 25;
+      const gender = profile?.gender    || 'Male';
+      const height = profile?.heightIn  || 70;
       const weight = profile?.weightLbs || 170;
-
-      // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
       const heightCm = Math.round(height * 2.54);
       const weightKg = Math.round(weight * 0.4536);
 
+      // Read history BEFORE API call so we can anchor Claude to the baseline
+      const currentHistory  = LS.get(LS_KEYS.scanHistory, []);
+      const baselineScan    = currentHistory.find(s => s.isBaseline) || currentHistory[0] || null;
+      const prevScan        = currentHistory[currentHistory.length - 1] || null;
+      const daysSinceBaseline = baselineScan?.date
+        ? Math.round((Date.now() - new Date(baselineScan.date).getTime()) / 86400000) : 0;
+      const daysSincePrev   = prevScan?.date
+        ? Math.round((Date.now() - new Date(prevScan.date).getTime()) / 86400000) : 0;
+      const maxBFChange     = Math.max(2, daysSinceBaseline / 14).toFixed(1);
+      const maxLMChange     = Math.max(3, daysSinceBaseline / 7).toFixed(1);
+
+      const baselineContext = baselineScan
+        ? `\n\nCONSISTENCY ANCHOR — this user's baseline scan was ${daysSinceBaseline} days ago:\n- Baseline body fat: ${baselineScan.bodyFat}%  |  Lean mass: ${baselineScan.leanMass} lbs  |  Score: ${baselineScan.physiqueScore}\nRealistic change limits given ${daysSinceBaseline} days: ±${maxBFChange}% BF, ±${maxLMChange} lbs lean mass.\nIf your visual estimate falls significantly outside these limits, use the conservative estimate closer to the baseline. Focus on RELATIVE CHANGE detection, not fresh absolute estimates.`
+        : '';
+
+      // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
       const res = await fetch('/api/anthropic', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -3645,7 +3743,7 @@ IMPORTANT RULES:
 - State confidence level clearly based on photo quality and visibility
 - BANNED words: underdeveloped, below average, above average, lacks, lacking, weak, beginner, poor, inadequate, unfortunately
 - Muscle levels (use exactly): "not yet defined"|"early"|"moderate"|"solid"|"well-developed"
-- SCORES: physique 30-95 (calibrated, avg 52-65), symmetry 60-95 (avg 70-85). Be honest, not generous.`,
+- SCORES: physique 30-95 (calibrated, avg 52-65), symmetry 60-95 (avg 70-85). Be honest, not generous.${baselineContext}`,
           messages: [{
             role: 'user',
             content: [
@@ -3653,10 +3751,10 @@ IMPORTANT RULES:
               { type: 'text', text: `Person details: ${age}yo ${gender}, ${heightCm}cm (${height}in), ${weightKg}kg (${weight}lbs).
 
 Return ONLY this JSON (no markdown, no extra text):
-{"bodyFatRange":{"low":0,"high":0,"midpoint":0},"bodyFatConfidence":"medium","bodyFatReasoning":"specific visual markers that led to this range","leanMass":0,"leanMassTrend":"maintaining","physiqueScore":0,"symmetryScore":0,"symmetryDetails":"specific description of balance or imbalances","muscleGroups":{"chest":"moderate","shoulders":"moderate","back":"moderate","arms":"moderate","core":"moderate","legs":"moderate"},"weakestGroups":[],"limitingFactor":"the single most important thing holding this physique back","limitingFactorExplanation":"specific explanation with reference to their stats and what is visible","strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"2-3 sentence honest assessment referencing their specific stats","photoQualityIssues":[],"recommendation":"2-3 sentence specific recommendation referencing their weight and goal","disclaimer":"Visual AI estimate based on photo. Accuracy improves with consistent lighting and front/side pose."}` },
+{"bodyFatRange":{"low":0,"high":0,"midpoint":0},"bodyFatConfidence":"medium","bodyFatReasoning":"specific visual markers that led to this range","leanMass":0,"leanMassTrend":"maintaining","physiqueScore":0,"symmetryScore":0,"symmetryDetails":"specific description of balance or imbalances","muscleGroups":{"chest":"moderate","shoulders":"moderate","back":"moderate","arms":"moderate","core":"moderate","legs":"moderate"},"weakestGroups":[],"limitingFactor":"the single most important thing holding this physique back","limitingFactorExplanation":"specific explanation with reference to their stats and what is visible","strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"2-3 sentence honest assessment referencing their specific stats","photoQualityIssues":[],"photoQuality":{"overall":"medium","lighting":"good","clothing":"acceptable","pose":"acceptable","notes":""},"recommendation":"2-3 sentence specific recommendation referencing their weight and goal","disclaimer":"Visual AI estimate based on photo. Accuracy improves with consistent lighting and front/side pose."}` },
             ],
           }],
-          max_tokens: 1000,
+          max_tokens: 1100,
         }),
       });
 
@@ -3668,8 +3766,13 @@ Return ONLY this JSON (no markdown, no extra text):
       if (!match) throw new Error('Could not parse scan result');
       const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
 
+      // Consistency check: flag suspicious swings before showing results
+      if (prevScan) {
+        const warnings = validateScanConsistency(visualData, prevScan, daysSincePrev);
+        if (warnings.length) setConsistencyWarnings(warnings);
+      }
+
       // Step 2: Run the engine with this scan data to get precise targets
-      const currentHistory = LS.get(LS_KEYS.scanHistory, []);
       const scanForEngine  = { date: new Date().toISOString().slice(0, 10), bodyFat: visualData.bodyFatPct, weight, leanMass: visualData.leanMass };
       const engineOutput   = await callEngine(profile, [...currentHistory, scanForEngine]);
 
@@ -3732,6 +3835,8 @@ Return ONLY this JSON (no markdown, no extra text):
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
     };
+    const existingHistory = LS.get(LS_KEYS.scanHistory, []);
+    const isFirstScan     = existingHistory.length === 0;
     const entry = {
       date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
       physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore,
@@ -3741,6 +3846,7 @@ Return ONLY this JSON (no markdown, no extra text):
       assessment: result.bodyFatSummary || result.diagnosis || '',
       focusAreas: result.priorityAreas || result.weakestGroups || [],
       recommendation: result.recommendation || eng?.diagnosis?.primary?.recommended_action || '',
+      ...(isFirstScan && { isBaseline: true, lockedAt: new Date().toISOString() }),
       dailyTargets: {
         calories: m.calories,
         protein: m.protein,
@@ -3750,16 +3856,19 @@ Return ONLY this JSON (no markdown, no extra text):
         trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
       },
     };
-    const history = [...LS.get(LS_KEYS.scanHistory, []), entry];
+    const history = [...existingHistory, entry];
     LS.set(LS_KEYS.activePlan, plan);
     LS.set(LS_KEYS.stats, { calories: 0, protein: 0 });
     LS.set(LS_KEYS.scanHistory, history);
     setScanHistory(history);
     onPlanApplied(plan, history);
-    // Regenerate meal plan with scan data in background
+    // Regenerate meal plan + workout plan with scan data in background
     generateMealPlan(profile, plan, result)
       .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
       .catch(err => console.error('Meal plan regen failed:', err));
+    generateWorkoutPlan(profile, plan)
+      .then(days => { LS.set(LS_KEYS.workoutplan, days); })
+      .catch(err => console.error('Workout plan regen failed:', err));
     showToast('✓ Plan applied. Generating your meal plan...');
     setTab('plan');
   };
@@ -3801,6 +3910,33 @@ Return ONLY this JSON (no markdown, no extra text):
           <h1 className="screen-title" style={{ fontSize: 30 }}>Scan Results</h1>
           <button className="bp" onClick={() => setResult(null)} style={{ background: C.cardElevated, border: 'none', color: C.muted, padding: '6px 14px', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Retake</button>
         </div>
+
+        {/* ⚠ Consistency Warning Panel — shown before results when large swings detected */}
+        {consistencyWarnings.length > 0 && !warningsAccepted && (
+          <Card style={{ background: `${C.gold}14`, border: `1px solid ${C.gold}55`, padding: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 18 }}>⚠️</span>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.gold }}>Consistency Check</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+              {consistencyWarnings.map((w, i) => (
+                <p key={i} style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{w.message}</p>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="bp" onClick={() => { setResult(null); setConsistencyWarnings([]); }} style={{
+                flex: 1, padding: '10px 0', borderRadius: 12,
+                background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>Retake Photo for Better Accuracy</button>
+              <button className="bp" onClick={() => setWarningsAccepted(true)} style={{
+                flex: 1, padding: '10px 0', borderRadius: 12,
+                background: C.cardElevated, color: C.white, border: `1px solid ${C.border}`,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>Use These Results Anyway</button>
+            </div>
+          </Card>
+        )}
 
         {/* 1 – LIMITING FACTOR (most important, shown first) */}
         {(() => {
@@ -4048,6 +4184,44 @@ Return ONLY this JSON (no markdown, no extra text):
           </Card>
         )}
 
+        {/* 8.5 – Photo Reliability */}
+        {result.photoQuality && (
+          <Card className="su" style={{ animationDelay: '.085s' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 16 }}>📷</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.07em' }}>Scan Reliability</span>
+              {(() => {
+                const overall = result.photoQuality.overall || 'medium';
+                const overallColor = overall === 'high' ? C.green : overall === 'low' ? C.orange : C.gold;
+                return (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: overallColor, background: overallColor + '22', padding: '2px 8px', borderRadius: 99, textTransform: 'capitalize' }}>
+                    {overall}
+                  </span>
+                );
+              })()}
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: result.photoQuality.notes ? 10 : 0 }}>
+              {[
+                { label: 'Lighting', value: result.photoQuality.lighting },
+                { label: 'Clothing', value: result.photoQuality.clothing },
+                { label: 'Pose',     value: result.photoQuality.pose },
+              ].map(item => (
+                <div key={item.label} style={{ fontSize: 12 }}>
+                  <span style={{ color: C.dimmed }}>{item.label}: </span>
+                  <span style={{
+                    fontWeight: 600, textTransform: 'capitalize',
+                    color: (item.value === 'good' || item.value === 'optimal') ? C.green
+                      : (item.value === 'poor' || item.value === 'suboptimal') ? C.orange : C.muted,
+                  }}>{item.value || '—'}</span>
+                </div>
+              ))}
+            </div>
+            {result.photoQuality.notes && (
+              <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.55, margin: 0 }}>{result.photoQuality.notes}</p>
+            )}
+          </Card>
+        )}
+
         {/* 9 – "How we calculate this" expandable */}
         <div className="su" style={{ animationDelay: '.09s' }}>
           <button className="bp" onClick={() => setShowCalcDetails(o => !o)} style={{
@@ -4159,9 +4333,14 @@ Return ONLY this JSON (no markdown, no extra text):
             {[...scanHistory].reverse().map((s, i) => {
               const realIdx = scanHistory.length - 1 - i;
               return (
-              <div key={i} className="bp" onClick={() => setViewOld(realIdx)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
+              <div key={i} className="bp" onClick={() => setViewOld(realIdx)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${s.isBaseline ? C.purple + '55' : C.border}` }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{fmt.date(s.date)}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{fmt.date(s.date)}</div>
+                    {s.isBaseline && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '2px 7px', borderRadius: 99, border: `1px solid ${C.purple}44`, textTransform: 'uppercase', letterSpacing: '.06em' }}>Baseline</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {Number(s.bodyFat || 0).toFixed(1)}% · Lean {fmt.leanMass(s.leanMass || 0, profile?.unitSystem)}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
@@ -4678,6 +4857,12 @@ export default function MassIQ() {
             onReset={handleReset}
             onLogout={handleLogout}
             showToast={showToast}
+            onUpdateUnits={(unit) => {
+              const updated = { ...profile, unitSystem: unit };
+              setProfile(updated);
+              LS.set(LS_KEYS.profile, updated);
+              persistUserState(updated, activePlan);
+            }}
           />
         );
         default: return null;
