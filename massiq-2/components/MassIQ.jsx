@@ -64,7 +64,7 @@ const CSS = `
   }
   .bp:active{transform:scale(.96);opacity:.85}
   .screen{padding:28px 18px 44px;display:flex;flex-direction:column;gap:22px}
-  .screen-title{font-size:34px;font-weight:760;line-height:1.06;letter-spacing:-0.03em}
+  .screen-title{font-size:38px;font-weight:820;line-height:1.02;letter-spacing:-0.035em;color:#f3fff8}
   .section-title{font-size:17px;font-weight:700;line-height:1.2;letter-spacing:-0.02em;margin-bottom:12px}
   .section-subtitle{font-size:13px;line-height:1.5;color:${C.muted}}
   .glass{
@@ -126,7 +126,7 @@ const CSS = `
     .mobile-tabbar{display:none!important}
     .desktop-sidebar{display:flex!important}
     .app-layout{display:grid!important;grid-template-columns:220px 1fr}
-    .app-content{max-width:860px;margin:0 auto;padding:34px 26px 52px}
+  .app-content{max-width:900px;margin:0 auto;padding:42px 28px 60px}
     .ob-wrap{max-width:600px;margin:0 auto}
   }
   @media(max-width:430px){
@@ -317,7 +317,7 @@ const PHASE_META = {
 };
 
 function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
-  if (!Array.isArray(scanHistory) || scanHistory.length < 2) return { tone: 'neutral', label: 'Insufficient data', note: 'Complete your next scan to validate trajectory.' };
+  if (!Array.isArray(scanHistory) || scanHistory.length < 2) return { tone: 'neutral', label: 'Baseline week', note: 'Collecting initial data — next scan will unlock insights.' };
   const prev = scanHistory[scanHistory.length - 2];
   const curr = scanHistory[scanHistory.length - 1];
   const bfDelta = Number(curr.bodyFat || 0) - Number(prev.bodyFat || 0);
@@ -603,10 +603,10 @@ Return ONLY JSON: {"name":"","description":"","icon":"emoji","calories":${curren
 const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...rest }) => {
   const base = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    gap: 8, padding: '13px 22px', borderRadius: 14, fontWeight: 620,
-    fontSize: 14, letterSpacing: '-0.01em', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    gap: 8, padding: '15px 24px', borderRadius: 16, fontWeight: 700,
+    fontSize: 15, letterSpacing: '-0.01em', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'all .15s ease', opacity: disabled ? 0.45 : 1,
-    ...(variant === 'primary' && { background: C.green, color: '#071109', boxShadow: '0 8px 22px rgba(52,209,123,0.24)' }),
+    ...(variant === 'primary' && { background: C.green, color: '#071109', boxShadow: '0 10px 26px rgba(52,209,123,0.32)' }),
     ...(variant === 'outline' && { background: 'transparent', color: C.green, border: `1px solid ${C.green}` }),
     ...(variant === 'ghost'   && { background: 'transparent', color: C.muted, border: `1px solid ${C.border}` }),
     ...style,
@@ -615,7 +615,7 @@ const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...
 };
 
 const Card = ({ children, style = {}, className = '', ...rest }) => (
-  <div className={className} style={{ background: C.card, borderRadius: 18, padding: 18, border: `1px solid ${C.border}`, boxShadow: '0 8px 28px rgba(0,0,0,0.2)', ...style }} {...rest}>
+  <div className={className} style={{ background: 'linear-gradient(160deg, #17211C 0%, #111814 58%, #0E1411 100%)', borderRadius: 20, padding: 22, border: `1px solid rgba(52,209,123,0.18)`, boxShadow: '0 12px 32px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)', ...style }} {...rest}>
     {children}
   </div>
 );
@@ -1308,7 +1308,7 @@ function HomeTab({ profile, activePlan, setTab }) {
     : null;
   const actualWeeklyChange = Number.isFinite(prevWeight) && Number.isFinite(lastWeight) ? Number((lastWeight - prevWeight).toFixed(2)) : null;
   const progressStatus = actualWeeklyChange === null
-    ? 'Insufficient data'
+    ? 'Baseline week'
     : expectedWeekly < 0
       ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind')
       : expectedWeekly > 0
@@ -1343,6 +1343,16 @@ function HomeTab({ profile, activePlan, setTab }) {
         </div>
       ) : (
         <>
+          <div className="su" style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 34, fontWeight: 820, lineHeight: 1.05, marginBottom: 8 }}>You are in {phase} Phase</div>
+            <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6 }}>
+              {phase === 'Maintain'
+                ? `Holding ~${currentBF ? currentBF.toFixed(1) : '—'}% body fat. Stable composition.`
+                : phase === 'Cut'
+                  ? `Driving body fat toward ${targetBF ? `${targetBF.toFixed(1)}%` : 'target'} while preserving lean mass.`
+                  : 'Lean mass gain route with controlled fat drift.'}
+            </div>
+          </div>
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
             <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Current state</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
@@ -1368,7 +1378,16 @@ function HomeTab({ profile, activePlan, setTab }) {
           <Card className="su glass" style={{ animationDelay: '.08s' }}>
             <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>ETA</div>
             <div style={{ fontSize: 24, fontWeight: 800, color: C.green }}>{estimatedWeeks > 0 ? `${estimatedWeeks} weeks` : 'Re-scan needed'}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+              {phase === 'Maintain'
+                ? `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → maintain ${Math.max(4, targetBF - 1).toFixed(1)}–${(targetBF + 1).toFixed(1)}%`
+                : phase === 'Cut'
+                  ? `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → ${targetBF ? `${targetBF.toFixed(1)}%` : 'target'}`
+                  : `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → up to ${(currentBF + 2).toFixed(1)}% (controlled)`}
+            </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Expected weekly change: {expectedWeekly.toFixed(2)} kg/week</div>
+            <div style={{ fontSize: 12, color: C.white, marginTop: 8 }}>Next decision point: {phase === 'Maintain' ? '14 days' : phase === 'Cut' ? '7 days' : '21 days'}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Next checkpoint: {fmt.date(activePlan?.nextScanDate)}</div>
           </Card>
 
           <Card className="su glass" style={{ animationDelay: '.1s' }}>
@@ -1389,6 +1408,34 @@ function HomeTab({ profile, activePlan, setTab }) {
             <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Adjustment recommendation</div>
             <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{adjustment}</div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Limiter: {limiters[0]}</div>
+          </Card>
+
+          <Card className="su glass" style={{ animationDelay: '.15s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>System monitoring</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
+              {actualWeeklyChange !== null && expectedWeekly > 0 && actualWeeklyChange > expectedWeekly * 1.5 && (
+                <div style={{ color: C.gold }}>Route adjustment: Reduce calories by 150–200 kcal/day.</div>
+              )}
+              {actualWeeklyChange !== null && expectedWeekly < 0 && actualWeeklyChange > -0.1 && (
+                <div style={{ color: C.gold }}>Execution signal: Increase deficit slightly (+1,500 daily steps).</div>
+              )}
+              {todayStats.protein < Math.round((macros?.protein || 0) * 0.75) && (
+                <div style={{ color: C.gold }}>Route adjustment: Increase protein intake before changing calories.</div>
+              )}
+              {(activePlan?.sleepHrs || 8) < 7 && (
+                <div style={{ color: C.gold }}>Recovery warning: Sleep below 7h is limiting progress quality.</div>
+              )}
+              <div style={{ color: C.muted }}>System status: {progressStatus}. Next checkpoint will refresh this guidance.</div>
+            </div>
+          </Card>
+
+          <Card className="su glass" style={{ animationDelay: '.155s' }}>
+            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Risk layer</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: C.muted }}>
+              <div>Risk: fat gain if adherence drops during surplus weeks.</div>
+              <div>Risk: muscle loss if protein target is repeatedly missed.</div>
+              <div>Risk: recovery compromised if sleep consistency falls.</div>
+            </div>
           </Card>
 
           {/* ── Today's Targets ── */}
@@ -2253,7 +2300,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
+        <div style={{ fontWeight: 760, fontSize: 18, marginBottom: 14 }}>Meal suggestions</div>
         {suggestionsError && (
           <div style={{ marginBottom: 10, background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 12, padding: '10px 12px' }}>
             <div style={{ color: C.gold, fontSize: 12, lineHeight: 1.5, marginBottom: 8 }}>{suggestionsError}</div>
@@ -2269,10 +2316,11 @@ function NutritionTab({ profile, activePlan, showToast }) {
             ))
           ) : suggestions.map(s => {
             const isSwapping = swappingId === s.id;
+            const proteinPct = macros?.protein ? Math.round((Number(s.protein || 0) / macros.protein) * 100) : 0;
             return (
               <div key={s.id} style={{
-                background: C.card, borderRadius: 16, padding: 15,
-                border: `1px solid ${isSwapping ? C.greenDim : C.border}`, flexShrink: 0, width: 180,
+                background: 'linear-gradient(170deg, #16221B 0%, #111813 100%)', borderRadius: 18, padding: 16,
+                border: `1px solid ${isSwapping ? C.greenDim : 'rgba(52,209,123,0.18)'}`, flexShrink: 0, width: 196,
                 display: 'flex', flexDirection: 'column', gap: 8, position: 'relative',
                 opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
               }}>
@@ -2292,6 +2340,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
                     <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
                     <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4, paddingRight: 24 }}>{s.name}</div>
                     {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Protein coverage: {proteinPct}% of daily target</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       {[
                         { label: `${s.calories} kcal`, color: C.orange },
@@ -2319,7 +2368,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
       {/* ── Today's meals ── */}
       <div className="su" style={{ animationDelay: '.1s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Meals</div>
+        <div style={{ fontWeight: 760, fontSize: 18, marginBottom: 14 }}>Logged meals</div>
         {meals.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '36px 0', color: C.muted }}>
             <div style={{ fontSize: 36, marginBottom: 10 }}>🍽️</div>
@@ -2327,11 +2376,13 @@ function NutritionTab({ profile, activePlan, showToast }) {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {meals.map(m => (
+            {meals.map(m => {
+              const proteinPct = macros?.protein ? Math.round((Number(m.protein || 0) / macros.protein) * 100) : 0;
+              return (
               <div key={m.id} className="bp" onClick={() => setSelectedMeal({ ...m, mealType: m.category || 'Meal' })} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
-                background: C.card, borderRadius: 14, padding: '12px 14px',
-                border: `1px solid ${C.border}`, cursor: 'pointer',
+                background: 'linear-gradient(170deg, #16221B 0%, #111813 100%)', borderRadius: 16, padding: '14px 16px',
+                border: `1px solid rgba(52,209,123,0.18)`, cursor: 'pointer',
               }}>
                 {/* Icon */}
                 <div style={{
@@ -2345,6 +2396,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
                     P {m.protein}g · C {m.carbs}g · F {m.fat}g
                   </div>
+                  <div style={{ fontSize: 11, color: C.green, marginTop: 4 }}>Protein coverage: {proteinPct}%</div>
                 </div>
                 {/* Right: calories + delete */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -2354,7 +2406,8 @@ function NutritionTab({ profile, activePlan, showToast }) {
                   }}>×</button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
