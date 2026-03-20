@@ -4238,12 +4238,12 @@ export default function MassIQ() {
           setSession(null);
           setAuthState('logged_out');
           setAuthError('');
-          setAuthNotice('Your previous session expired. Please sign in again.');
+          setAuthNotice('');
         }
       } catch (err) {
         if (!mounted) return;
         setAuthError('');
-        setAuthNotice('Could not restore your previous session. Please sign in.');
+        setAuthNotice('');
         setAuthState('logged_out');
       } finally {
         if (mounted) setAuthReady(true);
@@ -4346,7 +4346,7 @@ export default function MassIQ() {
           setActivePlan(null);
           setAuthState('logged_out');
           setAuthError('');
-          setAuthNotice('Session expired. Please sign in again.');
+          setAuthNotice('');
         }
       } finally {
         if (mounted) setReady(true);
