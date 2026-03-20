@@ -3989,7 +3989,7 @@ const PlaceholderTab = ({ label, icon }) => (
   }}>
     <div style={{ fontSize: 48 }}>{icon}</div>
     <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{label}</div>
-    <div style={{ fontSize: 14, color: C.muted }}>Coming in the next commit</div>
+    <div style={{ fontSize: 14, color: C.muted }}>Not available in this beta build.</div>
   </div>
 );
 
@@ -4317,6 +4317,9 @@ export default function MassIQ() {
     const mapAuthError = (err, m) => {
       const raw = String(err?.message || '').toLowerCase();
       if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
+      if (raw.includes('email not confirmed') || raw.includes('confirm your email') || raw.includes('email_not_confirmed')) {
+        return 'Email not verified yet. Please verify your email and sign in again.';
+      }
       if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
         return 'An account already exists for this email. Log in instead.';
       }
@@ -4339,7 +4342,7 @@ export default function MassIQ() {
     setAuthError('');
     setAuthNotice('');
     try {
-      if (mode === 'signin') {
+      if (mode === 'login') {
         const prior = session?.access_token || getStoredSession()?.access_token;
         if (prior) {
           try { await signOutSession(prior); } catch (err) { console.warn('Pre-login signout failed:', err); }
@@ -4357,7 +4360,7 @@ export default function MassIQ() {
       if (!freshUser?.id) {
         throw new Error('No authenticated user returned from Supabase.');
       }
-      if (mode === 'signin' && String(freshUser.email || '').toLowerCase() !== normalizedEmail) {
+      if (mode === 'login' && String(freshUser.email || '').toLowerCase() !== normalizedEmail) {
         throw new Error('Authenticated user does not match requested credentials.');
       }
       clearAppLocalState();
