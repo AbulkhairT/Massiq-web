@@ -1250,6 +1250,8 @@ function HomeTab({ profile, activePlan, setTab }) {
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const lastScan = scanHistory[scanHistory.length - 1];
+  const scanCount = Array.isArray(scanHistory) ? scanHistory.length : 0;
+  const productState = !lastScan ? 'profile_complete_no_scan' : scanCount === 1 ? 'baseline_scan_complete' : 'trajectory_active';
   const trajectory = getTrajectoryStatus(scanHistory, activePlan?.phase || profile?.goal);
   const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Awaiting next scan';
   const todayStats = todayMeals.reduce((a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }), { calories: 0, protein: 0 });
@@ -1269,6 +1271,13 @@ function HomeTab({ profile, activePlan, setTab }) {
   const progressStatus = actualWeeklyChange === null ? 'Baseline week' : expectedWeekly < 0 ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind') : expectedWeekly > 0 ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind') : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
   const adjustment = progressStatus === 'Behind' && phase === 'Cut' ? '↑ Protein +30g · ↓ Deficit -200 kcal' : progressStatus === 'Behind' && phase === 'Bulk' ? '↑ Calories +175 kcal' : progressStatus === 'Ahead' && phase === 'Cut' ? '↑ Calories +150 kcal' : 'Hold current route';
   const insights = buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus });
+  const anchoredNextScanDate = (() => {
+    if (!lastScan?.date) return null;
+    const d = new Date(lastScan.date);
+    if (Number.isNaN(d.getTime())) return null;
+    d.setDate(d.getDate() + (phase === 'Maintain' ? 14 : 7));
+    return d.toISOString().slice(0, 10);
+  })();
 
   return (
     <div className="screen">
@@ -1281,13 +1290,46 @@ function HomeTab({ profile, activePlan, setTab }) {
         </div>
       ) : (
         <>
+          {productState === 'profile_complete_no_scan' && (
+            <>
+              <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}`, padding: 20 }}>
+                <div style={{ fontSize: 12, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>Ready for baseline</div>
+                <div style={{ fontSize: 24, fontWeight: 780, marginBottom: 8 }}>{phase} phase</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
+                  First scan establishes your baseline physique state. Trajectory unlocks after your second scan.
+                </div>
+              </Card>
+
+              <Card className="su glass" style={{ padding: 16 }}>
+                <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>Persisted plan targets</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div style={{ background: C.cardElevated, borderRadius: 12, padding: 12 }}>
+                    <div style={{ fontSize: 11, color: C.muted }}>Daily Calories</div>
+                    <div style={{ fontSize: 22, fontWeight: 700 }}>{macros?.calories ?? '—'} <span style={{ fontSize: 13, color: C.muted }}>kcal</span></div>
+                  </div>
+                  <div style={{ background: C.cardElevated, borderRadius: 12, padding: 12 }}>
+                    <div style={{ fontSize: 11, color: C.muted }}>Daily Protein</div>
+                    <div style={{ fontSize: 22, fontWeight: 700 }}>{macros?.protein ?? '—'} <span style={{ fontSize: 13, color: C.muted }}>g</span></div>
+                  </div>
+                </div>
+              </Card>
+              <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Run first scan →</Btn>
+            </>
+          )}
+
+          {productState !== 'profile_complete_no_scan' && (
+            <>
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}`, padding: 20 }}>
             <div style={{ fontSize: 34, fontWeight: 820, lineHeight: 1.0, marginBottom: 8 }}>{currentBF ? currentBF.toFixed(1) : '—'}% → {targetBF ? targetBF.toFixed(1) : '—'}%</div>
             <div style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>Phase: {phase}</div>
-            <div style={{ fontSize: 13, color: C.white, marginBottom: 10 }}>{estimatedWeeks > 0 ? `~${estimatedWeeks} weeks to target` : 'Awaiting next scan signal'}</div>
+            <div style={{ fontSize: 13, color: C.white, marginBottom: 10 }}>
+              {productState === 'baseline_scan_complete'
+                ? 'Baseline established · awaiting second scan'
+                : (estimatedWeeks > 0 ? `~${estimatedWeeks} weeks to target` : 'Awaiting next scan signal')}
+            </div>
             <ProgressBar value={Math.max(0, Math.min(100, targetBF > 0 && currentBF > 0 ? ((currentBF - targetBF) / Math.max(0.1, currentBF)) * 100 : 0))} max={100} color={C.green} height={8} />
-            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Diagnosis: {insights.limiting_factor.title}</div>
-            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Adjust: {adjustment}</div>
+            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Limiting factor: {productState === 'baseline_scan_complete' ? 'Baseline only' : insights.limiting_factor.title}</div>
+            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Action: {productState === 'baseline_scan_complete' ? 'Hold targets and collect second scan' : adjustment}</div>
           </Card>
 
           <CollapsibleCard title="Weekly targets" summary={`${macros?.calories || '—'} kcal · ${macros?.protein || '—'}g protein`} open={openSection === 'targets'} onToggle={() => setOpenSection(openSection === 'targets' ? '' : 'targets')} delay=".04s">
@@ -1297,19 +1339,31 @@ function HomeTab({ profile, activePlan, setTab }) {
             </div>
           </CollapsibleCard>
 
+          {productState === 'trajectory_active' && (
           <CollapsibleCard title="Progress" summary={`${progressStatus} · ${actualWeeklyChange === null ? 'Awaiting next scan' : `${actualWeeklyChange.toFixed(2)} kg/week`}`} open={openSection === 'progress'} onToggle={() => setOpenSection(openSection === 'progress' ? '' : 'progress')} delay=".06s">
             <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
               <div>Expected: {expectedWeekly.toFixed(2)} kg/week</div>
-              <div>Next checkpoint: {fmt.date(activePlan?.nextScanDate)}</div>
+              <div>Next checkpoint: {fmt.date(anchoredNextScanDate || activePlan?.nextScanDate)}</div>
               <div>Signal: {trajectory.note}</div>
             </div>
           </CollapsibleCard>
+          )}
 
-          <CollapsibleCard title="Insights" summary={nextAction} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
+          <CollapsibleCard title="Insights" summary={productState === 'baseline_scan_complete' ? 'Trajectory unlocks after next scan' : nextAction} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
             <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>
-              <li>{insights.limiting_factor.next_step}</li>
-              <li>{insights.progress.next_step}</li>
-              <li>{insights.limiting_factor.risk_if_ignored}</li>
+              {productState === 'baseline_scan_complete' ? (
+                <>
+                  <li>Baseline established from your first scan.</li>
+                  <li>Keep current targets for one review cycle.</li>
+                  <li>Complete next scan to unlock trend analysis and adjustments.</li>
+                </>
+              ) : (
+                <>
+                  <li>{insights.limiting_factor.next_step}</li>
+                  <li>{insights.progress.next_step}</li>
+                  <li>{insights.limiting_factor.risk_if_ignored}</li>
+                </>
+              )}
             </ul>
           </CollapsibleCard>
 
@@ -1323,6 +1377,8 @@ function HomeTab({ profile, activePlan, setTab }) {
           </Card>
 
           <TodayWorkoutCard />
+            </>
+          )}
         </>
       )}
     </div>
