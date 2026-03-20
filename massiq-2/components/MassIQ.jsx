@@ -1030,21 +1030,9 @@ function Onboarding({ onComplete }) {
           <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
             Your profile is ready,<br />{data.name}.
           </h1>
-          <p style={{ color: C.muted, marginBottom: 36, fontSize: 15 }}>We will generate and save your deterministic plan after you continue.</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 36, textAlign: 'left' }}>
-            {[
-              { label: 'Goal',          value: data.goal,     unit: '' },
-              { label: 'Daily Calories', value: 'Generated after save', unit: '' },
-              { label: 'Daily Protein',  value: 'Generated after save',  unit: '' },
-            ].map(row => (
-              <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.cardElevated, borderRadius: 14, padding: '14px 18px' }}>
-                <span style={{ color: C.muted, fontSize: 14 }}>{row.label}</span>
-                <span style={{ fontWeight: 700, fontSize: 18, color: C.green }}>
-                  {row.value || '—'}
-                </span>
-              </div>
-            ))}
-          </div>
+          <p style={{ color: C.muted, marginBottom: 36, fontSize: 15 }}>
+            We’ll create and save your real plan now, then take you to Home.
+          </p>
           <Btn onClick={() => { finish(); }} style={{ width: '100%', marginBottom: 14 }}>
             Start Your First Scan →
           </Btn>
@@ -4105,6 +4093,7 @@ export default function MassIQ() {
   const [activePlan, setActivePlan] = useState(null);
   const [tab,        setTab]        = useState('home');
   const [ready,      setReady]      = useState(false);
+  const [provisioningPlan, setProvisioningPlan] = useState(false);
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
@@ -4252,6 +4241,31 @@ export default function MassIQ() {
     hydrate();
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
+
+  useEffect(() => {
+    if (!session?.access_token || !profile || activePlan || provisioningPlan) return;
+    const profileComplete = Number(profile?.age) >= 13 && Number(profile?.age) <= 100 && Number(profile?.weightLbs) > 0 && Number(profile?.heightCm) > 0;
+    if (!profileComplete) return;
+    let mounted = true;
+    const provisionPlan = async () => {
+      setProvisioningPlan(true);
+      try {
+        const generatedPlan = buildBaselinePlanFromProfile(profile);
+        const saved = await persistUserState(null, generatedPlan, null, { throwOnError: true });
+        if (!mounted) return;
+        const finalPlan = saved || generatedPlan;
+        setActivePlan(finalPlan);
+        LS.set(LS_KEYS.activePlan, finalPlan);
+      } catch (err) {
+        console.error('Plan provisioning failed:', err);
+        if (mounted) setAuthError('Could not generate your plan yet. Please try again.');
+      } finally {
+        if (mounted) setProvisioningPlan(false);
+      }
+    };
+    provisionPlan();
+    return () => { mounted = false; };
+  }, [session?.access_token, profile, activePlan, provisioningPlan]);
 
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null, opts = {}) => {
     if (!session?.access_token) return;
@@ -4440,11 +4454,17 @@ export default function MassIQ() {
     </>
   );
 
+  if (!activePlan || provisioningPlan) {
+    return <><style>{CSS}</style><PlanGeneratingScreen name={profile?.name || 'Athlete'} /></>;
+  }
+
   const renderTab = () => {
     switch (tab) {
       case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
-      case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
+      case 'scan':      return activePlan
+        ? <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />
+        : <div className="screen"><Card className="su glass"><div style={{ fontSize: 14, color: C.muted }}>Plan is still provisioning. Scan unlocks when plan is saved.</div></Card></div>;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
       case 'profile':   return (
         <ProfileTab
