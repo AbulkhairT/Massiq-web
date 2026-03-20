@@ -298,6 +298,9 @@ const fmt = {
   leanMass: (lbs, unit = 'imperial') => unit === 'metric'
     ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
     : `${Number(lbs || 0).toFixed(1)} lb`,
+  fatMass: (lbs, unit = 'imperial') => unit === 'metric'
+    ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
+    : `${Number(lbs || 0).toFixed(1)} lb`,
   height: (cm, unit = 'imperial') => {
     const n = Number(cm || 0);
     if (unit === 'metric') return `${Math.round(n)} cm`;
@@ -1311,6 +1314,23 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
+function CollapsibleCard({ title, summary, children, open, onToggle, delay = '.0s' }) {
+  return (
+    <Card className="su glass" style={{ animationDelay: delay, padding: 16 }}>
+      <button className="bp" onClick={onToggle} style={{ width: '100%', background: 'none', border: 'none', color: C.white, textAlign: 'left', padding: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>{title}</div>
+            <div style={{ fontSize: 14, fontWeight: 650 }}>{summary}</div>
+          </div>
+          <div style={{ fontSize: 18, color: C.muted }}>{open ? '−' : '+'}</div>
+        </div>
+      </button>
+      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+    </Card>
+  );
+}
+
 function buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus }) {
   const weightKg = Number(((profile?.weightLbs || 0) * 0.453592).toFixed(1));
   const bf = Number(lastScan?.bodyFat || 0);
@@ -1384,185 +1404,84 @@ function buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, ex
 }
 
 function HomeTab({ profile, activePlan, setTab }) {
+  const [openSection, setOpenSection] = useState('targets');
   const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const lastScan = scanHistory[scanHistory.length - 1];
   const trajectory = getTrajectoryStatus(scanHistory, activePlan?.phase || profile?.goal);
-  const limiters = getPrimaryLimiters(lastScan, activePlan);
-  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Complete your next scan to calibrate your weekly strategy.';
-  const todayStats = todayMeals.reduce(
-    (a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }),
-    { calories: 0, protein: 0 }
-  );
+  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Awaiting next scan';
+  const todayStats = todayMeals.reduce((a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }), { calories: 0, protein: 0 });
 
   const phase = activePlan?.phase || 'Foundation';
-  const week  = activePlan?.week  || 1;
+  const unitSystem = profile?.unitSystem || 'imperial';
   const currentWeightLbs = Number(profile?.weightLbs || 0);
-  const currentWeightKg = Number((currentWeightLbs * 0.453592).toFixed(1));
   const currentBF = Number(lastScan?.bodyFat || 0);
   const currentLeanMass = Number(lastScan?.leanMass || 0);
   const targetBF = Number(activePlan?.targetBF || (phase === 'Cut' ? (profile?.gender === 'Female' ? 24 : 14) : currentBF || 0));
   const expectedWeekly = Number(activePlan?.expectedWeeklyWeightKg ?? (phase === 'Cut' ? -0.4 : phase === 'Bulk' ? 0.25 : 0));
-  const estimatedWeeks = currentBF > 0 && targetBF > 0 && expectedWeekly < 0
-    ? Math.max(1, Math.ceil((currentBF - targetBF) / 0.4))
-    : expectedWeekly > 0 ? Math.max(1, Math.ceil(4)) : 0;
+  const estimatedWeeks = currentBF > 0 && targetBF > 0 && expectedWeekly < 0 ? Math.max(1, Math.ceil((currentBF - targetBF) / 0.4)) : expectedWeekly > 0 ? 4 : 0;
   const prevScan = scanHistory.length > 1 ? scanHistory[scanHistory.length - 2] : null;
-  const prevWeight = prevScan?.leanMass && prevScan?.bodyFat
-    ? prevScan.leanMass / (1 - (prevScan.bodyFat / 100))
-    : null;
-  const lastWeight = lastScan?.leanMass && lastScan?.bodyFat
-    ? lastScan.leanMass / (1 - (lastScan.bodyFat / 100))
-    : null;
+  const prevWeight = prevScan?.leanMass && prevScan?.bodyFat ? prevScan.leanMass / (1 - (prevScan.bodyFat / 100)) : null;
+  const lastWeight = lastScan?.leanMass && lastScan?.bodyFat ? lastScan.leanMass / (1 - (lastScan.bodyFat / 100)) : null;
   const actualWeeklyChange = Number.isFinite(prevWeight) && Number.isFinite(lastWeight) ? Number((lastWeight - prevWeight).toFixed(2)) : null;
-  const progressStatus = actualWeeklyChange === null
-    ? 'Baseline week'
-    : expectedWeekly < 0
-      ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind')
-      : expectedWeekly > 0
-        ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind')
-        : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
-  const adjustment = progressStatus === 'Behind' && phase === 'Cut'
-    ? 'Reduce calories by 150 kcal/day and add 1,500 steps/day for 7 days.'
-    : progressStatus === 'Behind' && phase === 'Bulk'
-      ? 'Increase calories by 150 kcal/day and ensure +1 training session this week.'
-      : progressStatus === 'Ahead' && phase === 'Cut'
-        ? 'Increase calories by 100 kcal/day to reduce lean-mass risk.'
-        : 'Keep current targets and rescan next week.';
+  const progressStatus = actualWeeklyChange === null ? 'Baseline week' : expectedWeekly < 0 ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind') : expectedWeekly > 0 ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind') : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
+  const adjustment = progressStatus === 'Behind' && phase === 'Cut' ? '↑ Protein +30g · ↓ Deficit -200 kcal' : progressStatus === 'Behind' && phase === 'Bulk' ? '↑ Calories +175 kcal' : progressStatus === 'Ahead' && phase === 'Cut' ? '↑ Calories +150 kcal' : 'Hold current route';
   const insights = buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus });
 
   return (
     <div className="screen">
       <h1 className="screen-title">Today</h1>
-
       {!activePlan ? (
-        /* ── No active plan: CTA ── */
-        <div className="su" style={{
-          background: C.greenBg, border: `1.5px solid ${C.green}`,
-          borderRadius: 20, padding: 28, textAlign: 'center',
-        }}>
+        <div className="su" style={{ background: C.greenBg, border: `1.5px solid ${C.green}`, borderRadius: 20, padding: 28, textAlign: 'center' }}>
           <div style={{ fontSize: 40, marginBottom: 14 }}>📸</div>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Run your first scan</h2>
-          <p style={{ color: C.muted, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
-            Your personalized 12-week plan is one scan away
-          </p>
-          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>
-            Start Body Scan →
-          </Btn>
+          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Start Body Scan →</Btn>
         </div>
       ) : (
         <>
-          <div className="su" style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 34, fontWeight: 820, lineHeight: 1.05, marginBottom: 8 }}>You are in {phase} Phase</div>
-            <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6 }}>
-              {phase === 'Maintain'
-                ? `Holding ~${currentBF ? currentBF.toFixed(1) : '—'}% body fat. Stable composition.`
-                : phase === 'Cut'
-                  ? `Driving body fat toward ${targetBF ? `${targetBF.toFixed(1)}%` : 'target'} while preserving lean mass.`
-                  : 'Lean mass gain route with controlled fat drift.'}
-            </div>
-          </div>
-          <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Current state</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
-              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentBF ? `${currentBF.toFixed(1)}%` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Body fat</div></div>
-              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentLeanMass ? `${currentLeanMass.toFixed(1)} lb` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Lean mass</div></div>
-              <div><div style={{ fontSize: 20, fontWeight: 700 }}>{currentWeightKg ? `${currentWeightKg} kg` : '—'}</div><div style={{ fontSize: 11, color: C.muted }}>Body weight</div></div>
-            </div>
+          <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}`, padding: 20 }}>
+            <div style={{ fontSize: 34, fontWeight: 820, lineHeight: 1.0, marginBottom: 8 }}>{currentBF ? currentBF.toFixed(1) : '—'}% → {targetBF ? targetBF.toFixed(1) : '—'}%</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>Phase: {phase}</div>
+            <div style={{ fontSize: 13, color: C.white, marginBottom: 10 }}>{estimatedWeeks > 0 ? `~${estimatedWeeks} weeks to target` : 'Awaiting next scan signal'}</div>
+            <ProgressBar value={Math.max(0, Math.min(100, targetBF > 0 && currentBF > 0 ? ((currentBF - targetBF) / Math.max(0.1, currentBF)) * 100 : 0))} max={100} color={C.green} height={8} />
+            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Diagnosis: {insights.limiting_factor.title}</div>
+            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Adjust: {adjustment}</div>
           </Card>
 
-          <Card className="su glass" style={{ animationDelay: '.05s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Goal state</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>{PHASE_META[phase]?.emoji || '🎯'} {phase}</div>
-                <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Target body fat: {targetBF ? `${targetBF.toFixed(1)}%` : 'Not set'}</div>
-              </div>
-              <button className="bp" onClick={() => setTab('plan')} style={{ background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`, padding: '8px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                Edit route →
-              </button>
-            </div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.08s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>ETA</div>
-            <div style={{ fontSize: 24, fontWeight: 800, color: C.green }}>{estimatedWeeks > 0 ? `${estimatedWeeks} weeks` : 'Re-scan needed'}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
-              {phase === 'Maintain'
-                ? `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → maintain ${Math.max(4, targetBF - 1).toFixed(1)}–${(targetBF + 1).toFixed(1)}%`
-                : phase === 'Cut'
-                  ? `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → ${targetBF ? `${targetBF.toFixed(1)}%` : 'target'}`
-                  : `${currentBF ? `${currentBF.toFixed(1)}%` : 'Current'} → up to ${(currentBF + 2).toFixed(1)}% (controlled)`}
-            </div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Expected weekly change: {expectedWeekly.toFixed(2)} kg/week</div>
-            <div style={{ fontSize: 12, color: C.white, marginTop: 8 }}>Next decision point: {phase === 'Maintain' ? '14 days' : phase === 'Cut' ? '7 days' : '21 days'}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Next checkpoint: {fmt.date(activePlan?.nextScanDate)}</div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.1s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Weekly action</div>
-            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{nextAction}</div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.12s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Progress vs route</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <StatusPill tone={progressStatus === 'On track' ? 'good' : progressStatus === 'Ahead' ? 'warn' : 'issue'} label={progressStatus} />
-              <div style={{ fontSize: 12, color: C.muted }}>Actual: {actualWeeklyChange === null ? '—' : `${actualWeeklyChange.toFixed(2)} kg/week`}</div>
-            </div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>{trajectory.note}</div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.14s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Adjustment recommendation</div>
-            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{adjustment}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Limiter: {insights.limiting_factor.title} — {insights.limiting_factor.summary}</div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.15s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>System monitoring</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
-              {actualWeeklyChange !== null && expectedWeekly > 0 && actualWeeklyChange > expectedWeekly * 1.5 && (
-                <div style={{ color: C.gold }}>Route adjustment: Reduce calories by 150–200 kcal/day.</div>
-              )}
-              {actualWeeklyChange !== null && expectedWeekly < 0 && actualWeeklyChange > -0.1 && (
-                <div style={{ color: C.gold }}>Execution signal: Increase deficit slightly (+1,500 daily steps).</div>
-              )}
-              {todayStats.protein < Math.round((macros?.protein || 0) * 0.75) && (
-                <div style={{ color: C.gold }}>Route adjustment: Increase protein intake before changing calories.</div>
-              )}
-              {(activePlan?.sleepHrs || 8) < 7 && (
-                <div style={{ color: C.gold }}>Recovery warning: Sleep below 7h is limiting progress quality.</div>
-              )}
-              <div style={{ color: C.muted }}>System status: {progressStatus}. Next checkpoint will refresh this guidance.</div>
-            </div>
-          </Card>
-
-          <Card className="su glass" style={{ animationDelay: '.155s' }}>
-            <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Risk layer</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: C.muted }}>
-              <div>{insights.why_plan.risk_if_ignored}</div>
-              <div>{insights.limiting_factor.risk_if_ignored}</div>
-              <div>{insights.progress.risk_if_ignored}</div>
-            </div>
-          </Card>
-
-          {/* ── Today's Targets ── */}
-          <Card className="su glass" style={{ animationDelay: '.16s' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <span style={{ fontWeight: 700, fontSize: 16 }}>Today's Targets</span>
-              <span style={{ color: C.muted, fontSize: 18, letterSpacing: 2 }}>···</span>
-            </div>
+          <CollapsibleCard title="Weekly targets" summary={`${macros?.calories || '—'} kcal · ${macros?.protein || '—'}g protein`} open={openSection === 'targets'} onToggle={() => setOpenSection(openSection === 'targets' ? '' : 'targets')} delay=".04s">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 2000} unit="kcal" color={C.orange} />
-              <TargetTile icon="⚡" label="Protein"  current={todayStats.protein}  target={macros?.protein  || 150}  unit="g"    color={C.blue}   />
-              <TargetTile icon="🏋️" label="Training" current={activePlan?.trainDays || 3} target={activePlan?.trainDays || 3} unit="x/wk" color={C.red}    showProgress={false} />
-              <TargetTile icon="🌙" label="Sleep"    current={activePlan?.sleepHrs  || 8} target={activePlan?.sleepHrs  || 8} unit="hrs"  color={C.purple} />
+              <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 0} unit="kcal" color={C.orange} />
+              <TargetTile icon="⚡" label="Protein" current={todayStats.protein} target={macros?.protein || 0} unit="g" color={C.blue} />
+            </div>
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Progress" summary={`${progressStatus} · ${actualWeeklyChange === null ? 'Awaiting next scan' : `${actualWeeklyChange.toFixed(2)} kg/week`}`} open={openSection === 'progress'} onToggle={() => setOpenSection(openSection === 'progress' ? '' : 'progress')} delay=".06s">
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+              <div>Expected: {expectedWeekly.toFixed(2)} kg/week</div>
+              <div>Next checkpoint: {fmt.date(activePlan?.nextScanDate)}</div>
+              <div>Signal: {trajectory.note}</div>
+            </div>
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Insights" summary={nextAction} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>
+              <li>{insights.limiting_factor.next_step}</li>
+              <li>{insights.progress.next_step}</li>
+              <li>{insights.limiting_factor.risk_if_ignored}</li>
+            </ul>
+          </CollapsibleCard>
+
+          <Card className="su glass" style={{ animationDelay: '.1s', padding: 16 }}>
+            <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>Current state</div>
+            <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
+              <div>{currentBF ? `${currentBF.toFixed(1)}% BF` : '—'}</div>
+              <div>{fmt.leanMass(currentLeanMass, unitSystem)} lean</div>
+              <div>{fmt.weight(currentWeightLbs, unitSystem)}</div>
             </div>
           </Card>
 
-          {/* ── Today's Workout ── */}
           <TodayWorkoutCard />
         </>
       )}
@@ -3374,9 +3293,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
           { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
             value: `${bf}%`,         color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
           { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
-            value: `${leanKg} kg`,   color: C.blue },
+            value: fmt.leanMass(leanMassLbs, profile?.unitSystem),   color: C.blue },
           { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
-            value: `${fatMassLbs} lbs`, color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
+            value: fmt.fatMass(fatMassLbs, profile?.unitSystem), color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
         ].map(row => (
           <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>

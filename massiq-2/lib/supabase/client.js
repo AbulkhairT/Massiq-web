@@ -97,6 +97,7 @@ function serializeProfile(userId, profile) {
     gender: profile?.gender || null,
     goal: profile?.goal || null,
     activity_level: activityMap[activityKey] || null,
+    unit_system: profile?.unitSystem === 'metric' ? 'metric' : 'imperial',
   };
 }
 
@@ -122,7 +123,7 @@ function deserializeProfile(row) {
     gender: row.gender || null,
     goal: row.goal || null,
     activity: activityMap[String(row.activity_level || '').toLowerCase()] || null,
-    unitSystem: 'imperial',
+    unitSystem: row.unit_system === 'metric' ? 'metric' : 'imperial',
     dietPrefs: [],
     avoid: [],
     reminders: {},
@@ -265,7 +266,7 @@ export async function upsertProfile(token, userId, profile) {
 }
 
 export async function getProfile(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
+  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
     method: 'GET',
     headers: authHeaders(token),
   });
