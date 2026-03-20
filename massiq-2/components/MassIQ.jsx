@@ -4280,8 +4280,22 @@ export default function MassIQ() {
           loadedProfile = await getProfile(session.access_token, userId);
           console.info('[sync] getProfile:ok', { hasProfile: Boolean(loadedProfile) });
         } catch (profileErr) {
-          console.error('sync:getProfile failed', profileErr);
-          throw profileErr;
+          console.error('sync:getProfile failed (continuing with onboarding state)', profileErr);
+          loadedProfile = null;
+        }
+        if (loadedProfile && loadedProfile.id !== userId) {
+          throw new Error('Profile/user mismatch detected.');
+        }
+        if (!loadedProfile) {
+          if (mounted) {
+            setProfile(null);
+            setActivePlan(null);
+            setTab('home');
+            LS.set(LS_KEYS.profile, null);
+            LS.set(LS_KEYS.activePlan, null);
+            LS.set(LS_KEYS.scanHistory, []);
+          }
+          return;
         }
         if (loadedProfile && loadedProfile.id !== userId) {
           throw new Error('Profile/user mismatch detected.');
@@ -4302,8 +4316,8 @@ export default function MassIQ() {
           loadedPlan = await getPlan(session.access_token, userId);
           console.info('[sync] getLatestPlan:ok', { hasPlan: Boolean(loadedPlan) });
         } catch (planErr) {
-          console.error('sync:getPlan failed', planErr);
-          throw planErr;
+          console.error('sync:getPlan failed (continuing without plan)', planErr);
+          loadedPlan = null;
         }
         try {
           console.info('[sync] getLatestScan:start', { userId });
