@@ -4049,7 +4049,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   );
 }
 
-function AuthScreen({ onSubmit, loading, error, notice }) {
+function AuthScreen({ onSubmit, loading, error, notice, onAuthInput }) {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -4067,7 +4067,7 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
 
         <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
           {['login', 'signup'].map((m) => (
-            <button key={m} className="bp" onClick={() => setMode(m)} style={{
+            <button key={m} className="bp" onClick={() => { setMode(m); onAuthInput?.(); }} style={{
               flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
               background: mode === m ? C.greenBg : 'transparent',
               color: mode === m ? C.green : C.muted,
@@ -4079,8 +4079,8 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <input value={email} onChange={(e) => { setEmail(e.target.value); onAuthInput?.(); }} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <input value={password} onChange={(e) => { setPassword(e.target.value); onAuthInput?.(); }} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
           <Btn disabled={disabled} onClick={() => onSubmit(mode, email.trim(), password)} style={{ width: '100%', marginTop: 6 }}>
             {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
           </Btn>
@@ -4236,13 +4236,15 @@ export default function MassIQ() {
           try { await signOutSession(s.access_token); } catch {}
           clearAppLocalState();
           setSession(null);
-          setAuthState('session_invalid');
-          setAuthError('Your previous session expired. Please sign in again.');
+          setAuthState('logged_out');
+          setAuthError('');
+          setAuthNotice('Your previous session expired. Please sign in again.');
         }
       } catch (err) {
         if (!mounted) return;
-        setAuthError(err.message || 'Could not restore session.');
-        setAuthState('session_invalid');
+        setAuthError('');
+        setAuthNotice('Could not restore your previous session. Please sign in.');
+        setAuthState('logged_out');
       } finally {
         if (mounted) setAuthReady(true);
       }
@@ -4342,8 +4344,9 @@ export default function MassIQ() {
           setSession(null);
           setProfile(null);
           setActivePlan(null);
-          setAuthState('session_invalid');
-          setAuthError('Session invalid. Please sign in again.');
+          setAuthState('logged_out');
+          setAuthError('');
+          setAuthNotice('Session expired. Please sign in again.');
         }
       } finally {
         if (mounted) setReady(true);
@@ -4463,6 +4466,11 @@ export default function MassIQ() {
     }
   };
 
+  const handleAuthInput = () => {
+    if (authError) setAuthError('');
+    if (authNotice) setAuthNotice('');
+  };
+
   const handleLogout = async () => {
     try {
       if (session?.access_token) await signOutSession(session.access_token);
@@ -4520,7 +4528,7 @@ export default function MassIQ() {
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   if (!session?.access_token) {
-    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy || authState === 'logging_in'} error={authError} notice={authNotice} />;
+    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy || authState === 'logging_in'} error={authError} notice={authNotice} onAuthInput={handleAuthInput} />;
   }
 
   const profileComplete = profile
