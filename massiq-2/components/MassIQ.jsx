@@ -5,6 +5,7 @@ import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import { buildBaselinePlanFromProfile } from '../lib/engine/plan';
+import { runDecisionEngine } from '../lib/engine/decision';
 import {
   initializeSession,
   getStoredSession,
@@ -1253,7 +1254,6 @@ function HomeTab({ profile, activePlan, setTab }) {
   const scanCount = Array.isArray(scanHistory) ? scanHistory.length : 0;
   const productState = !lastScan ? 'profile_complete_no_scan' : scanCount === 1 ? 'baseline_scan_complete' : 'trajectory_active';
   const trajectory = getTrajectoryStatus(scanHistory, activePlan?.phase || profile?.goal);
-  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Awaiting next scan';
   const todayStats = todayMeals.reduce((a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }), { calories: 0, protein: 0 });
 
   const phase = activePlan?.phase || 'Foundation';
@@ -1269,8 +1269,19 @@ function HomeTab({ profile, activePlan, setTab }) {
   const lastWeight = lastScan?.leanMass && lastScan?.bodyFat ? lastScan.leanMass / (1 - (lastScan.bodyFat / 100)) : null;
   const actualWeeklyChange = Number.isFinite(prevWeight) && Number.isFinite(lastWeight) ? Number((lastWeight - prevWeight).toFixed(2)) : null;
   const progressStatus = actualWeeklyChange === null ? 'Baseline week' : expectedWeekly < 0 ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind') : expectedWeekly > 0 ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind') : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
-  const adjustment = progressStatus === 'Behind' && phase === 'Cut' ? '↑ Protein +30g · ↓ Deficit -200 kcal' : progressStatus === 'Behind' && phase === 'Bulk' ? '↑ Calories +175 kcal' : progressStatus === 'Ahead' && phase === 'Cut' ? '↑ Calories +150 kcal' : 'Hold current route';
-  const insights = buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus });
+  const decision = (() => {
+    try {
+      return runDecisionEngine({ profile, plan: activePlan, scanHistory });
+    } catch {
+      return {
+        state: 'baseline',
+        limiting_factor: 'insufficient_data',
+        action: 'Calories +0 kcal/day, Protein +0.0 g/kg',
+        reason: 'Profile or scan inputs are incomplete',
+        expected_effect: 'Complete required profile/scan inputs to unlock decision logic',
+      };
+    }
+  })();
   const anchoredNextScanDate = (() => {
     if (!lastScan?.date) return null;
     const d = new Date(lastScan.date);
@@ -1328,8 +1339,8 @@ function HomeTab({ profile, activePlan, setTab }) {
                 : (estimatedWeeks > 0 ? `~${estimatedWeeks} weeks to target` : 'Awaiting next scan signal')}
             </div>
             <ProgressBar value={Math.max(0, Math.min(100, targetBF > 0 && currentBF > 0 ? ((currentBF - targetBF) / Math.max(0.1, currentBF)) * 100 : 0))} max={100} color={C.green} height={8} />
-            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Limiting factor: {productState === 'baseline_scan_complete' ? 'Baseline only' : insights.limiting_factor.title}</div>
-            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Action: {productState === 'baseline_scan_complete' ? 'Hold targets and collect second scan' : adjustment}</div>
+            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Limiting factor: {decision.limiting_factor}</div>
+            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Action: {decision.action}</div>
           </Card>
 
           <CollapsibleCard title="Weekly targets" summary={`${macros?.calories || '—'} kcal · ${macros?.protein || '—'}g protein`} open={openSection === 'targets'} onToggle={() => setOpenSection(openSection === 'targets' ? '' : 'targets')} delay=".04s">
@@ -1349,21 +1360,11 @@ function HomeTab({ profile, activePlan, setTab }) {
           </CollapsibleCard>
           )}
 
-          <CollapsibleCard title="Insights" summary={productState === 'baseline_scan_complete' ? 'Trajectory unlocks after next scan' : nextAction} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
+          <CollapsibleCard title="Insights" summary={decision.reason} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
             <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>
-              {productState === 'baseline_scan_complete' ? (
-                <>
-                  <li>Baseline established from your first scan.</li>
-                  <li>Keep current targets for one review cycle.</li>
-                  <li>Complete next scan to unlock trend analysis and adjustments.</li>
-                </>
-              ) : (
-                <>
-                  <li>{insights.limiting_factor.next_step}</li>
-                  <li>{insights.progress.next_step}</li>
-                  <li>{insights.limiting_factor.risk_if_ignored}</li>
-                </>
-              )}
+              <li>{decision.reason}</li>
+              <li>{decision.expected_effect}</li>
+              <li>{productState === 'trajectory_active' ? `State: ${decision.state}` : 'Awaiting trajectory state unlock'}</li>
             </ul>
           </CollapsibleCard>
 
