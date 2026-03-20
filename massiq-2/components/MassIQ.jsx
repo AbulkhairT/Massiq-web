@@ -6,6 +6,7 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
+  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -1243,7 +1244,7 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
-function HomeTab({ profile, activePlan, setTab }) {
+function HomeTab({ profile, activePlan, setTab, session }) {
   const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
@@ -1284,7 +1285,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           {/* ── Command center hero ── */}
           <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
+              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || session?.user?.email || 'there'}.</div>
               <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
@@ -3968,6 +3969,23 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
   );
 }
 
+function AuthStatusScreen({ title, message, actionLabel = null, onAction = null }) {
+  return (
+    <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <style>{CSS}</style>
+      <Card className="glass su" style={{ width: '100%', maxWidth: 420, padding: 24, background: C.cardElevated }}>
+        <h1 style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.15, marginBottom: 10 }}>{title}</h1>
+        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: actionLabel ? 16 : 0 }}>{message}</p>
+        {actionLabel && (
+          <Btn onClick={onAction} style={{ width: '100%' }}>
+            {actionLabel}
+          </Btn>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 /* ─── Placeholder tabs ───────────────────────────────────────────────────── */
 const PlaceholderTab = ({ label, icon }) => (
   <div style={{
@@ -4058,7 +4076,7 @@ function Sidebar({ active, setTab, profile }) {
       {/* User footer */}
       {profile && (
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Your account'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
             {goalEmoji} {profile.goal}
           </div>
@@ -4075,13 +4093,20 @@ export default function MassIQ() {
   const [authBusy,   setAuthBusy]   = useState(false);
   const [authError,  setAuthError]  = useState('');
   const [authNotice, setAuthNotice] = useState('');
-  const [profile,    setProfile]    = useState(null);
+  const [profile,    setProfile]    = useState(undefined);
   const [activePlan, setActivePlan] = useState(null);
   const [tab,        setTab]        = useState('home');
   const [ready,      setReady]      = useState(false);
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const [profileHydrated, setProfileHydrated] = useState(false);
+  const [authStatus, setAuthStatus] = useState('auth_loading');
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
+
+  const isProfileComplete = (p) => Boolean(
+    p?.name && p?.age && p?.weightLbs && p?.heightCm && p?.goal && p?.activity && p?.gender
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -4090,9 +4115,11 @@ export default function MassIQ() {
         const s = await initializeSession();
         if (!mounted) return;
         setSession(s);
+        setAuthStatus(s?.access_token ? 'auth_loading' : 'logged_out');
       } catch (err) {
         if (!mounted) return;
         setAuthError(err.message || 'Could not restore session.');
+        setAuthStatus('recoverable_error');
       } finally {
         if (mounted) setAuthReady(true);
       }
@@ -4102,16 +4129,30 @@ export default function MassIQ() {
   }, []);
 
   useEffect(() => {
+    const syncFromStorage = (e) => {
+      if (e?.key !== 'massiq:auth:session') return;
+      const next = getStoredSession();
+      setSession(next?.access_token ? next : null);
+    };
+    window.addEventListener('storage', syncFromStorage);
+    return () => window.removeEventListener('storage', syncFromStorage);
+  }, []);
+
+  useEffect(() => {
     if (!authReady) return;
     if (!session?.access_token) {
-      setProfile(null);
+      setProfile(undefined);
       setActivePlan(null);
+      setProfileHydrated(false);
+      setAuthStatus('logged_out');
       setReady(true);
       return;
     }
     let mounted = true;
     const hydrate = async () => {
       setReady(false);
+      setAuthStatus('auth_loading');
+      setAuthError('');
       try {
         console.info('[sync] getUser:start');
         const user = session.user || await fetchUser(session.access_token);
@@ -4172,8 +4213,16 @@ export default function MassIQ() {
         }
 
         if (mounted) {
-          setProfile(loadedProfile);
+          setProfile(loadedProfile ?? null);
           setActivePlan(loadedPlan);
+          setProfileHydrated(true);
+          if (!loadedProfile) {
+            setAuthStatus('authenticated_no_profile');
+          } else if (!isProfileComplete(loadedProfile)) {
+            setAuthStatus('authenticated_profile_incomplete');
+          } else {
+            setAuthStatus('ready');
+          }
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
@@ -4181,14 +4230,19 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
+        if (mounted) {
+          setAuthError('We couldn’t finish syncing your account. Please retry.');
+          setProfile(undefined);
+          setProfileHydrated(false);
+          setAuthStatus('recoverable_error');
+        }
       } finally {
         if (mounted) setReady(true);
       }
     };
     hydrate();
     return () => { mounted = false; };
-  }, [authReady, session?.access_token]);
+  }, [authReady, session?.access_token, hydrateAttempt]);
 
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null, opts = {}) => {
     if (!session?.access_token) return;
@@ -4235,6 +4289,9 @@ export default function MassIQ() {
 
     const mapAuthError = (err, m) => {
       const raw = String(err?.message || '').toLowerCase();
+      if (raw.includes('email not confirmed') || raw.includes('not confirmed')) {
+        return 'Please verify your email before logging in.';
+      }
       if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
       if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
         return 'An account already exists for this email. Log in instead.';
@@ -4261,8 +4318,24 @@ export default function MassIQ() {
         ? await signUpWithPassword(normalizedEmail, userPassword)
         : await signInWithPassword(normalizedEmail, userPassword);
       if (!res?.access_token) {
-        setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
+        setAuthNotice(mode === 'signup'
+          ? 'Account created. Please check your email and verify your account before logging in.'
+          : 'Please verify your email before logging in.');
         return;
+      }
+      try {
+        const user = await fetchUser(res.access_token);
+        if (user?.id) {
+          setSession({ ...res, user });
+          return;
+        }
+      } catch (userErr) {
+        if (mode === 'login') {
+          setAuthNotice('Signed in. Finishing account setup…');
+          setSession(res);
+          return;
+        }
+        throw userErr;
       }
       setSession(res);
     } catch (err) {
@@ -4279,8 +4352,9 @@ export default function MassIQ() {
       console.error('Logout failed:', err);
     }
     setSession(null);
-    setProfile(null);
+    setProfile(undefined);
     setActivePlan(null);
+    setProfileHydrated(false);
     setEditing(false);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
@@ -4325,7 +4399,25 @@ export default function MassIQ() {
 
   const showToast = (msg) => setToast(msg);
 
-  if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+  if (!authReady || !ready) {
+    return (
+      <AuthStatusScreen
+        title="Loading your account"
+        message="Please wait while we restore your session and profile."
+      />
+    );
+  }
+
+  if (authStatus === 'recoverable_error' && session?.access_token) {
+    return (
+      <AuthStatusScreen
+        title="We’re having trouble loading your account"
+        message={authError || 'Please retry syncing your profile.'}
+        actionLabel="Retry"
+        onAction={() => setHydrateAttempt((n) => n + 1)}
+      />
+    );
+  }
 
   if (!session?.access_token) {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
@@ -4345,7 +4437,7 @@ export default function MassIQ() {
 
   const renderTab = () => {
     switch (tab) {
-      case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
+      case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} session={session} />;
       case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
       case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
       case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
