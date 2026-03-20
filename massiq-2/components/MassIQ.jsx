@@ -341,7 +341,7 @@ function getPrimaryLimiters(scan, activePlan) {
   if (Array.isArray(fromScan) && fromScan.length) return fromScan.slice(0, 3);
   const actions = activePlan?.engineDiagnosis?.primary?.primary_issue ? [activePlan.engineDiagnosis.primary.primary_issue] : [];
   if (actions.length) return actions;
-  return ['Execution consistency is the current bottleneck.'];
+  return ['Insufficient scan history to isolate a single limiting factor yet.'];
 }
 
 function getActiveTargets(activePlan, profile) {
@@ -914,13 +914,15 @@ function Onboarding({ onComplete }) {
     }
   };
 
-  const macros = calcMacros({
-    ...data, age: Number(data.age),
+  const previewProfile = {
+    ...data,
+    age: Number(data.age || 0),
     weightLbs: data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0),
-    heightIn: data.unitSystem === 'imperial'
-      ? (Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)
-      : Number(data.heightCm || 0) / 2.54,
-  });
+    heightCm: data.unitSystem === 'imperial'
+      ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
+      : Number(data.heightCm || 0),
+  };
+  const previewPlan = buildBaselinePlanFromProfile(previewProfile);
 
   /* ── Dot progress ── */
   const Dots = () => (
@@ -1151,8 +1153,8 @@ function Onboarding({ onComplete }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 36, textAlign: 'left' }}>
             {[
               { label: 'Goal',          value: data.goal,     unit: '' },
-              { label: 'Daily Calories', value: macros?.calories, unit: 'kcal' },
-              { label: 'Daily Protein',  value: macros?.protein,  unit: 'g' },
+              { label: 'Daily Calories', value: previewPlan?.dailyTargets?.calories, unit: 'kcal' },
+              { label: 'Daily Protein',  value: previewPlan?.dailyTargets?.protein,  unit: 'g' },
             ].map(row => (
               <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.cardElevated, borderRadius: 14, padding: '14px 18px' }}>
                 <span style={{ color: C.muted, fontSize: 14 }}>{row.label}</span>
@@ -1274,6 +1276,78 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
+function buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus }) {
+  const weightKg = Number(((profile?.weightLbs || 0) * 0.453592).toFixed(1));
+  const bf = Number(lastScan?.bodyFat || 0);
+  const phase = activePlan?.phase || profile?.goal || 'Maintain';
+  const calories = Number(activePlan?.dailyTargets?.calories || activePlan?.macros?.calories || 0);
+  const protein = Number(activePlan?.dailyTargets?.protein || activePlan?.macros?.protein || 0);
+  const tdee = Number(activePlan?.tdee || 0);
+  const proteinPerKg = weightKg > 0 ? (protein / weightKg) : 0;
+  const bfDelta = prevScan ? Number((lastScan?.bodyFat || 0) - (prevScan?.bodyFat || 0)) : 0;
+  const lmDelta = prevScan ? Number((lastScan?.leanMass || 0) - (prevScan?.leanMass || 0)) : 0;
+
+  let limitingFactor = {
+    title: 'Insufficient scan history',
+    summary: 'This is your baseline route calibration week.',
+    rationale: 'One scan can establish a starting point, but not a response trend.',
+    next_step: 'Complete your next scan under similar conditions to unlock precise adjustment logic.',
+    risk_if_ignored: 'Staying on baseline settings too long can hide early drift in body fat or recovery.',
+    confidence: 'low',
+  };
+
+  if (prevScan) {
+    if (lmDelta < -0.7) {
+      limitingFactor = {
+        title: 'Lean mass protection',
+        summary: `Lean mass dropped by ${Math.abs(lmDelta).toFixed(1)} lb between scans.`,
+        rationale: `At ${protein}g (${proteinPerKg.toFixed(2)} g/kg), recovery support is the current limiter, not effort.`,
+        next_step: 'Raise protein adherence first and reduce deficit pressure this week.',
+        risk_if_ignored: 'Continuing this trend increases muscle-loss risk even if scale weight drops.',
+        confidence: 'high',
+      };
+    } else if (phase === 'Cut' && actualWeeklyChange > -0.1) {
+      limitingFactor = {
+        title: 'Deficit too small',
+        summary: `Weekly change is ${actualWeeklyChange.toFixed(2)} kg, below cut pace.`,
+        rationale: `Current route needs a stronger energy gap to move body fat from ${bf.toFixed(1)}%.`,
+        next_step: 'Tighten deficit by ~150 kcal and recheck in 7 days.',
+        risk_if_ignored: 'Cut duration extends while adherence fatigue increases.',
+        confidence: 'medium',
+      };
+    } else if (phase === 'Maintain' && Math.abs(actualWeeklyChange) <= 0.2) {
+      limitingFactor = {
+        title: 'Execution consistency',
+        summary: `Weight trend is ${actualWeeklyChange.toFixed(2)} kg/week, inside maintain band.`,
+        rationale: `At ${calories} kcal${tdee ? ` vs ~${Math.round(tdee)} kcal maintenance` : ''}, current intake is aligned with stability goals.`,
+        next_step: 'Hold targets for 14 days and confirm body fat remains within the planned range.',
+        risk_if_ignored: 'Untracked drift can compound before the next decision point.',
+        confidence: 'high',
+      };
+    }
+  }
+
+  return {
+    why_plan: {
+      title: 'Why this plan works',
+      summary: `Plan is anchored to ${weightKg} kg body mass, ${phase} phase, and ${profile?.activity || 'current'} activity demand.`,
+      rationale: `${calories} kcal sets the energy level${tdee ? ` against ~${Math.round(tdee)} kcal estimated maintenance` : ''}. Protein at ${protein}g (${proteinPerKg.toFixed(2)} g/kg) is set for lean-mass protection.`,
+      next_step: `Hit calorie and protein targets for the next ${phase === 'Maintain' ? 14 : 7} days before re-evaluation.`,
+      risk_if_ignored: 'Skipping macro adherence removes the signal needed for reliable route adjustments.',
+      confidence: prevScan ? 'high' : 'medium',
+    },
+    limiting_factor: limitingFactor,
+    progress: {
+      title: 'Progress vs route',
+      summary: `Expected ${expectedWeekly.toFixed(2)} kg/week vs actual ${actualWeeklyChange === null ? 'not available yet' : `${actualWeeklyChange.toFixed(2)} kg/week`}.`,
+      rationale: prevScan ? `Body-fat change across scans is ${bfDelta.toFixed(1)} percentage points.` : 'Trend confidence improves after the next scan.',
+      next_step: progressStatus === 'Behind' ? 'Apply the adjustment this week and reassess at next checkpoint.' : 'Continue execution and validate trend at next checkpoint.',
+      risk_if_ignored: 'Route drift compounds when trend checks are skipped.',
+      confidence: prevScan ? 'medium' : 'low',
+    },
+  };
+}
+
 function HomeTab({ profile, activePlan, setTab }) {
   const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
@@ -1321,6 +1395,7 @@ function HomeTab({ profile, activePlan, setTab }) {
       : progressStatus === 'Ahead' && phase === 'Cut'
         ? 'Increase calories by 100 kcal/day to reduce lean-mass risk.'
         : 'Keep current targets and rescan next week.';
+  const insights = buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus });
 
   return (
     <div className="screen">
@@ -1407,7 +1482,7 @@ function HomeTab({ profile, activePlan, setTab }) {
           <Card className="su glass" style={{ animationDelay: '.14s' }}>
             <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Adjustment recommendation</div>
             <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{adjustment}</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Limiter: {limiters[0]}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Limiter: {insights.limiting_factor.title} — {insights.limiting_factor.summary}</div>
           </Card>
 
           <Card className="su glass" style={{ animationDelay: '.15s' }}>
@@ -1432,9 +1507,9 @@ function HomeTab({ profile, activePlan, setTab }) {
           <Card className="su glass" style={{ animationDelay: '.155s' }}>
             <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>Risk layer</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: C.muted }}>
-              <div>Risk: fat gain if adherence drops during surplus weeks.</div>
-              <div>Risk: muscle loss if protein target is repeatedly missed.</div>
-              <div>Risk: recovery compromised if sleep consistency falls.</div>
+              <div>{insights.why_plan.risk_if_ignored}</div>
+              <div>{insights.limiting_factor.risk_if_ignored}</div>
+              <div>{insights.progress.risk_if_ignored}</div>
             </div>
           </Card>
 
@@ -4348,11 +4423,15 @@ export default function MassIQ() {
           throw planError;
         }
       }
+      const savedPlan = await getPlan(session.access_token, userId);
+      if ((planToPersist || opts.requirePlanAfterProfile) && !savedPlan) {
+        throw new Error('Plan was not persisted correctly.');
+      }
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
         await createScan(session.access_token, userId, latestScan);
       }
-      return planToPersist;
+      return savedPlan || planToPersist;
     } catch (err) {
       if (opts.throwOnError) throw err;
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
