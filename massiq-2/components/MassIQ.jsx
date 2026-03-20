@@ -6,7 +6,6 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
-  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
