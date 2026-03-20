@@ -348,7 +348,36 @@ function getActiveTargets(activePlan, profile) {
   const targets = activePlan?.dailyTargets || activePlan?.macros;
   if (targets) return targets;
   if (!profile) return null;
+  if (!isProfileCompleteForPlan(profile)) return null;
   return buildBaselinePlanFromProfile(profile).dailyTargets;
+}
+
+function isProfileCompleteForPlan(profileDraft) {
+  if (!profileDraft) return false;
+  const age = Number(profileDraft.age);
+  const weightKg = Number(profileDraft.weightKg);
+  const weightLbs = Number(profileDraft.weightLbs);
+  const heightCm = Number(profileDraft.heightCm);
+  const hasWeight = (Number.isFinite(weightKg) && weightKg > 0) || (Number.isFinite(weightLbs) && weightLbs > 0);
+  const hasHeight = Number.isFinite(heightCm) && heightCm > 0;
+  return Boolean(
+    profileDraft.goal
+    && profileDraft.activity
+    && profileDraft.gender
+    && Number.isFinite(age) && age > 0
+    && hasWeight
+    && hasHeight
+  );
+}
+
+function buildBaselinePlanIfComplete(profileDraft) {
+  if (!isProfileCompleteForPlan(profileDraft)) return null;
+  try {
+    return buildBaselinePlanFromProfile(profileDraft);
+  } catch (err) {
+    console.warn('Skipping baseline preview until profile data is valid:', err);
+    return null;
+  }
 }
 
 function activityBand(activity) {
@@ -914,15 +943,21 @@ function Onboarding({ onComplete }) {
     }
   };
 
+  const hasImperialHeight = data.heightFt !== '' && data.heightInch !== '';
   const previewProfile = {
     ...data,
-    age: Number(data.age || 0),
-    weightLbs: data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0),
+    age: data.age === '' ? null : Number(data.age),
+    weightLbs: data.unitSystem === 'metric'
+      ? (data.weightKg === '' ? null : Number(data.weightKg) * 2.20462)
+      : (data.weightLbs === '' ? null : Number(data.weightLbs)),
+    weightKg: data.unitSystem === 'metric'
+      ? (data.weightKg === '' ? null : Number(data.weightKg))
+      : null,
     heightCm: data.unitSystem === 'imperial'
-      ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
-      : Number(data.heightCm || 0),
+      ? (hasImperialHeight ? ((Number(data.heightFt) * 12) + Number(data.heightInch)) * 2.54 : null)
+      : (data.heightCm === '' ? null : Number(data.heightCm)),
   };
-  const previewPlan = buildBaselinePlanFromProfile(previewProfile);
+  const previewPlan = buildBaselinePlanIfComplete(previewProfile);
 
   /* ── Dot progress ── */
   const Dots = () => (
@@ -1161,7 +1196,7 @@ function Onboarding({ onComplete }) {
                 <span style={{ fontWeight: 700, fontSize: 18, color: C.green }}>
                   {typeof row.value === 'number'
                     ? <CountUp target={row.value} unit={row.unit} />
-                    : row.value}
+                    : (row.value || '—')}
                 </span>
               </div>
             ))}
