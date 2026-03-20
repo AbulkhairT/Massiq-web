@@ -368,7 +368,9 @@ function normalizeGoal(goal) {
 function validateProfileForPlan(profile) {
   if (!profile) throw new Error('Missing profile');
   const age = Number(profile.age);
-  const weightKg = Number(((profile.weightLbs || 0) * 0.453592).toFixed(2));
+  const directKg = Number(profile.weightKg);
+  const fromLbsKg = Number(profile.weightLbs) * 0.453592;
+  const weightKg = Number((Number.isFinite(directKg) && directKg > 0 ? directKg : fromLbsKg).toFixed(2));
   const heightCm = Number(profile.heightCm);
   if (!Number.isFinite(age) || age <= 0) throw new Error('Invalid age');
   if (!Number.isFinite(weightKg) || weightKg < 40 || weightKg > 200) throw new Error('Invalid weight');
@@ -386,9 +388,11 @@ function generateDeterministicPlan(profile) {
   const phaseAdjustment = goal === 'cut' ? -400 : goal === 'bulk' ? 300 : 0;
   const calories = Math.max(1200, Math.round(tdee + phaseAdjustment));
 
-  const proteinPerKgRaw = goal === 'cut' ? 2.2 : goal === 'bulk' ? 1.8 : 2.0;
-  const proteinPerKg = Math.min(2.4, Math.max(1.6, proteinPerKgRaw));
-  const protein = Math.round(weightKg * proteinPerKg);
+  const proteinFactor = goal === 'cut' ? 2.2 : goal === 'bulk' ? 1.8 : 2.0;
+  const proteinRaw = weightKg * proteinFactor;
+  const minProtein = weightKg * 1.6;
+  const maxProtein = weightKg * 2.4;
+  const protein = Math.round(Math.min(maxProtein, Math.max(minProtein, proteinRaw)));
 
   const fatPerKgRaw = 0.9;
   const fatPerKg = Math.min(1.2, Math.max(0.6, fatPerKgRaw));
