@@ -4297,20 +4297,6 @@ export default function MassIQ() {
           }
           return;
         }
-        if (loadedProfile && loadedProfile.id !== userId) {
-          throw new Error('Profile/user mismatch detected.');
-        }
-        if (!loadedProfile) {
-          if (mounted) {
-            setProfile(null);
-            setActivePlan(null);
-            setTab('home');
-            LS.set(LS_KEYS.profile, null);
-            LS.set(LS_KEYS.activePlan, null);
-            LS.set(LS_KEYS.scanHistory, []);
-          }
-          return;
-        }
         try {
           console.info('[sync] getLatestPlan:start', { userId });
           loadedPlan = await getPlan(session.access_token, userId);

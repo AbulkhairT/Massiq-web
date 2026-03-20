@@ -101,6 +101,11 @@ function serializeProfile(userId, profile) {
   };
 }
 
+function isMissingUnitSystemColumnError(err) {
+  const raw = String(err?.message || '').toLowerCase();
+  return raw.includes('unit_system') && raw.includes('profiles') && (raw.includes('column') || raw.includes('schema cache'));
+}
+
 function deserializeProfile(row) {
   if (!row) return null;
   const heightCm = toNumber(row.height, null);
@@ -255,22 +260,45 @@ export async function fetchUser(token) {
 
 export async function upsertProfile(token, userId, profile) {
   const row = serializeProfile(userId, profile);
-  return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
-    method: 'POST',
-    headers: {
-      ...authHeaders(token),
-      Prefer: 'resolution=merge-duplicates,return=representation',
-    },
-    body: JSON.stringify(row),
-  });
+  try {
+    return await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        Prefer: 'resolution=merge-duplicates,return=representation',
+      },
+      body: JSON.stringify(row),
+    });
+  } catch (err) {
+    if (!isMissingUnitSystemColumnError(err)) throw err;
+    const fallbackRow = { ...row };
+    delete fallbackRow.unit_system;
+    return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
+      method: 'POST',
+      headers: {
+        ...authHeaders(token),
+        Prefer: 'resolution=merge-duplicates,return=representation',
+      },
+      body: JSON.stringify(fallbackRow),
+    });
+  }
 }
 
 export async function getProfile(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
-    method: 'GET',
-    headers: authHeaders(token),
-  });
-  return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  try {
+    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  } catch (err) {
+    if (!isMissingUnitSystemColumnError(err)) throw err;
+    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
+  }
 }
 
 export async function ensureProfile(token, userId) {
