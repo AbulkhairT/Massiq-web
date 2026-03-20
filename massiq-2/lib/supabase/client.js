@@ -226,13 +226,23 @@ export async function signInWithPassword(email, password) {
 }
 
 export async function refreshSession(refreshToken) {
-  const data = await supabaseFetch('/auth/v1/token?grant_type=refresh_token', {
-    method: 'POST',
-    headers: authHeaders(),
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
-  storeSession(data);
-  return data;
+  try {
+    const data = await supabaseFetch('/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    storeSession(data);
+    return data;
+  } catch (err) {
+    // Stale/revoked refresh token — clear it so the user sees a clean login form
+    const msg = String(err?.message || '').toLowerCase();
+    if (msg.includes('refresh token') || msg.includes('invalid') || msg.includes('not found')) {
+      clearStoredSession();
+      return null;
+    }
+    throw err;
+  }
 }
 
 export async function signOut(token) {

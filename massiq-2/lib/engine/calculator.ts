@@ -108,20 +108,20 @@ export function calcPhaseAdjustment(tdee: number, goal: Goal, weightLbs: number)
 
 /**
  * ISSN position stand: 1.6–2.2 g/kg/day for trained individuals.
- * We use LBM (not total body weight) for cuts/recomp to avoid inflating
- * targets for higher-BF individuals.
+ * We use LBM (not total body weight) to avoid inflating targets for
+ * higher-BF individuals.  Target ≈ 1.0–1.1 g/lb LBM (= 2.2–2.4 g/kg LBM).
  *
- * Cut/Recomp: 2.2 g/kg LBM (upper end — preserves muscle in deficit)
- * Bulk:       1.8 g/kg total BW (sufficient for hypertrophy)
- * Maintain:   1.7 g/kg LBM
+ * Cut/Recomp: 2.4 g/kg LBM (1.1 g/lb — preserves muscle in deficit, high end)
+ * Bulk:       2.0 g/kg LBM (0.9 g/lb — sufficient for hypertrophy without excess)
+ * Maintain:   2.2 g/kg LBM (1.0 g/lb — sport-science midpoint for maintenance)
  */
 export function calcProtein(goal: Goal, lbmKg: number, weightKg: number): number {
   let grams: number
   switch (goal) {
-    case 'Cut':     grams = lbmKg  * 2.2; break
-    case 'Bulk':    grams = weightKg * 1.8; break
-    case 'Recomp':  grams = lbmKg  * 2.2; break
-    case 'Maintain':grams = lbmKg  * 1.7; break
+    case 'Cut':     grams = lbmKg * 2.4; break
+    case 'Bulk':    grams = lbmKg * 2.0; break
+    case 'Recomp':  grams = lbmKg * 2.4; break
+    case 'Maintain':grams = lbmKg * 2.2; break
   }
   return round5(grams)
 }
