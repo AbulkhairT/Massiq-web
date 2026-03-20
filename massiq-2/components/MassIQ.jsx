@@ -3199,8 +3199,6 @@ function AIPatterns({ profile, activePlan }) {
 
 function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast }) {
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-  const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
-  const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
   const [confirmReset, setConfirmReset] = useState(false);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -3209,9 +3207,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
     hydration: { enabled: false, time: '14:00' },
     checkpoint: { enabled: true, time: '09:00' },
   }));
-
-  const aiMissions = LS.get('massiq:missions', null);
-  const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
 
   /* Health score from last scan or profile defaults */
   const lastScan    = scanHistory[scanHistory.length - 1];
@@ -3237,27 +3232,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
   const firstScan = scanHistory[0];
   const bfDelta   = firstScan && lastScan ? (lastScan.bodyFat  - firstScan.bodyFat).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
-
-  /* Unlock logic */
-  const isUnlocked = (m) => !m.requires || m.requires.every(r => completed.includes(r));
-  const isDone     = (id) => completed.includes(id);
-  const totalXP    = activeMissions.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
-
-  const completeMission = (m) => {
-    if (isDone(m.id) || !isUnlocked(m)) return;
-    const next = [...completed, m.id];
-    const nextXP = xp + m.xp;
-    setCompleted(next); setXp(nextXP);
-    LS.set(LS_KEYS.completed, next);
-    LS.set(LS_KEYS.xp, nextXP);
-    showToast(`+${m.xp} XP — ${m.title} complete!`);
-  };
-
-  /* Tier progress */
-  const bronzeDone = activeMissions.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
-  const silverDone = activeMissions.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
-  const goldDone   = activeMissions.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
-  const tierFilled = bronzeDone === 4 ? (silverDone === 2 ? (goldDone === 2 ? 3 : 2) : 1) : 0;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
@@ -3402,82 +3376,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         ))}
       </Card>
 
-      {/* 3 ── XP + Missions ── */}
-      <div className="su" style={{ animationDelay: '.08s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Physique Missions</div>
-
-        {/* Hero stats */}
-        <Card style={{ marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
-            {[
-              { label: 'Total XP',   value: totalXP },
-              { label: 'Day Streak', value: LS.get(LS_KEYS.streak, 0) },
-              { label: 'Done',       value: `${completed.length}/${activeMissions.length}` },
-            ].map(s => (
-              <div key={s.label}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{s.value}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* Tier bar */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20, padding: '0 4px' }}>
-          {TIER_ORDER.map((tier, i) => {
-            const filled = i <= tierFilled;
-            return (
-              <div key={tier} style={{ display: 'flex', alignItems: 'center', flex: i < TIER_ORDER.length - 1 ? 1 : 0 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: filled ? TIER_COLORS[tier] : C.border, border: `2px solid ${filled ? TIER_COLORS[tier] : C.dimmed}` }} />
-                  <span style={{ fontSize: 9, color: filled ? TIER_COLORS[tier] : C.dimmed, fontWeight: 600 }}>{tier}</span>
-                </div>
-                {i < TIER_ORDER.length - 1 && (
-                  <div style={{ flex: 1, height: 2, background: i < tierFilled ? TIER_COLORS[tier] : C.border, margin: '0 4px', marginBottom: 14 }} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Mission cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {activeMissions.map(m => {
-            const done     = isDone(m.id);
-            const unlocked = isUnlocked(m);
-            const tc       = TIER_COLORS[m.tier];
-            return (
-              <div key={m.id} className="bp" onClick={() => completeMission(m)} style={{
-                display: 'flex', alignItems: 'center', gap: 14,
-                background: C.card, borderRadius: 16, padding: '14px 16px',
-                border: `1px solid ${done ? tc + '55' : C.border}`,
-                opacity: !unlocked && !done ? 0.4 : 1,
-              }}>
-                {/* Ring */}
-                <div style={{
-                  width: 48, height: 48, borderRadius: '50%', flexShrink: 0,
-                  border: `3px solid ${done ? tc : C.border}`,
-                  background: done ? `${tc}22` : C.cardElevated,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 22,
-                }}>
-                  {done ? '✓' : !unlocked ? '🔒' : m.emoji}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: done ? C.muted : C.white, textDecoration: done ? 'line-through' : 'none' }}>{m.title}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: tc, background: `${tc}22`, padding: '2px 8px', borderRadius: 99 }}>{m.tier}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{m.desc}</div>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: done ? C.dimmed : C.gold, flexShrink: 0 }}>+{m.xp} XP</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 3.5 ── AI Patterns ── */}
+      {/* 3 ── AI Patterns ── */}
       <AIPatterns profile={profile} activePlan={activePlan} />
 
       {/* 4 ── Profile Info ── */}
@@ -3866,14 +3765,50 @@ SCORES: physique 30-95 (avg 52-65), symmetry 60-95 (avg 70-85). Be calibrated, n
           />
         </div>
 
-        {/* 2 – Why this works */}
-        <Card className="su" style={{ animationDelay: '.03s' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-            <span style={{ fontSize: 18 }}>✨</span>
-            <span style={{ fontWeight: 700 }}>Why this plan works</span>
-          </div>
-          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7 }}>{result.whyThisWorks}</p>
-        </Card>
+        {/* 2 – Primary Diagnosis */}
+        {(() => {
+          const diag = result.engineOutput?.diagnosis?.primary;
+          if (!diag) return null;
+          const CODE_LABELS = {
+            aggressive_deficit:   'Aggressive Deficit',
+            insufficient_deficit: 'Insufficient Deficit',
+            low_protein:          'Low Protein Intake',
+            lean_mass_risk:       'Lean Mass Risk',
+            phase_mismatch:       'Phase Mismatch',
+            excessive_surplus:    'Excessive Surplus',
+            default:              'Optimization Opportunity',
+          };
+          const SEVERITY_COLOR = { critical: C.orange, warning: C.gold, info: C.blue };
+          const label = CODE_LABELS[diag.code] || CODE_LABELS.default;
+          const color = SEVERITY_COLOR[diag.severity] || C.muted;
+          const signals = Array.isArray(diag.supporting_signals) ? diag.supporting_signals : [];
+          return (
+            <Card className="su" style={{ animationDelay: '.03s', borderColor: color + '44' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <span style={{ fontSize: 18 }}>🔬</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
+                </div>
+                <span style={{ fontSize: 10, fontWeight: 700, color, background: color + '22', padding: '3px 10px', borderRadius: 99, textTransform: 'capitalize', flexShrink: 0 }}>{diag.severity}</span>
+              </div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, marginBottom: signals.length ? 12 : 0 }}>{diag.primary_issue}</p>
+              {signals.length > 0 && (
+                <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 8 }}>Why this conclusion</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {signals.map((s, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <span style={{ color, fontSize: 11, marginTop: 1, flexShrink: 0 }}>•</span>
+                        <span style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          );
+        })()}
 
         {/* 2.5 – Progress delta */}
         <Card className="su" style={{ animationDelay: '.04s' }}>
@@ -4474,11 +4409,13 @@ export default function MassIQ() {
         }
 
         if (mounted) {
-          // Restore name from localStorage if DB doesn't have it yet
-          // (name column may not exist on older DB schemas)
+          // Restore name if DB doesn't have it — check a logout-resilient key first,
+          // then fall back to the profile cache (may have been cleared on logout)
           if (loadedProfile && !loadedProfile.name) {
+            const persistedName = localStorage.getItem(`miq:name:${userId}`);
             const cached = LS.get(LS_KEYS.profile, null);
-            if (cached?.name) loadedProfile = { ...loadedProfile, name: cached.name };
+            const fallbackName = persistedName || cached?.name || null;
+            if (fallbackName) loadedProfile = { ...loadedProfile, name: fallbackName };
           }
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
@@ -4595,6 +4532,10 @@ export default function MassIQ() {
   const handleOnboardingComplete = (p, plan) => {
     setProfile(p);
     LS.set(LS_KEYS.profile, p);
+    // Persist name under a non-massiq: key so it survives logout/clear
+    if (p?.name && session?.user?.id) {
+      localStorage.setItem(`miq:name:${session.user.id}`, p.name);
+    }
     setEditing(false);
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
