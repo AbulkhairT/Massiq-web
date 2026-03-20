@@ -184,6 +184,14 @@ export interface FeedbackResult {
     protein_delta:  number   // how much to add/subtract from target protein
     reason:         string
   }
+  diagnosis?: string
+  risk_flags?: string[]
+  message?: string
+  confidence?: Confidence
+  adjustment?: {
+    calories: number
+    protein: number
+  }
 }
 
 /* ── Current state summary ─────────────────────────────────────────────── */

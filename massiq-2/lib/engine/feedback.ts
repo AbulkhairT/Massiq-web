@@ -13,7 +13,7 @@ import type {
   BodyScan, PhysioCalcs, Goal,
   FeedbackResult, ProgressStatus,
 } from './types'
-import { calcLBM, lbsToKg, weeklyFatLoss } from './calculator'
+import { calcLBM, lbsToKg } from './calculator'
 
 /* ─────────────────────────────────────────────────────────────────────── */
 /* Scan comparison                                                           */
@@ -25,126 +25,126 @@ export function analyzeScanProgress(
   physio:       PhysioCalcs,   // engine calcs at time of previous scan
   goal:         Goal,
 ): FeedbackResult {
-
-  /* ── Parse scan data ─────────────────────────────────────────────────── */
-
-  const prevWeight = previousScan.weight ?? physio.weightKg / 0.453592
+  const prevWeight = previousScan.weight ?? (physio.weightKg / 0.453592)
   const currWeight = currentScan.weight  ?? prevWeight
-
   const prevLBM = previousScan.leanMass ?? calcLBM(prevWeight, previousScan.bodyFat).lbs
   const currLBM = currentScan.leanMass  ?? calcLBM(currWeight, currentScan.bodyFat).lbs
 
-  /* ── Time elapsed ─────────────────────────────────────────────────────── */
+  const prevDate = new Date(previousScan.date)
+  const currDate = new Date(currentScan.date)
+  const daysElapsed = Math.max(1, Math.round((currDate.getTime() - prevDate.getTime()) / 86400000))
+  const weeklyWeightChangeLbs = ((currWeight - prevWeight) / daysElapsed) * 7
+  const weeklyWeightChangePct = prevWeight > 0 ? (weeklyWeightChangeLbs / prevWeight) * 100 : 0
+  const actualBFChange = currentScan.bodyFat - previousScan.bodyFat
+  const actualLMChange = currLBM - prevLBM
+  const actualWTChange = currWeight - prevWeight
+  const weeklyBFChange = (actualBFChange / daysElapsed) * 7
+  const fatLossRate = ((prevWeight * (previousScan.bodyFat / 100)) - (currWeight * (currentScan.bodyFat / 100))) / (daysElapsed / 7)
 
-  const prevDate   = new Date(previousScan.date)
-  const currDate   = new Date(currentScan.date)
-  const msElapsed  = currDate.getTime() - prevDate.getTime()
-  const daysElapsed = Math.max(1, Math.round(msElapsed / 86400000))
-  const weeksElapsed = daysElapsed / 7
+  const expectedByGoal = goal === 'Cut'
+    ? { min: -1.0, max: -0.4 }
+    : goal === 'Bulk'
+      ? { min: 0.25, max: 0.75 }
+      : { min: -0.2, max: 0.2 }
 
-  /* ── Actual changes ───────────────────────────────────────────────────── */
+  const baselineCalories = Math.round(physio.targetCalories)
+  const weightKg = lbsToKg(currWeight)
+  const currentProtein = Math.max(0, Math.round(physio.targetProteinG))
+  let nextCalories = baselineCalories
+  let nextProtein = currentProtein
+  let diagnosis = 'Progress is within expected route band.'
+  let message = 'Stay on plan and continue weekly execution.'
+  let status: ProgressStatus = 'on_track'
+  const riskFlags: string[] = []
 
-  const actualBFChange  = currentScan.bodyFat - previousScan.bodyFat   // negative = fat loss
-  const actualLMChange  = currLBM - prevLBM                             // positive = muscle gain
-  const actualWTChange  = currWeight - prevWeight                       // negative = weight loss
+  const muscleLossDetected = actualLMChange <= -0.7
+  if (muscleLossDetected) riskFlags.push('muscle_loss_risk')
+  if (Math.abs(weeklyWeightChangePct) < 0.1) riskFlags.push('stalled_progress')
 
-  // Actual fat mass change (lbs)
-  const prevFatLbs = prevWeight * (previousScan.bodyFat / 100)
-  const currFatLbs = currWeight * (currentScan.bodyFat  / 100)
-  const fatLostLbs = prevFatLbs - currFatLbs                            // positive = fat lost
+  const clampDelta = (delta: number) => Math.max(-300, Math.min(300, delta))
+  const applyDelta = (delta: number) => {
+    nextCalories = Math.max(1200, Math.min(5000, baselineCalories + clampDelta(delta)))
+  }
 
-  const actualFatLossRate = fatLostLbs / weeksElapsed                   // lbs/week
-
-  /* ── Expected changes ─────────────────────────────────────────────────── */
-
-  const dailyDeficit = Math.abs(physio.deficit)
-  const expectedWeeklyLoss = weeklyFatLoss(dailyDeficit)
-  const expectedFatLost    = expectedWeeklyLoss * weeksElapsed
-
-  // Expected BF change: how much % drop we expected
-  const expectedFatPctDrop = (expectedFatLost / prevWeight) * 100
-  const expectedBFChange   = -expectedFatPctDrop                        // negative = expected drop
-
-  /* ── Variance ─────────────────────────────────────────────────────────── */
-
-  // Variance = how much actual diverges from expected, as a percentage
-  // Positive variance = losing more than expected (ahead)
-  // Negative variance = losing less than expected (behind)
-  const expectedAbs = Math.abs(expectedBFChange)
-  const variance = expectedAbs > 0
-    ? ((Math.abs(actualBFChange) - expectedAbs) / expectedAbs) * 100
-    : 0
-
-  /* ── Muscle loss detection ────────────────────────────────────────────── */
-
-  // Flag muscle loss if LBM decreased by more than 0.5% of previous LBM
-  // Small decreases (<0.5%) may be measurement noise
-  const muscleLossThresholdLbs = prevLBM * 0.005
-  const muscleLossDetected = actualLMChange < -muscleLossThresholdLbs
-
-  /* ── Progress status classification ──────────────────────────────────── */
-
-  let status: ProgressStatus
-  if (muscleLossDetected) {
-    status = 'muscle_loss'
-  } else if (goal === 'Cut') {
-    if (variance >= 15) {
+  if (goal === 'Cut') {
+    if (weeklyWeightChangePct < -1.0) {
+      applyDelta(200)
+      diagnosis = 'You are losing weight too fast.'
+      message = 'Loss too aggressive — reduce deficit.'
       status = 'ahead'
-    } else if (variance >= -30) {
-      status = 'on_track'
-    } else if (variance >= -70) {
+      nextProtein = Math.max(nextProtein, Math.round(weightKg * 2.2))
+    } else if (weeklyWeightChangePct > -0.3) {
+      applyDelta(-175)
+      diagnosis = 'Fat loss is too slow.'
+      message = 'Fat loss too slow — increase deficit.'
       status = 'behind'
-    } else {
-      status = 'stalled'
+    }
+  } else if (goal === 'Maintain' || goal === 'Recomp') {
+    if (weeklyWeightChangePct > 0.3) {
+      applyDelta(-150)
+      diagnosis = 'Weight is drifting up in maintenance.'
+      message = 'Gaining fat — slight reduction needed.'
+      status = 'behind'
+      riskFlags.push('fat_gain_risk')
+    } else if (weeklyWeightChangePct < -0.3) {
+      applyDelta(150)
+      diagnosis = 'Weight is dropping in maintenance.'
+      message = 'Losing weight — increase intake.'
+      status = 'behind'
     }
   } else if (goal === 'Bulk') {
-    // For bulk, check if gaining at expected rate
-    const expectedGain = weeklyFatLoss(Math.abs(physio.deficit)) * weeksElapsed
-    const gainVariance = actualWTChange > 0 ? ((actualWTChange - expectedGain) / expectedGain) * 100 : -100
-    status = gainVariance >= -30 ? 'on_track' : 'behind'
-  } else {
-    status = 'on_track'
+    if (weeklyWeightChangePct > 1.0) {
+      applyDelta(-200)
+      diagnosis = 'Gain rate is too aggressive.'
+      message = 'Gaining too fast — minimize fat gain.'
+      status = 'ahead'
+      riskFlags.push('fat_gain_risk')
+    } else if (weeklyWeightChangePct < 0.2) {
+      applyDelta(175)
+      diagnosis = 'Gain rate is too slow.'
+      message = 'Growth too slow — increase calories.'
+      status = 'behind'
+    }
   }
 
-  /* ── Recommendation adjustment ────────────────────────────────────────── */
-
-  let calorieDelta = 0
-  let proteinDelta = 0
-  let adjustReason = 'No adjustment required — progress is on track'
-
-  if (status === 'muscle_loss') {
-    calorieDelta  = 200    // add 200 kcal to reduce muscle catabolism
-    proteinDelta  = 25     // add 25g protein
-    adjustReason  = `Lean mass decreased ${Math.abs(actualLMChange).toFixed(1)} lbs — adding 200 kcal and 25g protein to protect muscle`
-  } else if (status === 'ahead' && goal === 'Cut') {
-    // Losing too fast — risk of muscle loss upcoming
-    calorieDelta = 150
-    adjustReason = `Fat loss ${Math.abs(actualBFChange).toFixed(1)}% BF (${variance.toFixed(0)}% ahead of target) — adding 150 kcal to maintain sustainable rate`
-  } else if (status === 'behind' && goal === 'Cut') {
-    calorieDelta = -150
-    adjustReason = `Fat loss ${Math.abs(actualBFChange).toFixed(1)}% BF (${Math.abs(variance).toFixed(0)}% below target) — removing 150 kcal to restore deficit`
-  } else if (status === 'stalled' && goal === 'Cut') {
-    calorieDelta = -200
-    adjustReason = `Progress stalled — reducing calories by 200 kcal. Consider adding 1 cardio session/week if deficit already feels low`
-  } else if (status === 'behind' && goal === 'Bulk') {
-    calorieDelta = 100
-    adjustReason = `Gaining slower than expected — adding 100 kcal/day to improve anabolic environment`
+  if (muscleLossDetected) {
+    nextProtein = Math.max(nextProtein, Math.round(weightKg * 2.2))
+    diagnosis = 'Lean mass trend indicates muscle loss risk.'
+    message = 'Increase protein or reduce deficit to protect lean mass.'
+    status = status === 'on_track' ? 'muscle_loss' : status
   }
+
+  const proteinFloor = Math.round(weightKg * 1.6)
+  nextProtein = Math.max(nextProtein, proteinFloor)
+  const proteinDelta = nextProtein - currentProtein
+  const calorieDelta = nextCalories - baselineCalories
+  const variancePct = expectedByGoal.max === expectedByGoal.min
+    ? 0
+    : Math.round(((weeklyWeightChangePct - expectedByGoal.min) / (expectedByGoal.max - expectedByGoal.min)) * 100)
+  const confidence: 'low' | 'medium' | 'high' = daysElapsed >= 21 ? 'high' : daysElapsed >= 10 ? 'medium' : 'low'
 
   return {
-    days_elapsed:         daysElapsed,
-    actual_bf_change:     Math.round(actualBFChange * 10) / 10,
-    actual_lm_change:     Math.round(actualLMChange * 10) / 10,
-    actual_wt_change:     Math.round(actualWTChange * 10) / 10,
-    expected_bf_change:   Math.round(expectedBFChange * 10) / 10,
-    variance_pct:         Math.round(variance),
+    days_elapsed: daysElapsed,
+    actual_bf_change: Number(actualBFChange.toFixed(2)),
+    actual_lm_change: Number(actualLMChange.toFixed(2)),
+    actual_wt_change: Number(actualWTChange.toFixed(2)),
+    expected_bf_change: Number(weeklyBFChange.toFixed(2)),
+    variance_pct: Number.isFinite(variancePct) ? variancePct : 0,
     status,
-    fat_loss_rate:        Math.round(actualFatLossRate * 100) / 100,
+    fat_loss_rate: Number.isFinite(fatLossRate) ? Number(fatLossRate.toFixed(2)) : 0,
     muscle_loss_detected: muscleLossDetected,
     recommendation_adjustment: {
       calorie_delta: calorieDelta,
       protein_delta: proteinDelta,
-      reason:        adjustReason,
+      reason: `${diagnosis} ${message}`.trim(),
+    },
+    diagnosis,
+    risk_flags: riskFlags,
+    message,
+    confidence,
+    adjustment: {
+      calories: nextCalories,
+      protein: nextProtein,
     },
   }
 }

@@ -6,12 +6,13 @@ import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
+  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
   fetchUser,
   upsertProfile,
-  ensureProfile,
+  getProfile,
   upsertPlan,
   getPlan,
   createScan,
@@ -63,7 +64,7 @@ const CSS = `
   }
   .bp:active{transform:scale(.96);opacity:.85}
   .screen{padding:28px 18px 44px;display:flex;flex-direction:column;gap:22px}
-  .screen-title{font-size:34px;font-weight:760;line-height:1.06;letter-spacing:-0.03em}
+  .screen-title{font-size:38px;font-weight:820;line-height:1.02;letter-spacing:-0.035em;color:#f3fff8}
   .section-title{font-size:17px;font-weight:700;line-height:1.2;letter-spacing:-0.02em;margin-bottom:12px}
   .section-subtitle{font-size:13px;line-height:1.5;color:${C.muted}}
   .glass{
@@ -125,7 +126,7 @@ const CSS = `
     .mobile-tabbar{display:none!important}
     .desktop-sidebar{display:flex!important}
     .app-layout{display:grid!important;grid-template-columns:220px 1fr}
-    .app-content{max-width:860px;margin:0 auto;padding:34px 26px 52px}
+  .app-content{max-width:900px;margin:0 auto;padding:42px 28px 60px}
     .ob-wrap{max-width:600px;margin:0 auto}
   }
   @media(max-width:430px){
@@ -297,6 +298,9 @@ const fmt = {
   leanMass: (lbs, unit = 'imperial') => unit === 'metric'
     ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
     : `${Number(lbs || 0).toFixed(1)} lb`,
+  fatMass: (lbs, unit = 'imperial') => unit === 'metric'
+    ? `${(Number(lbs || 0) * 0.453592).toFixed(1)} kg`
+    : `${Number(lbs || 0).toFixed(1)} lb`,
   height: (cm, unit = 'imperial') => {
     const n = Number(cm || 0);
     if (unit === 'metric') return `${Math.round(n)} cm`;
@@ -316,7 +320,7 @@ const PHASE_META = {
 };
 
 function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
-  if (!Array.isArray(scanHistory) || scanHistory.length < 2) return { tone: 'neutral', label: 'Insufficient data', note: 'Complete your next scan to validate trajectory.' };
+  if (!Array.isArray(scanHistory) || scanHistory.length < 2) return { tone: 'neutral', label: 'Baseline week', note: 'Collecting initial data — next scan will unlock insights.' };
   const prev = scanHistory[scanHistory.length - 2];
   const curr = scanHistory[scanHistory.length - 1];
   const bfDelta = Number(curr.bodyFat || 0) - Number(prev.bodyFat || 0);
@@ -340,32 +344,140 @@ function getPrimaryLimiters(scan, activePlan) {
   if (Array.isArray(fromScan) && fromScan.length) return fromScan.slice(0, 3);
   const actions = activePlan?.engineDiagnosis?.primary?.primary_issue ? [activePlan.engineDiagnosis.primary.primary_issue] : [];
   if (actions.length) return actions;
-  return ['Execution consistency is the current bottleneck.'];
+  return ['Insufficient scan history to isolate a single limiting factor yet.'];
 }
 
 function getActiveTargets(activePlan, profile) {
-  const targets = activePlan?.dailyTargets || activePlan?.macros || calcMacros(profile);
-  return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+  const targets = activePlan?.dailyTargets || activePlan?.macros;
+  if (targets) return targets;
+  if (!profile) return null;
+  if (!isProfileCompleteForPlan(profile)) return null;
+  return buildBaselinePlanFromProfile(profile).dailyTargets;
+}
+
+function isProfileCompleteForPlan(profileDraft) {
+  if (!profileDraft) return false;
+  const age = Number(profileDraft.age);
+  const weightKg = Number(profileDraft.weightKg);
+  const weightLbs = Number(profileDraft.weightLbs);
+  const heightCm = Number(profileDraft.heightCm);
+  const hasWeight = (Number.isFinite(weightKg) && weightKg > 0) || (Number.isFinite(weightLbs) && weightLbs > 0);
+  const hasHeight = Number.isFinite(heightCm) && heightCm > 0;
+  return Boolean(
+    profileDraft.goal
+    && profileDraft.activity
+    && profileDraft.gender
+    && Number.isFinite(age) && age > 0
+    && hasWeight
+    && hasHeight
+  );
+}
+
+function buildBaselinePlanIfComplete(profileDraft) {
+  if (!isProfileCompleteForPlan(profileDraft)) return null;
+  try {
+    return buildBaselinePlanFromProfile(profileDraft);
+  } catch (err) {
+    console.warn('Skipping baseline preview until profile data is valid:', err);
+    return null;
+  }
+}
+
+function activityBand(activity) {
+  const a = String(activity || '').toLowerCase();
+  if (a.includes('sedentary') || a.includes('light') || a === 'low') return 'low';
+  if (a.includes('active') || a === 'high') return 'high';
+  return 'medium';
+}
+
+function normalizeGoal(goal) {
+  const g = String(goal || '').toLowerCase();
+  if (g.includes('bulk') || g.includes('gain')) return 'bulk';
+  if (g.includes('cut') || g.includes('lose')) return 'cut';
+  return 'maintain';
+}
+
+function validateProfileForPlan(profile) {
+  if (!profile) throw new Error('Missing profile');
+  const age = Number(profile.age);
+  const directKg = Number(profile.weightKg);
+  const fromLbsKg = Number(profile.weightLbs) * 0.453592;
+  const weightKg = Number((Number.isFinite(directKg) && directKg > 0 ? directKg : fromLbsKg).toFixed(2));
+  const heightCm = Number(profile.heightCm);
+  if (!Number.isFinite(age) || age <= 0) throw new Error('Invalid age');
+  if (!Number.isFinite(weightKg) || weightKg < 40 || weightKg > 200) throw new Error('Invalid weight');
+  if (!Number.isFinite(heightCm) || heightCm < 140 || heightCm > 220) throw new Error('Invalid height');
+  return { age, weightKg, heightCm };
+}
+
+function generateDeterministicPlan(profile) {
+  const { age, weightKg, heightCm } = validateProfileForPlan(profile);
+  const gender = profile?.gender === 'Female' ? 'female' : 'male';
+  const activityMultiplier = { low: 1.4, medium: 1.6, high: 1.75 }[activityBand(profile?.activity)] || 1.6;
+  const goal = normalizeGoal(profile?.goal);
+  const bmr = (10 * weightKg) + (6.25 * heightCm) - (5 * age) + (gender === 'male' ? 5 : -161);
+  const tdee = bmr * activityMultiplier;
+  const phaseAdjustment = goal === 'cut' ? -400 : goal === 'bulk' ? 300 : 0;
+  const calories = Math.max(1200, Math.round(tdee + phaseAdjustment));
+
+  const proteinFactor = goal === 'cut' ? 2.2 : goal === 'bulk' ? 1.8 : 2.0;
+  const proteinRaw = weightKg * proteinFactor;
+  const minProtein = weightKg * 1.6;
+  const maxProtein = weightKg * 2.4;
+  const protein = Math.round(Math.min(maxProtein, Math.max(minProtein, proteinRaw)));
+
+  const fatPerKgRaw = 0.9;
+  const fatPerKg = Math.min(1.2, Math.max(0.6, fatPerKgRaw));
+  const fat = Math.round(weightKg * fatPerKg);
+
+  const proteinKcal = protein * 4;
+  const fatKcal = fat * 9;
+  const carbKcal = Math.max(0, calories - proteinKcal - fatKcal);
+  const carbs = Math.round(carbKcal / 4);
+  const finalCalories = Math.round((protein * 4) + (fat * 9) + (carbs * 4));
+
+  if (![bmr, tdee, finalCalories, protein, carbs, fat].every(Number.isFinite)) {
+    throw new Error('Non-finite plan output');
+  }
+
+  return {
+    phase: goal === 'cut' ? 'Cut' : goal === 'bulk' ? 'Bulk' : 'Maintain',
+    bmr: Math.round(bmr),
+    tdee: Math.round(tdee),
+    calories: finalCalories,
+    protein,
+    carbs,
+    fat,
+    expectedWeeklyWeightKg: goal === 'cut' ? -0.4 : goal === 'bulk' ? 0.25 : 0,
+  };
 }
 
 function buildBaselinePlanFromProfile(profile) {
+  let plan;
+  try {
+    plan = generateDeterministicPlan(profile);
+  } catch (err) {
+    console.error('Baseline plan generation failed, falling back to maintenance:', err);
+    const safeProfile = { ...profile, goal: 'Maintain' };
+    plan = generateDeterministicPlan({ ...safeProfile, age: Math.max(18, Number(safeProfile?.age || 18)), weightLbs: Math.min(440, Math.max(88, Number(safeProfile?.weightLbs || 170))), heightCm: Math.min(220, Math.max(140, Number(safeProfile?.heightCm || 175))) });
+  }
   const targets = {
-    calories: 2500,
-    protein: 150,
-    carbs: 250,
-    fat: 70,
-    steps: 9000,
+    calories: plan.calories,
+    protein: plan.protein,
+    carbs: plan.carbs,
+    fat: plan.fat,
+    steps: plan.phase === 'Cut' ? 10000 : 8500,
     sleepHours: 8,
     waterLiters: 3,
-    trainingDaysPerWeek: 4,
-    cardioDays: 2,
+    trainingDaysPerWeek: plan.phase === 'Bulk' ? 5 : 4,
+    cardioDays: plan.phase === 'Bulk' ? 1 : 2,
   };
   const nextScan = new Date();
   nextScan.setDate(nextScan.getDate() + 28);
   return {
-    phase: 'Maintain',
-    phaseName: 'Maintain Phase',
-    objective: 'Baseline phase generated from your profile inputs.',
+    phase: plan.phase,
+    phaseName: `${plan.phase} Phase`,
+    objective: 'Baseline phase generated from validated profile inputs.',
     week: 1,
     startDate: todayStr(),
     nextScanDate: nextScan.toISOString().slice(0, 10),
@@ -379,6 +491,9 @@ function buildBaselinePlanFromProfile(profile) {
     trainDays: targets.trainingDaysPerWeek || 4,
     sleepHrs: targets.sleepHours || 8,
     waterL: targets.waterLiters || 3,
+    expectedWeeklyWeightKg: plan.expectedWeeklyWeightKg,
+    tdee: plan.tdee,
+    bmr: plan.bmr,
   };
 }
 
@@ -520,10 +635,10 @@ Return ONLY JSON: {"name":"","description":"","icon":"emoji","calories":${curren
 const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...rest }) => {
   const base = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    gap: 8, padding: '13px 22px', borderRadius: 14, fontWeight: 620,
-    fontSize: 14, letterSpacing: '-0.01em', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    gap: 8, padding: '15px 24px', borderRadius: 16, fontWeight: 700,
+    fontSize: 15, letterSpacing: '-0.01em', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'all .15s ease', opacity: disabled ? 0.45 : 1,
-    ...(variant === 'primary' && { background: C.green, color: '#071109', boxShadow: '0 8px 22px rgba(52,209,123,0.24)' }),
+    ...(variant === 'primary' && { background: C.green, color: '#071109', boxShadow: '0 10px 26px rgba(52,209,123,0.32)' }),
     ...(variant === 'outline' && { background: 'transparent', color: C.green, border: `1px solid ${C.green}` }),
     ...(variant === 'ghost'   && { background: 'transparent', color: C.muted, border: `1px solid ${C.border}` }),
     ...style,
@@ -532,7 +647,7 @@ const Btn = ({ children, onClick, style = {}, variant = 'primary', disabled, ...
 };
 
 const Card = ({ children, style = {}, className = '', ...rest }) => (
-  <div className={className} style={{ background: C.card, borderRadius: 18, padding: 18, border: `1px solid ${C.border}`, boxShadow: '0 8px 28px rgba(0,0,0,0.2)', ...style }} {...rest}>
+  <div className={className} style={{ background: 'linear-gradient(160deg, #17211C 0%, #111814 58%, #0E1411 100%)', borderRadius: 20, padding: 22, border: `1px solid rgba(52,209,123,0.18)`, boxShadow: '0 12px 32px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)', ...style }} {...rest}>
     {children}
   </div>
 );
@@ -729,11 +844,13 @@ function Onboarding({ onComplete }) {
   useEffect(() => {
     const saved = LS.get(LS_KEYS.profile, null);
     if (!saved) return;
+    const savedAge = Number(saved.age);
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
     setData((p) => ({
       ...p,
       ...saved,
       name: saved.name || p.name || '',
+      age: Number.isFinite(savedAge) && savedAge >= 13 && savedAge <= 100 ? String(savedAge) : '',
       unitSystem: saved.unitSystem || 'imperial',
       weightLbs: saved.weightLbs ? String(saved.weightLbs) : '',
       weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : '',
@@ -744,13 +861,15 @@ function Onboarding({ onComplete }) {
   }, []);
 
   const TOTAL = 9; // steps 0-8
+  const ageNum = parseInt(String(data.age || '').trim(), 10);
+  const ageValid = Number.isInteger(ageNum) && ageNum >= 13 && ageNum <= 100;
 
   const canNext = [
     !!(data.name || '').trim(),                // 0 name
     !!data.goal,                               // 1 goal
     !!(((data.unitSystem === 'metric' ? data.weightKg : data.weightLbs)
       && (data.unitSystem === 'metric' ? data.heightCm : (data.heightFt && data.heightInch))
-      && data.age && data.gender)), // 2 stats
+      && ageValid && data.gender)), // 2 stats
     !!data.activity,                           // 3 activity
     true,                                      // 4 dietary (skippable)
     true,                                      // 5 cuisine (skippable)
@@ -780,15 +899,25 @@ function Onboarding({ onComplete }) {
   }, [step]);
 
   const [generating, setGenerating] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const finish = async () => {
+    setSubmitError('');
+    if (!ageValid) {
+      setSubmitError('Age must be a whole number between 13 and 100.');
+      return;
+    }
     const normalizedWeightLbs = data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0);
     const normalizedHeightCm = data.unitSystem === 'imperial'
       ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
       : Number(data.heightCm || 0);
+    if (!Number.isFinite(normalizedWeightLbs) || normalizedWeightLbs <= 0 || !Number.isFinite(normalizedHeightCm) || normalizedHeightCm <= 0) {
+      setSubmitError('Please enter a valid height and weight to continue.');
+      return;
+    }
     const profile = {
       ...data,
-      age: Number(data.age),
+      age: ageNum,
       weightLbs: Number(normalizedWeightLbs.toFixed(1)),
       heightCm: Number(normalizedHeightCm.toFixed(1)),
       heightIn: Number((normalizedHeightCm / 2.54).toFixed(1)),
@@ -796,85 +925,42 @@ function Onboarding({ onComplete }) {
     LS.set(LS_KEYS.profile, profile);
 
     // Editing existing profile — skip plan gen
-    if (LS.get(LS_KEYS.activePlan)) { onComplete(profile, null); return; }
+    if (LS.get(LS_KEYS.activePlan)) {
+      try {
+        await onComplete(profile, null);
+      } catch (err) {
+        console.error('Profile save failed:', err);
+        setSubmitError(err?.message || 'Could not save profile. Please try again.');
+      }
+      return;
+    }
 
     setGenerating(true);
+    const plan = buildBaselinePlanFromProfile(profile);
     try {
-      // 1. Run the deterministic engine first — this is the source of truth for all numbers
-      const engineOutput = await callEngine(profile, []);
-      const macros = clampMacros(engineOutput?.macro_targets || calcMacros(profile), profile);
-
-      // 2. Claude generates narrative/missions/tips constrained by engine output
-      const planData = await generateInitialPlan(profile, macros, engineOutput);
-      const td = todayStr();
-
-      // 3. Assemble plan — engine targets take priority over Claude's returned numbers
-      const plan = {
-        phase:          profile.goal,
-        phaseName:      planData.phase?.name        || `${profile.goal} Phase`,
-        objective:      planData.phase?.objective   || '',
-        week:           1,
-        startDate:      td,
-        nextScanDate:   planData.nextScanDate       || (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
-        macros: {
-          calories: macros.calories,
-          protein:  macros.protein,
-          carbs:    macros.carbs,
-          fat:      macros.fat,
-        },
-        dailyTargets: {
-          calories:            macros.calories,
-          protein:             macros.protein,
-          carbs:               macros.carbs,
-          fat:                 macros.fat,
-          steps:               macros.steps               || 9000,
-          sleepHours:          macros.sleepHours          || 8,
-          waterLiters:         macros.waterLiters         || 3,
-          trainingDaysPerWeek: macros.trainingDaysPerWeek || 4,
-        },
-        trainDays:          macros.trainingDaysPerWeek || 4,
-        sleepHrs:           macros.sleepHours          || 8,
-        waterL:             macros.waterLiters         || 3,
-        steps:              macros.steps               || 9000,
-        weeklyMissions:     planData.weeklyMissions    || [],
-        whyThisWorks:       planData.whyThisWorks      || '',
-        dailyTips:          planData.dailyTips         || [],
-        trainingFocus:      planData.trainingFocus     || {},
-        nutritionKeyChange: planData.nutritionKeyChange || '',
-        startBF:            engineOutput?.start_bf     ?? planData.transformationTimeline?.startBF ?? 20,
-        targetBF:           engineOutput?.target_bf    ?? planData.transformationTimeline?.targetBF ?? (profile.goal === 'Cut' ? 16 : 20),
-        cardioDays:         macros.cardioDays           || 2,
-        // Attach engine output for downstream use (scan feedback, diagnosis display)
-        engineDiagnosis:    engineOutput?.diagnosis     || null,
-        engineTrajectory:   engineOutput?.trajectory    || null,
-        tdee:               engineOutput?.physio?.tdee  || null,
-      };
-      onComplete(profile, plan);
+      await onComplete(profile, plan);
     } catch (err) {
-      console.error('Plan generation failed:', err);
-      const macros = calcMacros(profile);
-      const td = todayStr();
-      const fallback = {
-        phase: profile.goal, phaseName: `${profile.goal} Phase`,
-        objective: `Optimize body composition through targeted ${profile.goal.toLowerCase()} protocols.`,
-        week: 1, startDate: td,
-        nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
-        macros, dailyTargets: { ...macros, steps: 8000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4 },
-        trainDays: 4, sleepHrs: 8, waterL: 3, steps: 8000,
-        weeklyMissions: [], whyThisWorks: '', dailyTips: [],
-        startBF: 20, targetBF: profile.goal === 'Cut' ? 16 : 20, cardioDays: 2,
-      };
-      onComplete(profile, fallback);
+      console.error('Onboarding completion failed:', err);
+      setGenerating(false);
+      setSubmitError(err?.message || 'Could not save your account data. Please try again.');
     }
   };
 
-  const macros = calcMacros({
-    ...data, age: Number(data.age),
-    weightLbs: data.unitSystem === 'metric' ? Number(data.weightKg || 0) * 2.20462 : Number(data.weightLbs || 0),
-    heightIn: data.unitSystem === 'imperial'
-      ? (Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)
-      : Number(data.heightCm || 0) / 2.54,
-  });
+  const hasImperialHeight = data.heightFt !== '' && data.heightInch !== '';
+  const previewProfile = {
+    ...data,
+    age: data.age === '' ? null : Number(data.age),
+    weightLbs: data.unitSystem === 'metric'
+      ? (data.weightKg === '' ? null : Number(data.weightKg) * 2.20462)
+      : (data.weightLbs === '' ? null : Number(data.weightLbs)),
+    weightKg: data.unitSystem === 'metric'
+      ? (data.weightKg === '' ? null : Number(data.weightKg))
+      : null,
+    heightCm: data.unitSystem === 'imperial'
+      ? (hasImperialHeight ? ((Number(data.heightFt) * 12) + Number(data.heightInch)) * 2.54 : null)
+      : (data.heightCm === '' ? null : Number(data.heightCm)),
+  };
+  const previewPlan = buildBaselinePlanIfComplete(previewProfile);
 
   /* ── Dot progress ── */
   const Dots = () => (
@@ -1000,6 +1086,11 @@ function Onboarding({ onComplete }) {
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', textAlign: 'center', marginBottom: 8 }}>Age</div>
             <input type="number" className="ob-num-input" placeholder="28" value={data.age} onChange={e => set('age', e.target.value)} />
+            {data.age !== '' && !ageValid && (
+              <div style={{ marginTop: 8, fontSize: 12, color: C.red, textAlign: 'center' }}>
+                Age must be between 13 and 100.
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
             {['Male', 'Female'].map(g => (
@@ -1100,15 +1191,15 @@ function Onboarding({ onComplete }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 36, textAlign: 'left' }}>
             {[
               { label: 'Goal',          value: data.goal,     unit: '' },
-              { label: 'Daily Calories', value: macros?.calories, unit: 'kcal' },
-              { label: 'Daily Protein',  value: macros?.protein,  unit: 'g' },
+              { label: 'Daily Calories', value: previewPlan?.dailyTargets?.calories, unit: 'kcal' },
+              { label: 'Daily Protein',  value: previewPlan?.dailyTargets?.protein,  unit: 'g' },
             ].map(row => (
               <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.cardElevated, borderRadius: 14, padding: '14px 18px' }}>
                 <span style={{ color: C.muted, fontSize: 14 }}>{row.label}</span>
                 <span style={{ fontWeight: 700, fontSize: 18, color: C.green }}>
                   {typeof row.value === 'number'
                     ? <CountUp target={row.value} unit={row.unit} />
-                    : row.value}
+                    : (row.value || '—')}
                 </span>
               </div>
             ))}
@@ -1158,6 +1249,11 @@ function Onboarding({ onComplete }) {
             ) : null}
           </div>
         )}
+        {!!submitError && (
+          <div style={{ color: C.red, fontSize: 13, textAlign: 'center', marginTop: 18 }}>
+            {submitError}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1193,44 +1289,6 @@ function CalcScreen() {
 }
 
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function getGreeting() {
-  const h = new Date().getHours();
-  return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
-}
-
-// Unwrap tip strings that were stored as JSON from the old Claude-based system.
-// e.g. '{"tip":"Adam, eat 800..."}' → 'Adam, eat 800...'
-function safeTip(raw) {
-  if (!raw || typeof raw !== 'string') return raw;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('{')) return trimmed;
-  try {
-    const p = JSON.parse(trimmed);
-    if (typeof p === 'object' && p !== null) {
-      return String(p.tip || p.text || p.message || Object.values(p)[0] || raw);
-    }
-  } catch {}
-  return trimmed;
-}
-
-function AIDailyTip({ profile, activePlan, todayMeals }) {
-  const dayIdx  = new Date().getDay();
-  // safeTip handles old cached JSON strings from the previous Claude-based system
-  const planTip = safeTip(activePlan?.dailyTips?.[dayIdx] || activePlan?.dailyTips?.[0] || null);
-  const cacheKey = `massiq:dailytip:${todayStr()}`;
-  const [tip, setTip] = useState(() => planTip || safeTip(LS.get(cacheKey, null)));
-  const [loading, setLoading] = useState(!planTip && !safeTip(LS.get(cacheKey, null)));
-  useEffect(() => {
-    if (!loading) return;
-    let ok = true;
-    generateDailyTip(profile, activePlan, todayMeals)
-      .then(t => { if (ok) { setTip(t); LS.set(cacheKey, t); setLoading(false); } })
-      .catch(() => { if (ok) { setTip('Stay consistent with your targets today.'); setLoading(false); } });
-    return () => { ok = false; };
-  }, []);
-  if (loading) return <div className="skeleton" style={{ height: 14, width: '70%', borderRadius: 6 }} />;
-  return <span>💡 {tip}</span>;
-}
 
 function TargetTile({ icon, label, current, target, unit, color, showProgress = true }) {
   return (
@@ -1256,123 +1314,174 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
+function CollapsibleCard({ title, summary, children, open, onToggle, delay = '.0s' }) {
+  return (
+    <Card className="su glass" style={{ animationDelay: delay, padding: 16 }}>
+      <button className="bp" onClick={onToggle} style={{ width: '100%', background: 'none', border: 'none', color: C.white, textAlign: 'left', padding: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>{title}</div>
+            <div style={{ fontSize: 14, fontWeight: 650 }}>{summary}</div>
+          </div>
+          <div style={{ fontSize: 18, color: C.muted }}>{open ? '−' : '+'}</div>
+        </div>
+      </button>
+      {open && <div style={{ marginTop: 12 }}>{children}</div>}
+    </Card>
+  );
+}
+
+function buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus }) {
+  const weightKg = Number(((profile?.weightLbs || 0) * 0.453592).toFixed(1));
+  const bf = Number(lastScan?.bodyFat || 0);
+  const phase = activePlan?.phase || profile?.goal || 'Maintain';
+  const calories = Number(activePlan?.dailyTargets?.calories || activePlan?.macros?.calories || 0);
+  const protein = Number(activePlan?.dailyTargets?.protein || activePlan?.macros?.protein || 0);
+  const tdee = Number(activePlan?.tdee || 0);
+  const proteinPerKg = weightKg > 0 ? (protein / weightKg) : 0;
+  const bfDelta = prevScan ? Number((lastScan?.bodyFat || 0) - (prevScan?.bodyFat || 0)) : 0;
+  const lmDelta = prevScan ? Number((lastScan?.leanMass || 0) - (prevScan?.leanMass || 0)) : 0;
+
+  let limitingFactor = {
+    title: 'Insufficient scan history',
+    summary: 'This is your baseline route calibration week.',
+    rationale: 'One scan can establish a starting point, but not a response trend.',
+    next_step: 'Complete your next scan under similar conditions to unlock precise adjustment logic.',
+    risk_if_ignored: 'Staying on baseline settings too long can hide early drift in body fat or recovery.',
+    confidence: 'low',
+  };
+
+  if (prevScan) {
+    if (lmDelta < -0.7) {
+      limitingFactor = {
+        title: 'Lean mass protection',
+        summary: `Lean mass dropped by ${Math.abs(lmDelta).toFixed(1)} lb between scans.`,
+        rationale: `At ${protein}g (${proteinPerKg.toFixed(2)} g/kg), recovery support is the current limiter, not effort.`,
+        next_step: 'Raise protein adherence first and reduce deficit pressure this week.',
+        risk_if_ignored: 'Continuing this trend increases muscle-loss risk even if scale weight drops.',
+        confidence: 'high',
+      };
+    } else if (phase === 'Cut' && actualWeeklyChange > -0.1) {
+      limitingFactor = {
+        title: 'Deficit too small',
+        summary: `Weekly change is ${actualWeeklyChange.toFixed(2)} kg, below cut pace.`,
+        rationale: `Current route needs a stronger energy gap to move body fat from ${bf.toFixed(1)}%.`,
+        next_step: 'Tighten deficit by ~150 kcal and recheck in 7 days.',
+        risk_if_ignored: 'Cut duration extends while adherence fatigue increases.',
+        confidence: 'medium',
+      };
+    } else if (phase === 'Maintain' && Math.abs(actualWeeklyChange) <= 0.2) {
+      limitingFactor = {
+        title: 'Execution consistency',
+        summary: `Weight trend is ${actualWeeklyChange.toFixed(2)} kg/week, inside maintain band.`,
+        rationale: `At ${calories} kcal${tdee ? ` vs ~${Math.round(tdee)} kcal maintenance` : ''}, current intake is aligned with stability goals.`,
+        next_step: 'Hold targets for 14 days and confirm body fat remains within the planned range.',
+        risk_if_ignored: 'Untracked drift can compound before the next decision point.',
+        confidence: 'high',
+      };
+    }
+  }
+
+  return {
+    why_plan: {
+      title: 'Why this plan works',
+      summary: `Plan is anchored to ${weightKg} kg body mass, ${phase} phase, and ${profile?.activity || 'current'} activity demand.`,
+      rationale: `${calories} kcal sets the energy level${tdee ? ` against ~${Math.round(tdee)} kcal estimated maintenance` : ''}. Protein at ${protein}g (${proteinPerKg.toFixed(2)} g/kg) is set for lean-mass protection.`,
+      next_step: `Hit calorie and protein targets for the next ${phase === 'Maintain' ? 14 : 7} days before re-evaluation.`,
+      risk_if_ignored: 'Skipping macro adherence removes the signal needed for reliable route adjustments.',
+      confidence: prevScan ? 'high' : 'medium',
+    },
+    limiting_factor: limitingFactor,
+    progress: {
+      title: 'Progress vs route',
+      summary: `Expected ${expectedWeekly.toFixed(2)} kg/week vs actual ${actualWeeklyChange === null ? 'not available yet' : `${actualWeeklyChange.toFixed(2)} kg/week`}.`,
+      rationale: prevScan ? `Body-fat change across scans is ${bfDelta.toFixed(1)} percentage points.` : 'Trend confidence improves after the next scan.',
+      next_step: progressStatus === 'Behind' ? 'Apply the adjustment this week and reassess at next checkpoint.' : 'Continue execution and validate trend at next checkpoint.',
+      risk_if_ignored: 'Route drift compounds when trend checks are skipped.',
+      confidence: prevScan ? 'medium' : 'low',
+    },
+  };
+}
+
 function HomeTab({ profile, activePlan, setTab }) {
+  const [openSection, setOpenSection] = useState('targets');
   const macros = getActiveTargets(activePlan, profile);
   const today = new Date().toISOString().slice(0, 10);
   const todayMeals = LS.get(LS_KEYS.meals(today), []);
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const lastScan = scanHistory[scanHistory.length - 1];
   const trajectory = getTrajectoryStatus(scanHistory, activePlan?.phase || profile?.goal);
-  const limiters = getPrimaryLimiters(lastScan, activePlan);
-  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Complete your next scan to calibrate your weekly strategy.';
-  const todayStats = todayMeals.reduce(
-    (a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }),
-    { calories: 0, protein: 0 }
-  );
+  const nextAction = activePlan?.weeklyMissions?.[0] || activePlan?.engineDiagnosis?.primary?.recommended_action || 'Awaiting next scan';
+  const todayStats = todayMeals.reduce((a, m) => ({ calories: a.calories + (m.calories || 0), protein: a.protein + (m.protein || 0) }), { calories: 0, protein: 0 });
 
   const phase = activePlan?.phase || 'Foundation';
-  const week  = activePlan?.week  || 1;
+  const unitSystem = profile?.unitSystem || 'imperial';
+  const currentWeightLbs = Number(profile?.weightLbs || 0);
+  const currentBF = Number(lastScan?.bodyFat || 0);
+  const currentLeanMass = Number(lastScan?.leanMass || 0);
+  const targetBF = Number(activePlan?.targetBF || (phase === 'Cut' ? (profile?.gender === 'Female' ? 24 : 14) : currentBF || 0));
+  const expectedWeekly = Number(activePlan?.expectedWeeklyWeightKg ?? (phase === 'Cut' ? -0.4 : phase === 'Bulk' ? 0.25 : 0));
+  const estimatedWeeks = currentBF > 0 && targetBF > 0 && expectedWeekly < 0 ? Math.max(1, Math.ceil((currentBF - targetBF) / 0.4)) : expectedWeekly > 0 ? 4 : 0;
+  const prevScan = scanHistory.length > 1 ? scanHistory[scanHistory.length - 2] : null;
+  const prevWeight = prevScan?.leanMass && prevScan?.bodyFat ? prevScan.leanMass / (1 - (prevScan.bodyFat / 100)) : null;
+  const lastWeight = lastScan?.leanMass && lastScan?.bodyFat ? lastScan.leanMass / (1 - (lastScan.bodyFat / 100)) : null;
+  const actualWeeklyChange = Number.isFinite(prevWeight) && Number.isFinite(lastWeight) ? Number((lastWeight - prevWeight).toFixed(2)) : null;
+  const progressStatus = actualWeeklyChange === null ? 'Baseline week' : expectedWeekly < 0 ? (actualWeeklyChange <= expectedWeekly * 0.7 ? 'Ahead' : actualWeeklyChange <= expectedWeekly * 0.3 ? 'On track' : 'Behind') : expectedWeekly > 0 ? (actualWeeklyChange >= expectedWeekly * 1.3 ? 'Ahead' : actualWeeklyChange >= expectedWeekly * 0.7 ? 'On track' : 'Behind') : (Math.abs(actualWeeklyChange) <= 0.2 ? 'On track' : 'Needs adjustment');
+  const adjustment = progressStatus === 'Behind' && phase === 'Cut' ? '↑ Protein +30g · ↓ Deficit -200 kcal' : progressStatus === 'Behind' && phase === 'Bulk' ? '↑ Calories +175 kcal' : progressStatus === 'Ahead' && phase === 'Cut' ? '↑ Calories +150 kcal' : 'Hold current route';
+  const insights = buildPersonalizedInsights({ profile, activePlan, lastScan, prevScan, expectedWeekly, actualWeeklyChange, progressStatus });
 
   return (
     <div className="screen">
       <h1 className="screen-title">Today</h1>
-
       {!activePlan ? (
-        /* ── No active plan: CTA ── */
-        <div className="su" style={{
-          background: C.greenBg, border: `1.5px solid ${C.green}`,
-          borderRadius: 20, padding: 28, textAlign: 'center',
-        }}>
+        <div className="su" style={{ background: C.greenBg, border: `1.5px solid ${C.green}`, borderRadius: 20, padding: 28, textAlign: 'center' }}>
           <div style={{ fontSize: 40, marginBottom: 14 }}>📸</div>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Run your first scan</h2>
-          <p style={{ color: C.muted, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
-            Your personalized 12-week plan is one scan away
-          </p>
-          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>
-            Start Body Scan →
-          </Btn>
+          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Start Body Scan →</Btn>
         </div>
       ) : (
         <>
-          {/* ── Command center hero ── */}
-          <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 620 }}>Good {getGreeting()}, {profile?.name || 'Athlete'}.</div>
-              <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-              <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
-                {PHASE_META[phase]?.emoji || '🎯'} {phase}
-              </span>
-              <span style={{ fontSize: 12, color: C.muted }}>Week {week} of 12</span>
-            </div>
-            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: 16 }}>{trajectory.note}</p>
-
-            <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Primary limiter</div>
-              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{limiters[0]}</div>
-            </div>
-            <div style={{ marginBottom: 18, padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>This week’s priority</div>
-              <div style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{nextAction}</div>
-            </div>
-
-            <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-              {[
-                { label: 'Body Fat', value: lastScan?.bodyFat ? fmt.pct(lastScan.bodyFat, 1) : '—', unit: '' },
-                { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.leanMass(lastScan.leanMass, profile?.unitSystem) : '—', unit: '' },
-                { label: 'Next Scan', value: fmt.date(activePlan?.nextScanDate), unit: '' },
-              ].map((s, i) => (
-                <div key={s.label} style={{
-                  flex: 1, textAlign: 'center',
-                  borderLeft: i > 0 ? `1px solid ${C.border}` : 'none',
-                }}>
-                <div className="metric" style={{ fontSize: 18, color: C.white }}>{s.value}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>{s.unit}</div>
-                  <div style={{ fontSize: 11, color: C.dimmed, marginTop: 2 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-
-            <p style={{ fontSize: 13, color: C.green, marginTop: 16, lineHeight: 1.5 }}>
-              <AIDailyTip profile={profile} activePlan={activePlan} todayMeals={todayMeals} />
-            </p>
+          <Card className="su glass" style={{ background: '#17271E', border: `1px solid ${C.greenDim}`, padding: 20 }}>
+            <div style={{ fontSize: 34, fontWeight: 820, lineHeight: 1.0, marginBottom: 8 }}>{currentBF ? currentBF.toFixed(1) : '—'}% → {targetBF ? targetBF.toFixed(1) : '—'}%</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>Phase: {phase}</div>
+            <div style={{ fontSize: 13, color: C.white, marginBottom: 10 }}>{estimatedWeeks > 0 ? `~${estimatedWeeks} weeks to target` : 'Awaiting next scan signal'}</div>
+            <ProgressBar value={Math.max(0, Math.min(100, targetBF > 0 && currentBF > 0 ? ((currentBF - targetBF) / Math.max(0.1, currentBF)) * 100 : 0))} max={100} color={C.green} height={8} />
+            <div style={{ marginTop: 10, fontSize: 12, color: C.white }}>Diagnosis: {insights.limiting_factor.title}</div>
+            <div style={{ marginTop: 3, fontSize: 12, color: C.muted }}>Adjust: {adjustment}</div>
           </Card>
 
-          {/* ── Phase card ── */}
-          <Card className="su glass" style={{ animationDelay: '.05s' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontSize: 13, color: C.muted, fontWeight: 500, marginBottom: 4 }}>Current Phase</div>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>
-                  {phase === 'Cut' ? '📉' : phase === 'Bulk' ? '📈' : '🔄'} {phase}
-                </div>
-                <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>Week {week} of 12</div>
-              </div>
-              <button className="bp" onClick={() => setTab('plan')} style={{
-                background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
-                padding: '8px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              }}>
-                See roadmap →
-              </button>
-            </div>
-          </Card>
-
-          {/* ── Today's Targets ── */}
-          <Card className="su glass" style={{ animationDelay: '.1s' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <span style={{ fontWeight: 700, fontSize: 16 }}>Today's Targets</span>
-              <span style={{ color: C.muted, fontSize: 18, letterSpacing: 2 }}>···</span>
-            </div>
+          <CollapsibleCard title="Weekly targets" summary={`${macros?.calories || '—'} kcal · ${macros?.protein || '—'}g protein`} open={openSection === 'targets'} onToggle={() => setOpenSection(openSection === 'targets' ? '' : 'targets')} delay=".04s">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 2000} unit="kcal" color={C.orange} />
-              <TargetTile icon="⚡" label="Protein"  current={todayStats.protein}  target={macros?.protein  || 150}  unit="g"    color={C.blue}   />
-              <TargetTile icon="🏋️" label="Training" current={activePlan?.trainDays || 3} target={activePlan?.trainDays || 3} unit="x/wk" color={C.red}    showProgress={false} />
-              <TargetTile icon="🌙" label="Sleep"    current={activePlan?.sleepHrs  || 8} target={activePlan?.sleepHrs  || 8} unit="hrs"  color={C.purple} />
+              <TargetTile icon="🔥" label="Calories" current={todayStats.calories} target={macros?.calories || 0} unit="kcal" color={C.orange} />
+              <TargetTile icon="⚡" label="Protein" current={todayStats.protein} target={macros?.protein || 0} unit="g" color={C.blue} />
+            </div>
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Progress" summary={`${progressStatus} · ${actualWeeklyChange === null ? 'Awaiting next scan' : `${actualWeeklyChange.toFixed(2)} kg/week`}`} open={openSection === 'progress'} onToggle={() => setOpenSection(openSection === 'progress' ? '' : 'progress')} delay=".06s">
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+              <div>Expected: {expectedWeekly.toFixed(2)} kg/week</div>
+              <div>Next checkpoint: {fmt.date(activePlan?.nextScanDate)}</div>
+              <div>Signal: {trajectory.note}</div>
+            </div>
+          </CollapsibleCard>
+
+          <CollapsibleCard title="Insights" summary={nextAction} open={openSection === 'insights'} onToggle={() => setOpenSection(openSection === 'insights' ? '' : 'insights')} delay=".08s">
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>
+              <li>{insights.limiting_factor.next_step}</li>
+              <li>{insights.progress.next_step}</li>
+              <li>{insights.limiting_factor.risk_if_ignored}</li>
+            </ul>
+          </CollapsibleCard>
+
+          <Card className="su glass" style={{ animationDelay: '.1s', padding: 16 }}>
+            <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>Current state</div>
+            <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
+              <div>{currentBF ? `${currentBF.toFixed(1)}% BF` : '—'}</div>
+              <div>{fmt.leanMass(currentLeanMass, unitSystem)} lean</div>
+              <div>{fmt.weight(currentWeightLbs, unitSystem)}</div>
             </div>
           </Card>
 
-          {/* ── Today's Workout ── */}
           <TodayWorkoutCard />
         </>
       )}
@@ -2220,7 +2329,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Suggestions</div>
+        <div style={{ fontWeight: 760, fontSize: 18, marginBottom: 14 }}>Meal suggestions</div>
         {suggestionsError && (
           <div style={{ marginBottom: 10, background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 12, padding: '10px 12px' }}>
             <div style={{ color: C.gold, fontSize: 12, lineHeight: 1.5, marginBottom: 8 }}>{suggestionsError}</div>
@@ -2236,10 +2345,11 @@ function NutritionTab({ profile, activePlan, showToast }) {
             ))
           ) : suggestions.map(s => {
             const isSwapping = swappingId === s.id;
+            const proteinPct = macros?.protein ? Math.round((Number(s.protein || 0) / macros.protein) * 100) : 0;
             return (
               <div key={s.id} style={{
-                background: C.card, borderRadius: 16, padding: 15,
-                border: `1px solid ${isSwapping ? C.greenDim : C.border}`, flexShrink: 0, width: 180,
+                background: 'linear-gradient(170deg, #16221B 0%, #111813 100%)', borderRadius: 18, padding: 16,
+                border: `1px solid ${isSwapping ? C.greenDim : 'rgba(52,209,123,0.18)'}`, flexShrink: 0, width: 196,
                 display: 'flex', flexDirection: 'column', gap: 8, position: 'relative',
                 opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
               }}>
@@ -2259,6 +2369,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
                     <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
                     <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4, paddingRight: 24 }}>{s.name}</div>
                     {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Protein coverage: {proteinPct}% of daily target</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       {[
                         { label: `${s.calories} kcal`, color: C.orange },
@@ -2286,7 +2397,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
 
       {/* ── Today's meals ── */}
       <div className="su" style={{ animationDelay: '.1s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Meals</div>
+        <div style={{ fontWeight: 760, fontSize: 18, marginBottom: 14 }}>Logged meals</div>
         {meals.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '36px 0', color: C.muted }}>
             <div style={{ fontSize: 36, marginBottom: 10 }}>🍽️</div>
@@ -2294,11 +2405,13 @@ function NutritionTab({ profile, activePlan, showToast }) {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {meals.map(m => (
+            {meals.map(m => {
+              const proteinPct = macros?.protein ? Math.round((Number(m.protein || 0) / macros.protein) * 100) : 0;
+              return (
               <div key={m.id} className="bp" onClick={() => setSelectedMeal({ ...m, mealType: m.category || 'Meal' })} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
-                background: C.card, borderRadius: 14, padding: '12px 14px',
-                border: `1px solid ${C.border}`, cursor: 'pointer',
+                background: 'linear-gradient(170deg, #16221B 0%, #111813 100%)', borderRadius: 16, padding: '14px 16px',
+                border: `1px solid rgba(52,209,123,0.18)`, cursor: 'pointer',
               }}>
                 {/* Icon */}
                 <div style={{
@@ -2312,6 +2425,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
                     P {m.protein}g · C {m.carbs}g · F {m.fat}g
                   </div>
+                  <div style={{ fontSize: 11, color: C.green, marginTop: 4 }}>Protein coverage: {proteinPct}%</div>
                 </div>
                 {/* Right: calories + delete */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -2321,7 +2435,8 @@ function NutritionTab({ profile, activePlan, showToast }) {
                   }}>×</button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -2983,20 +3098,6 @@ function Toast({ msg, onDone }) {
   );
 }
 
-/* Mission definitions */
-const MISSIONS = [
-  { id: 'm_log_meal',    tier: 'Bronze', emoji: '🍽️', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
-  { id: 'm_water',       tier: 'Bronze', emoji: '💧', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
-  { id: 'm_sleep',       tier: 'Bronze', emoji: '🌙', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
-  { id: 'm_steps',       tier: 'Bronze', emoji: '👟', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
-  { id: 'm_protein3',    tier: 'Silver', emoji: '⚡', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_log5',        tier: 'Silver', emoji: '📝', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_fullweek',    tier: 'Gold',   emoji: '🏆', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
-  { id: 'm_alltargets',  tier: 'Gold',   emoji: '🎯', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
-];
-const TIER_ORDER  = ['Bronze','Silver','Gold','Platinum','Legendary'];
-const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platinum: C.purple, Legendary: C.green };
-
 /* Simple SVG line chart — physique score over scans */
 function PhysiqueChart({ scans }) {
   if (!scans || scans.length < 2) return null;
@@ -3074,10 +3175,8 @@ function AIPatterns({ profile, activePlan }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout }) {
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-  const [completed, setCompleted] = useState(() => LS.get(LS_KEYS.completed, []));
-  const [xp,        setXp]        = useState(() => LS.get(LS_KEYS.xp, 0));
   const [confirmReset, setConfirmReset] = useState(false);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -3086,9 +3185,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
     hydration: { enabled: false, time: '14:00' },
     checkpoint: { enabled: true, time: '09:00' },
   }));
-
-  const aiMissions = LS.get('massiq:missions', null);
-  const activeMissions = (Array.isArray(aiMissions) && aiMissions.length > 0) ? aiMissions : MISSIONS;
 
   /* Health score from last scan or profile defaults */
   const lastScan    = scanHistory[scanHistory.length - 1];
@@ -3114,27 +3210,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
   const firstScan = scanHistory[0];
   const bfDelta   = firstScan && lastScan ? (lastScan.bodyFat  - firstScan.bodyFat).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
-
-  /* Unlock logic */
-  const isUnlocked = (m) => !m.requires || m.requires.every(r => completed.includes(r));
-  const isDone     = (id) => completed.includes(id);
-  const totalXP    = activeMissions.reduce((s, m) => s + (isDone(m.id) ? m.xp : 0), 0);
-
-  const completeMission = (m) => {
-    if (isDone(m.id) || !isUnlocked(m)) return;
-    const next = [...completed, m.id];
-    const nextXP = xp + m.xp;
-    setCompleted(next); setXp(nextXP);
-    LS.set(LS_KEYS.completed, next);
-    LS.set(LS_KEYS.xp, nextXP);
-    showToast(`+${m.xp} XP — ${m.title} complete!`);
-  };
-
-  /* Tier progress */
-  const bronzeDone = activeMissions.filter(m => m.tier === 'Bronze' && isDone(m.id)).length;
-  const silverDone = activeMissions.filter(m => m.tier === 'Silver' && isDone(m.id)).length;
-  const goldDone   = activeMissions.filter(m => m.tier === 'Gold'   && isDone(m.id)).length;
-  const tierFilled = bronzeDone === 4 ? (silverDone === 2 ? (goldDone === 2 ? 3 : 2) : 1) : 0;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
@@ -3218,9 +3293,9 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
           { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
             value: `${bf}%`,         color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
           { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
-            value: `${leanKg} kg`,   color: C.blue },
+            value: fmt.leanMass(leanMassLbs, profile?.unitSystem),   color: C.blue },
           { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
-            value: `${fatMassLbs} lbs`, color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
+            value: fmt.fatMass(fatMassLbs, profile?.unitSystem), color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
         ].map(row => (
           <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
@@ -3233,82 +3308,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         ))}
       </Card>
 
-      {/* 3 ── XP + Missions ── */}
-      <div className="su" style={{ animationDelay: '.08s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Physique Missions</div>
-
-        {/* Hero stats */}
-        <Card style={{ marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
-            {[
-              { label: 'Total XP',   value: totalXP },
-              { label: 'Day Streak', value: LS.get(LS_KEYS.streak, 0) },
-              { label: 'Done',       value: `${completed.length}/${activeMissions.length}` },
-            ].map(s => (
-              <div key={s.label}>
-                <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{s.value}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* Tier bar */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20, padding: '0 4px' }}>
-          {TIER_ORDER.map((tier, i) => {
-            const filled = i <= tierFilled;
-            return (
-              <div key={tier} style={{ display: 'flex', alignItems: 'center', flex: i < TIER_ORDER.length - 1 ? 1 : 0 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: filled ? TIER_COLORS[tier] : C.border, border: `2px solid ${filled ? TIER_COLORS[tier] : C.dimmed}` }} />
-                  <span style={{ fontSize: 9, color: filled ? TIER_COLORS[tier] : C.dimmed, fontWeight: 600 }}>{tier}</span>
-                </div>
-                {i < TIER_ORDER.length - 1 && (
-                  <div style={{ flex: 1, height: 2, background: i < tierFilled ? TIER_COLORS[tier] : C.border, margin: '0 4px', marginBottom: 14 }} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Mission cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {activeMissions.map(m => {
-            const done     = isDone(m.id);
-            const unlocked = isUnlocked(m);
-            const tc       = TIER_COLORS[m.tier];
-            return (
-              <div key={m.id} className="bp" onClick={() => completeMission(m)} style={{
-                display: 'flex', alignItems: 'center', gap: 14,
-                background: C.card, borderRadius: 16, padding: '14px 16px',
-                border: `1px solid ${done ? tc + '55' : C.border}`,
-                opacity: !unlocked && !done ? 0.4 : 1,
-              }}>
-                {/* Ring */}
-                <div style={{
-                  width: 48, height: 48, borderRadius: '50%', flexShrink: 0,
-                  border: `3px solid ${done ? tc : C.border}`,
-                  background: done ? `${tc}22` : C.cardElevated,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 22,
-                }}>
-                  {done ? '✓' : !unlocked ? '🔒' : m.emoji}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: done ? C.muted : C.white, textDecoration: done ? 'line-through' : 'none' }}>{m.title}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: tc, background: `${tc}22`, padding: '2px 8px', borderRadius: 99 }}>{m.tier}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.muted }}>{m.desc}</div>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: done ? C.dimmed : C.gold, flexShrink: 0 }}>+{m.xp} XP</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 3.5 ── AI Patterns ── */}
+      {/* 3 ── AI Patterns ── */}
       <AIPatterns profile={profile} activePlan={activePlan} />
 
       {/* 4 ── Profile Info ── */}
@@ -4049,7 +4049,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   );
 }
 
-function AuthScreen({ onSubmit, loading, error, notice }) {
+function AuthScreen({ onSubmit, loading, error, notice, onAuthInput }) {
   const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -4067,7 +4067,7 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
 
         <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
           {['login', 'signup'].map((m) => (
-            <button key={m} className="bp" onClick={() => setMode(m)} style={{
+            <button key={m} className="bp" onClick={() => { setMode(m); onAuthInput?.(); }} style={{
               flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
               background: mode === m ? C.greenBg : 'transparent',
               color: mode === m ? C.green : C.muted,
@@ -4079,8 +4079,8 @@ function AuthScreen({ onSubmit, loading, error, notice }) {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <input value={email} onChange={(e) => { setEmail(e.target.value); onAuthInput?.(); }} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
+          <input value={password} onChange={(e) => { setPassword(e.target.value); onAuthInput?.(); }} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
           <Btn disabled={disabled} onClick={() => onSubmit(mode, email.trim(), password)} style={{ width: '100%', marginTop: 6 }}>
             {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
           </Btn>
@@ -4199,6 +4199,7 @@ function Sidebar({ active, setTab, profile }) {
 /* ─── Root App ───────────────────────────────────────────────────────────── */
 export default function MassIQ() {
   const [session,    setSession]    = useState(null);
+  const [authState,  setAuthState]  = useState('logged_out'); // logged_out | logging_in | authenticated | session_invalid
   const [authReady,  setAuthReady]  = useState(false);
   const [authBusy,   setAuthBusy]   = useState(false);
   const [authError,  setAuthError]  = useState('');
@@ -4210,6 +4211,9 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const clearAppLocalState = () => {
+    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -4217,10 +4221,30 @@ export default function MassIQ() {
       try {
         const s = await initializeSession();
         if (!mounted) return;
-        setSession(s);
+        if (!s?.access_token) {
+          setSession(null);
+          setAuthState('logged_out');
+          return;
+        }
+        try {
+          const user = await fetchUser(s.access_token);
+          if (!user?.id) throw new Error('Session user missing');
+          setSession({ ...s, user });
+          setAuthState('authenticated');
+        } catch (sessionErr) {
+          console.error('Session validation failed:', sessionErr);
+          try { await signOutSession(s.access_token); } catch {}
+          clearAppLocalState();
+          setSession(null);
+          setAuthState('logged_out');
+          setAuthError('');
+          setAuthNotice('Your previous session expired. Please sign in again.');
+        }
       } catch (err) {
         if (!mounted) return;
-        setAuthError(err.message || 'Could not restore session.');
+        setAuthError('');
+        setAuthNotice('Could not restore your previous session. Please sign in.');
+        setAuthState('logged_out');
       } finally {
         if (mounted) setAuthReady(true);
       }
@@ -4234,6 +4258,7 @@ export default function MassIQ() {
     if (!session?.access_token) {
       setProfile(null);
       setActivePlan(null);
+      clearAppLocalState();
       setReady(true);
       return;
     }
@@ -4251,12 +4276,26 @@ export default function MassIQ() {
         let loadedPlan = null;
         let loadedScanHistory = [];
         try {
-          console.info('[sync] ensureProfile:start', { userId });
-          loadedProfile = await ensureProfile(session.access_token, userId);
-          console.info('[sync] ensureProfile:ok', { hasProfile: Boolean(loadedProfile) });
+          console.info('[sync] getProfile:start', { userId });
+          loadedProfile = await getProfile(session.access_token, userId);
+          console.info('[sync] getProfile:ok', { hasProfile: Boolean(loadedProfile) });
         } catch (profileErr) {
-          console.error('sync:ensureProfile failed', profileErr);
+          console.error('sync:getProfile failed', profileErr);
           throw profileErr;
+        }
+        if (loadedProfile && loadedProfile.id !== userId) {
+          throw new Error('Profile/user mismatch detected.');
+        }
+        if (!loadedProfile) {
+          if (mounted) {
+            setProfile(null);
+            setActivePlan(null);
+            setTab('home');
+            LS.set(LS_KEYS.profile, null);
+            LS.set(LS_KEYS.activePlan, null);
+            LS.set(LS_KEYS.scanHistory, []);
+          }
+          return;
         }
         try {
           console.info('[sync] getLatestPlan:start', { userId });
@@ -4275,7 +4314,7 @@ export default function MassIQ() {
           loadedScanHistory = [];
         }
 
-        if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
+        if (loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
             console.info('[sync] createDefaultPlan:start', { userId });
@@ -4289,6 +4328,7 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          setAuthState('authenticated');
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
@@ -4298,7 +4338,16 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('We couldn’t finish syncing your account. Please try again.');
+        if (mounted) {
+          try { await signOutSession(session?.access_token); } catch {}
+          clearAppLocalState();
+          setSession(null);
+          setProfile(null);
+          setActivePlan(null);
+          setAuthState('logged_out');
+          setAuthError('');
+          setAuthNotice('Session expired. Please sign in again.');
+        }
       } finally {
         if (mounted) setReady(true);
       }
@@ -4307,24 +4356,44 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+  const persistUserState = async (nextProfile, nextPlan, scanHistory = null, opts = {}) => {
     if (!session?.access_token) return;
+    setSyncing(true);
     try {
-      setSyncing(true);
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
-      if (!userId) return;
-      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
-      if (nextPlan) {
-        await upsertPlan(session.access_token, userId, nextPlan);
+      if (!userId) throw new Error('No user');
+      if (nextProfile) {
+        try {
+          await upsertProfile(session.access_token, userId, nextProfile);
+        } catch (profileError) {
+          console.error('PROFILE ERROR', profileError);
+          throw profileError;
+        }
+      }
+      const planToPersist = nextPlan || (opts.requirePlanAfterProfile && nextProfile ? buildBaselinePlanFromProfile(nextProfile) : null);
+      if (planToPersist) {
+        try {
+          await upsertPlan(session.access_token, userId, planToPersist);
+        } catch (planError) {
+          console.error('PLAN ERROR', planError);
+          throw planError;
+        }
+      }
+      const savedPlan = await getPlan(session.access_token, userId);
+      if ((planToPersist || opts.requirePlanAfterProfile) && !savedPlan) {
+        throw new Error('Plan was not persisted correctly.');
       }
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
         await createScan(session.access_token, userId, latestScan);
       }
+      return savedPlan || planToPersist;
     } catch (err) {
+      if (opts.throwOnError) throw err;
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
       showToast('We couldn’t finish syncing your account. Please try again.');
+      return null;
     } finally {
       setSyncing(false);
     }
@@ -4355,22 +4424,51 @@ export default function MassIQ() {
     };
 
     setAuthBusy(true);
+    setAuthState('logging_in');
     setAuthError('');
     setAuthNotice('');
     try {
+      if (mode === 'signin') {
+        const prior = session?.access_token || getStoredSession()?.access_token;
+        if (prior) {
+          try { await signOutSession(prior); } catch (err) { console.warn('Pre-login signout failed:', err); }
+        }
+      }
       const res = mode === 'signup'
         ? await signUpWithPassword(normalizedEmail, userPassword)
         : await signInWithPassword(normalizedEmail, userPassword);
       if (!res?.access_token) {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
+        setAuthState('logged_out');
         return;
       }
-      setSession(res);
+      const freshUser = await fetchUser(res.access_token);
+      if (!freshUser?.id) {
+        throw new Error('No authenticated user returned from Supabase.');
+      }
+      if (mode === 'signin' && String(freshUser.email || '').toLowerCase() !== normalizedEmail) {
+        throw new Error('Authenticated user does not match requested credentials.');
+      }
+      clearAppLocalState();
+      setSession({ ...res, user: freshUser });
+      setAuthState('authenticated');
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
+      try {
+        const current = session?.access_token || getStoredSession()?.access_token;
+        if (current) await signOutSession(current);
+      } catch {}
+      clearAppLocalState();
+      setSession(null);
+      setAuthState('logged_out');
     } finally {
       setAuthBusy(false);
     }
+  };
+
+  const handleAuthInput = () => {
+    if (authError) setAuthError('');
+    if (authNotice) setAuthNotice('');
   };
 
   const handleLogout = async () => {
@@ -4382,13 +4480,14 @@ export default function MassIQ() {
     setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setAuthState('logged_out');
     setEditing(false);
     setReady(true);
-    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    clearAppLocalState();
   };
 
   const handleReset = () => {
-    Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    clearAppLocalState();
     setProfile(null); setActivePlan(null); setTab('home'); setEditing(false);
   };
 
@@ -4396,26 +4495,31 @@ export default function MassIQ() {
     setEditing(true);
   };
 
-  const handleOnboardingComplete = (p, plan) => {
-    setProfile(p);
-    LS.set(LS_KEYS.profile, p);
-    setEditing(false);
-    if (plan) {
-      LS.set(LS_KEYS.activePlan, plan);
-      setActivePlan(plan);
-      persistUserState(p, plan);
+  const handleOnboardingComplete = async (p, plan) => {
+    try {
+      const persistedPlan = await persistUserState(p, plan, null, { requirePlanAfterProfile: true, throwOnError: true });
+      const finalPlan = persistedPlan || plan;
+      setProfile(p);
+      LS.set(LS_KEYS.profile, p);
+      setEditing(false);
+      if (finalPlan) {
+        LS.set(LS_KEYS.activePlan, finalPlan);
+        setActivePlan(finalPlan);
+      }
       // Background: generate meal plan, workout plan, missions
-      generateMealPlan(p, plan)
+      generateMealPlan(p, finalPlan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
         .catch(console.error);
-      generateWorkoutPlan(p, plan)
+      generateWorkoutPlan(p, finalPlan)
         .then(days => { LS.set(LS_KEYS.workoutplan, days); })
         .catch(console.error);
-      generateMissions(p, plan)
+      generateMissions(p, finalPlan)
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
-    } else {
-      persistUserState(p, activePlan);
+    } catch (err) {
+      console.error('Onboarding sync failed:', err);
+      setAuthError('Could not save your profile and plan. Please retry.');
+      throw err;
     }
   };
 
@@ -4424,10 +4528,14 @@ export default function MassIQ() {
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   if (!session?.access_token) {
-    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
+    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy || authState === 'logging_in'} error={authError} notice={authNotice} onAuthInput={handleAuthInput} />;
   }
 
-  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  const profileComplete = profile
+    && Number(profile.age) >= 13
+    && Number(profile.age) <= 100
+    && Number(profile.weightLbs) > 0
+    && Number(profile.heightCm) > 0;
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
@@ -4449,7 +4557,6 @@ export default function MassIQ() {
           onEditProfile={handleEditProfile}
           onReset={handleReset}
           onLogout={handleLogout}
-          showToast={showToast}
         />
       );
       default: return null;
