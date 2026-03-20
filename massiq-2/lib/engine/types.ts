@@ -192,6 +192,13 @@ export interface FeedbackResult {
     calories: number
     protein: number
   }
+  decision?: {
+    state: ProgressStatus
+    limiting_factor: string
+    action: string
+    reason: string
+    expected_outcome: string
+  }
 }
 
 /* ── Current state summary ─────────────────────────────────────────────── */

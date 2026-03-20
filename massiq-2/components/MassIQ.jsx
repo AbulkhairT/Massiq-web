@@ -4,6 +4,7 @@ import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
 import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
+import { buildBaselinePlanFromProfile } from '../lib/engine/plan';
 import {
   initializeSession,
   getStoredSession,
@@ -350,152 +351,9 @@ function getPrimaryLimiters(scan, activePlan) {
 function getActiveTargets(activePlan, profile) {
   const targets = activePlan?.dailyTargets || activePlan?.macros;
   if (targets) return targets;
-  if (!profile) return null;
-  if (!isProfileCompleteForPlan(profile)) return null;
-  return buildBaselinePlanFromProfile(profile).dailyTargets;
+  return null;
 }
 
-function isProfileCompleteForPlan(profileDraft) {
-  if (!profileDraft) return false;
-  const age = Number(profileDraft.age);
-  const weightKg = Number(profileDraft.weightKg);
-  const weightLbs = Number(profileDraft.weightLbs);
-  const heightCm = Number(profileDraft.heightCm);
-  const hasWeight = (Number.isFinite(weightKg) && weightKg > 0) || (Number.isFinite(weightLbs) && weightLbs > 0);
-  const hasHeight = Number.isFinite(heightCm) && heightCm > 0;
-  return Boolean(
-    profileDraft.goal
-    && profileDraft.activity
-    && profileDraft.gender
-    && Number.isFinite(age) && age > 0
-    && hasWeight
-    && hasHeight
-  );
-}
-
-function buildBaselinePlanIfComplete(profileDraft) {
-  if (!isProfileCompleteForPlan(profileDraft)) return null;
-  try {
-    return buildBaselinePlanFromProfile(profileDraft);
-  } catch (err) {
-    console.warn('Skipping baseline preview until profile data is valid:', err);
-    return null;
-  }
-}
-
-function activityBand(activity) {
-  const a = String(activity || '').toLowerCase();
-  if (a.includes('sedentary') || a.includes('light') || a === 'low') return 'low';
-  if (a.includes('active') || a === 'high') return 'high';
-  return 'medium';
-}
-
-function normalizeGoal(goal) {
-  const g = String(goal || '').toLowerCase();
-  if (g.includes('bulk') || g.includes('gain')) return 'bulk';
-  if (g.includes('cut') || g.includes('lose')) return 'cut';
-  return 'maintain';
-}
-
-function validateProfileForPlan(profile) {
-  if (!profile) throw new Error('Missing profile');
-  const age = Number(profile.age);
-  const directKg = Number(profile.weightKg);
-  const fromLbsKg = Number(profile.weightLbs) * 0.453592;
-  const weightKg = Number((Number.isFinite(directKg) && directKg > 0 ? directKg : fromLbsKg).toFixed(2));
-  const heightCm = Number(profile.heightCm);
-  if (!Number.isFinite(age) || age <= 0) throw new Error('Invalid age');
-  if (!Number.isFinite(weightKg) || weightKg < 40 || weightKg > 200) throw new Error('Invalid weight');
-  if (!Number.isFinite(heightCm) || heightCm < 140 || heightCm > 220) throw new Error('Invalid height');
-  return { age, weightKg, heightCm };
-}
-
-function generateDeterministicPlan(profile) {
-  const { age, weightKg, heightCm } = validateProfileForPlan(profile);
-  const gender = profile?.gender === 'Female' ? 'female' : 'male';
-  const activityMultiplier = { low: 1.4, medium: 1.6, high: 1.75 }[activityBand(profile?.activity)] || 1.6;
-  const goal = normalizeGoal(profile?.goal);
-  const bmr = (10 * weightKg) + (6.25 * heightCm) - (5 * age) + (gender === 'male' ? 5 : -161);
-  const tdee = bmr * activityMultiplier;
-  const phaseAdjustment = goal === 'cut' ? -400 : goal === 'bulk' ? 300 : 0;
-  const calories = Math.max(1200, Math.round(tdee + phaseAdjustment));
-
-  const proteinFactor = goal === 'cut' ? 2.2 : goal === 'bulk' ? 1.8 : 2.0;
-  const proteinRaw = weightKg * proteinFactor;
-  const minProtein = weightKg * 1.6;
-  const maxProtein = weightKg * 2.4;
-  const protein = Math.round(Math.min(maxProtein, Math.max(minProtein, proteinRaw)));
-
-  const fatPerKgRaw = 0.9;
-  const fatPerKg = Math.min(1.2, Math.max(0.6, fatPerKgRaw));
-  const fat = Math.round(weightKg * fatPerKg);
-
-  const proteinKcal = protein * 4;
-  const fatKcal = fat * 9;
-  const carbKcal = Math.max(0, calories - proteinKcal - fatKcal);
-  const carbs = Math.round(carbKcal / 4);
-  const finalCalories = Math.round((protein * 4) + (fat * 9) + (carbs * 4));
-
-  if (![bmr, tdee, finalCalories, protein, carbs, fat].every(Number.isFinite)) {
-    throw new Error('Non-finite plan output');
-  }
-
-  return {
-    phase: goal === 'cut' ? 'Cut' : goal === 'bulk' ? 'Bulk' : 'Maintain',
-    bmr: Math.round(bmr),
-    tdee: Math.round(tdee),
-    calories: finalCalories,
-    protein,
-    carbs,
-    fat,
-    expectedWeeklyWeightKg: goal === 'cut' ? -0.4 : goal === 'bulk' ? 0.25 : 0,
-  };
-}
-
-function buildBaselinePlanFromProfile(profile) {
-  let plan;
-  try {
-    plan = generateDeterministicPlan(profile);
-  } catch (err) {
-    console.error('Baseline plan generation failed, falling back to maintenance:', err);
-    const safeProfile = { ...profile, goal: 'Maintain' };
-    plan = generateDeterministicPlan({ ...safeProfile, age: Math.max(18, Number(safeProfile?.age || 18)), weightLbs: Math.min(440, Math.max(88, Number(safeProfile?.weightLbs || 170))), heightCm: Math.min(220, Math.max(140, Number(safeProfile?.heightCm || 175))) });
-  }
-  const targets = {
-    calories: plan.calories,
-    protein: plan.protein,
-    carbs: plan.carbs,
-    fat: plan.fat,
-    steps: plan.phase === 'Cut' ? 10000 : 8500,
-    sleepHours: 8,
-    waterLiters: 3,
-    trainingDaysPerWeek: plan.phase === 'Bulk' ? 5 : 4,
-    cardioDays: plan.phase === 'Bulk' ? 1 : 2,
-  };
-  const nextScan = new Date();
-  nextScan.setDate(nextScan.getDate() + 28);
-  return {
-    phase: plan.phase,
-    phaseName: `${plan.phase} Phase`,
-    objective: 'Baseline phase generated from validated profile inputs.',
-    week: 1,
-    startDate: todayStr(),
-    nextScanDate: nextScan.toISOString().slice(0, 10),
-    macros: {
-      calories: targets.calories,
-      protein: targets.protein,
-      carbs: targets.carbs,
-      fat: targets.fat,
-    },
-    dailyTargets: targets,
-    trainDays: targets.trainingDaysPerWeek || 4,
-    sleepHrs: targets.sleepHours || 8,
-    waterL: targets.waterLiters || 3,
-    expectedWeeklyWeightKg: plan.expectedWeeklyWeightKg,
-    tdee: plan.tdee,
-    bmr: plan.bmr,
-  };
-}
 
 function sanitizeMeal(meal, targets, profile, idx = 0) {
   if (!meal || typeof meal !== 'object') return null;
@@ -946,22 +804,6 @@ function Onboarding({ onComplete }) {
     }
   };
 
-  const hasImperialHeight = data.heightFt !== '' && data.heightInch !== '';
-  const previewProfile = {
-    ...data,
-    age: data.age === '' ? null : Number(data.age),
-    weightLbs: data.unitSystem === 'metric'
-      ? (data.weightKg === '' ? null : Number(data.weightKg) * 2.20462)
-      : (data.weightLbs === '' ? null : Number(data.weightLbs)),
-    weightKg: data.unitSystem === 'metric'
-      ? (data.weightKg === '' ? null : Number(data.weightKg))
-      : null,
-    heightCm: data.unitSystem === 'imperial'
-      ? (hasImperialHeight ? ((Number(data.heightFt) * 12) + Number(data.heightInch)) * 2.54 : null)
-      : (data.heightCm === '' ? null : Number(data.heightCm)),
-  };
-  const previewPlan = buildBaselinePlanIfComplete(previewProfile);
-
   /* ── Dot progress ── */
   const Dots = () => (
     <div style={{ display: 'flex', gap: 7, justifyContent: 'center', marginBottom: 40 }}>
@@ -1187,19 +1029,17 @@ function Onboarding({ onComplete }) {
           <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
             Your profile is ready,<br />{data.name}.
           </h1>
-          <p style={{ color: C.muted, marginBottom: 36, fontSize: 15 }}>Here&apos;s your baseline — we refine everything after your first scan.</p>
+          <p style={{ color: C.muted, marginBottom: 36, fontSize: 15 }}>We will generate and save your deterministic plan after you continue.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 36, textAlign: 'left' }}>
             {[
               { label: 'Goal',          value: data.goal,     unit: '' },
-              { label: 'Daily Calories', value: previewPlan?.dailyTargets?.calories, unit: 'kcal' },
-              { label: 'Daily Protein',  value: previewPlan?.dailyTargets?.protein,  unit: 'g' },
+              { label: 'Daily Calories', value: 'Generated after save', unit: '' },
+              { label: 'Daily Protein',  value: 'Generated after save',  unit: '' },
             ].map(row => (
               <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.cardElevated, borderRadius: 14, padding: '14px 18px' }}>
                 <span style={{ color: C.muted, fontSize: 14 }}>{row.label}</span>
                 <span style={{ fontWeight: 700, fontSize: 18, color: C.green }}>
-                  {typeof row.value === 'number'
-                    ? <CountUp target={row.value} unit={row.unit} />
-                    : (row.value || '—')}
+                  {row.value || '—'}
                 </span>
               </div>
             ))}

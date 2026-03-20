@@ -122,6 +122,19 @@ export function analyzeScanProgress(
     ? 0
     : Math.round(((weeklyWeightChangePct - expectedByGoal.min) / (expectedByGoal.max - expectedByGoal.min)) * 100)
   const confidence: 'low' | 'medium' | 'high' = daysElapsed >= 21 ? 'high' : daysElapsed >= 10 ? 'medium' : 'low'
+  const decisionAction = `Calories ${calorieDelta >= 0 ? '+' : ''}${calorieDelta} kcal/day, Protein ${proteinDelta >= 0 ? '+' : ''}${proteinDelta} g/day`
+  const limitingFactor = muscleLossDetected
+    ? 'muscle_loss_risk'
+    : status === 'behind'
+      ? 'energy_intake_misalignment'
+      : status === 'ahead'
+        ? 'pace_too_aggressive'
+        : 'execution_consistency'
+  const expectedOutcome = goal === 'Cut'
+    ? 'Restore fat-loss pace while protecting lean mass over the next 7 days.'
+    : goal === 'Bulk'
+      ? 'Shift weight-gain pace into lean-growth range over the next 7 days.'
+      : 'Return weight trend toward maintenance range over the next 7–14 days.'
 
   return {
     days_elapsed: daysElapsed,
@@ -145,6 +158,13 @@ export function analyzeScanProgress(
     adjustment: {
       calories: nextCalories,
       protein: nextProtein,
+    },
+    decision: {
+      state: status,
+      limiting_factor: limitingFactor,
+      action: decisionAction,
+      reason: `${diagnosis} ${message}`.trim(),
+      expected_outcome: expectedOutcome,
     },
   }
 }
