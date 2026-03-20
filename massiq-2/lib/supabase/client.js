@@ -50,6 +50,7 @@ function storeSession(session) {
 }
 
 function toNumber(value, fallback = null) {
+  if (value === '' || value === null || value === undefined) return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -74,31 +75,55 @@ function toSafeInt(value, field) {
 }
 
 function serializeProfile(userId, profile) {
+  const lbs = toNumber(profile?.weightLbs, null);
+  const kgRaw = toNumber(profile?.weightKg, null);
+  const heightCm = toNumber(profile?.heightCm, null);
+  const heightIn = toNumber(profile?.heightIn, null);
+  const normalizedWeightKg = kgRaw ?? (lbs ? lbs * 0.453592 : null);
+  const normalizedHeightCm = heightCm ?? (heightIn ? heightIn * 2.54 : null);
+  const activityMap = {
+    sedentary: 'sedentary',
+    light: 'light',
+    moderate: 'moderate',
+    active: 'high',
+    high: 'high',
+  };
+  const activityKey = String(profile?.activity || profile?.activity_level || '').trim().toLowerCase();
   return {
     id: userId,
     age: toNumber(profile?.age),
-    weight: toNumber(profile?.weightLbs),
-    height: toNumber(profile?.heightCm),
+    weight: normalizedWeightKg ? Number(normalizedWeightKg.toFixed(3)) : null,
+    height: normalizedHeightCm ? Number(normalizedHeightCm.toFixed(2)) : null,
     gender: profile?.gender || null,
     goal: profile?.goal || null,
-    activity_level: profile?.activity || null,
+    activity_level: activityMap[activityKey] || null,
+    unit_system: profile?.unitSystem === 'metric' ? 'metric' : 'imperial',
   };
 }
 
 function deserializeProfile(row) {
   if (!row) return null;
-  const heightCm = toNumber(row.height, 0) || 0;
+  const heightCm = toNumber(row.height, null);
+  const weightKg = toNumber(row.weight, null);
+  const weightLbs = weightKg ? Number((weightKg * 2.20462).toFixed(1)) : null;
+  const activityMap = {
+    sedentary: 'Sedentary',
+    light: 'Light',
+    moderate: 'Moderate',
+    high: 'Active',
+  };
   return {
     id: row.id,
-    name: 'Athlete',
+    name: '',
     age: toNumber(row.age, null),
-    weightLbs: toNumber(row.weight, null),
-    heightCm: toNumber(row.height, null),
+    weightLbs,
+    weightKg,
+    heightCm,
     heightIn: heightCm ? Number((heightCm / 2.54).toFixed(1)) : null,
-    gender: row.gender || 'Male',
-    goal: row.goal || 'Maintain',
-    activity: row.activity_level || 'Moderate',
-    unitSystem: 'imperial',
+    gender: row.gender || null,
+    goal: row.goal || null,
+    activity: activityMap[String(row.activity_level || '').toLowerCase()] || null,
+    unitSystem: row.unit_system === 'metric' ? 'metric' : 'imperial',
     dietPrefs: [],
     avoid: [],
     reminders: {},
@@ -241,7 +266,7 @@ export async function upsertProfile(token, userId, profile) {
 }
 
 export async function getProfile(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
+  const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
     method: 'GET',
     headers: authHeaders(token),
   });
@@ -265,11 +290,11 @@ export async function ensureProfile(token, userId) {
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
   console.info('[sync] plans.insert payload', row);
-  return supabaseFetch('/rest/v1/plans', {
+  return supabaseFetch('/rest/v1/plans?on_conflict=user_id', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'return=representation',
+      Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify(row),
   });
