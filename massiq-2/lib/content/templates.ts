@@ -36,6 +36,8 @@ export interface Mission {
 
 export interface Insight {
   icon:    string
+  label:   string
+  metric:  string
   pattern: string
   action:  string
 }
@@ -378,53 +380,67 @@ export function buildInsights(
 
   const insights: Insight[] = []
 
-  // Insight 1: based on primary diagnosis
+  // Insight 1: nutrition / deficit calibration
   if (diagCode === 'protein_insufficiency') {
     insights.push({
       icon: '🥩',
-      pattern: `Your protein target of ${protein}g is critical — under-eating protein during ${goal === 'Bulk' ? 'a surplus' : 'a deficit'} causes muscle loss.`,
-      action: `Distribute ${protein}g across ${Math.ceil(protein / 40)} meals/snacks — ${Math.round(protein / Math.ceil(protein / 40))}g each.`,
+      label: 'PROTEIN',
+      metric: `${protein}g / day`,
+      pattern: `Protein is insufficient — muscle loss risk at current intake during ${goal === 'Bulk' ? 'surplus' : 'deficit'}.`,
+      action: `Split ${protein}g across ${Math.ceil(protein / 40)} meals (${Math.round(protein / Math.ceil(protein / 40))}g each).`,
     })
   } else if (diagCode === 'aggressive_deficit' && tdee) {
     const pct = Math.round((1 - calories / tdee) * 100)
     insights.push({
       icon: '⚠️',
-      pattern: `A ${pct}% deficit is above the safe threshold — deficits over 25% trigger significant muscle catabolism within 2–3 weeks.`,
-      action: `Increase intake to ${calories} kcal — the engine target accounts for metabolic adaptation over the full ${engineOutput?.trajectory?.timeline_weeks ?? 12}-week period.`,
+      label: 'DEFICIT',
+      metric: `${pct}% of TDEE`,
+      pattern: `Deficit is too aggressive — catabolism risk within 2–3 weeks.`,
+      action: `Target ${calories} kcal — accounts for metabolic adaptation across ${engineOutput?.trajectory?.timeline_weeks ?? 12} weeks.`,
     })
   } else if (diagCode === 'phase_mismatch') {
     insights.push({
       icon: '🎯',
-      pattern: `Your current body fat is outside the optimal range for a ${goal} phase — the engine has adjusted targets to address this first.`,
-      action: `Follow the adjusted targets for the first 4 weeks before reassessing your phase direction.`,
+      label: 'PHASE',
+      metric: goal,
+      pattern: `Body fat is outside the optimal range for ${goal} — targets adjusted.`,
+      action: `Stick to adjusted targets for 4 weeks before reassessing phase direction.`,
     })
   } else {
     insights.push({
       icon: '✅',
-      pattern: `Your ${goal} targets are physiologically calibrated — ${calories} kcal supports the right rate of change for your current composition.`,
-      action: `Track adherence closely this first week — the engine adjusts targets based on your scan results.`,
+      label: 'NUTRITION',
+      metric: `${calories} kcal`,
+      pattern: `Calorie target is calibrated for your current ${goal.toLowerCase()} composition.`,
+      action: `Track adherence closely — targets adjust after each scan.`,
     })
   }
 
   // Insight 2: protein timing
   insights.push({
     icon: '⏱️',
-    pattern: `Spreading ${protein}g protein across 4 meals (${Math.round(protein / 4)}g each) maximises muscle protein synthesis vs. having most in 1–2 meals.`,
-    action: `Add a ${Math.round(protein / 4)}g protein source (chicken, fish, Greek yoghurt, cottage cheese) to every meal.`,
+    label: 'PROTEIN TIMING',
+    metric: `${Math.round(protein / 4)}g × 4`,
+    pattern: `Spread protein across 4 meals to maximise muscle protein synthesis.`,
+    action: `Add a ${Math.round(protein / 4)}g source (chicken, fish, yoghurt) to every meal.`,
   })
 
-  // Insight 3: training/recovery
+  // Insight 3: training
   if (profile.activity === 'Sedentary') {
     insights.push({
       icon: '🚶',
-      pattern: `Adding ${trainDays} resistance sessions/week to a sedentary baseline produces the most dramatic recomp results — any training stimulus is significant.`,
-      action: `Start with ${trainDays}x full-body sessions at 70% effort for the first 2 weeks to build the habit before adding intensity.`,
+      label: 'TRAINING',
+      metric: `${trainDays}x / week`,
+      pattern: `New training stimulus at sedentary baseline — recomp effect is highest now.`,
+      action: `Start at 70% effort for the first 2 weeks, then add intensity.`,
     })
   } else {
     insights.push({
       icon: '💪',
-      pattern: `${trainDays} resistance sessions/week at your current activity level maintains the training stimulus needed for your ${goal} phase target.`,
-      action: `Log every session weight — progressive overload (adding 2.5 kg or 1–2 reps/week) is the primary signal that determines lean mass retention.`,
+      label: 'TRAINING',
+      metric: `${trainDays}x / week`,
+      pattern: `Resistance load is set to preserve lean mass through your ${goal} phase.`,
+      action: `Track progressive overload — add 2.5 kg or 1–2 reps per week.`,
     })
   }
 

@@ -3717,25 +3717,38 @@ function AIPatterns({ profile, activePlan }) {
 
   return (
     <div className="su" style={{ animationDelay: '.10s' }}>
-      <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Your Patterns</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 11, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', fontWeight: 600, marginBottom: 10 }}>Patterns</div>
+      <div style={{ background: C.card, borderRadius: 16, border: `1px solid ${C.border}`, overflow: 'hidden' }}>
         {loading ? (
-          [1,2,3].map(i => <div key={i} className="skeleton" style={{ height: 64, borderRadius: 14 }} />)
+          [1,2,3].map((i, idx) => (
+            <div key={i} style={{
+              padding: '13px 16px',
+              borderBottom: idx < 2 ? `1px solid rgba(255,255,255,0.05)` : 'none',
+            }}>
+              <div className="skeleton" style={{ height: 10, width: '40%', borderRadius: 6, marginBottom: 8 }} />
+              <div className="skeleton" style={{ height: 8, width: '75%', borderRadius: 6 }} />
+            </div>
+          ))
         ) : insights?.length ? (
           insights.map((ins, i) => (
-            <div key={i} style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                <span style={{ fontSize: 20, flexShrink: 0 }}>{ins.icon}</span>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: C.white, lineHeight: 1.4, marginBottom: 4 }}>{ins.pattern}</div>
-                  {ins.action && <div style={{ fontSize: 12, color: C.green, lineHeight: 1.4 }}>→ {ins.action}</div>}
-                </div>
+            <div key={i} style={{
+              padding: '13px 16px',
+              borderBottom: i < insights.length - 1 ? `1px solid rgba(255,255,255,0.05)` : 'none',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase' }}>
+                  {ins.label || 'INSIGHT'}
+                </span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.green }}>
+                  {ins.metric}
+                </span>
               </div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.45 }}>{ins.pattern}</div>
             </div>
           ))
         ) : (
-          <div style={{ textAlign: 'center', padding: '24px 0', color: C.muted, fontSize: 13 }}>
-            Log meals for a week to see your patterns.
+          <div style={{ padding: '20px 16px', color: C.dimmed, fontSize: 13, textAlign: 'center' }}>
+            Complete your plan to see patterns.
           </div>
         )}
       </div>
@@ -3911,45 +3924,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         )}
       </div>}
 
-      {/* 2 ── Health Score (only when scan exists) ── */}
-      {lastScan && (
-        <Card className="su glass" style={{ animationDelay: '.04s' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 20 }}>
-            <div>
-              <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1, background: `linear-gradient(135deg, ${C.gold}, ${C.green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                {healthScore}
-              </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{healthLabel}</div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-                Composite score from body fat, muscle mass & physique consistency
-              </p>
-            </div>
-          </div>
-          {(() => {
-            const unit = profile?.unitSystem || 'imperial';
-            const leanMassLbsVal = leanMassLbs || (leanKg * 2.2046);
-            return [
-              { icon: '💧', label: 'Body Fat',  sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
-                value: `${bf}%`,                                        color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
-              { icon: '🏋️', label: 'Lean Mass', sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
-                value: fmt.leanMass(leanMassLbsVal, unit),              color: C.blue },
-              { icon: '⚖️', label: 'Fat Mass',  sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
-                value: fmt.weight(fatMassLbs, unit),                    color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
-            ];
-          })().map(row => (
-            <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{row.label}</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{row.sub}</div>
-              </div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: row.color }}>{row.value}</div>
-            </div>
-          ))}
-        </Card>
-      )}
 
       {/* 4 ── Profile Info ── */}
       <Card className="su" style={{ animationDelay: '.12s' }}>
