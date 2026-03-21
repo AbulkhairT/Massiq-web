@@ -2966,32 +2966,36 @@ function getWeeklyPriorities(profile, targets, plan) {
 
 function PlanTab({ profile, activePlan, setTab, showToast }) {
   const weekKey = getWeekKey();
+  const [openSections,  setOpenSections]  = useState(() => new Set(['week', 'focus']));
   const [selectedMeal,  setSelectedMeal]  = useState(null);
   const [swappingKey,   setSwappingKey]   = useState(null);
-  const [detailView,    setDetailView]    = useState(null);
   const [mealPlanDays,  setMealPlanDays]  = useState(() => {
     const stored = LS.get(LS_KEYS.mealplan, null);
     return stored?.days || null;
   });
   const [activeDayIdx,  setActiveDayIdx]  = useState(() => {
-    const names = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
-    const idx = (mealPlanDays || []).findIndex(d => d.day === todayName);
+    const days = LS.get(LS_KEYS.mealplan, null)?.days || [];
+    const idx = days.findIndex(d => d.day === todayName);
     return idx >= 0 ? idx : 0;
   });
   const [loggedMeals,   setLoggedMeals]   = useState(() => LS.get(LS_KEYS.logged(todayStr()), {}));
   const [missions, setMissions] = useState(() => {
     const saved = LS.get(`massiq:missions:${weekKey}`, null);
-    // Filter out raw-number missions like "3436 kcal/day" or "130g/day"
     const isRawNumber = (t) => /^\d[\d,]*\s*(kcal|g)\s*(\/day)?$/i.test(String(t).trim());
     const storedMissions = (activePlan?.weeklyMissions || []).filter(t => !isRawNumber(t));
-    // Use stored actionable missions, or generate smart priorities from profile
-    const activeMacros  = getActiveTargets(activePlan, profile);
+    const activeMacros = getActiveTargets(activePlan, profile);
     const texts = storedMissions.length >= 2
       ? storedMissions
       : getWeeklyPriorities(profile, activeMacros, activePlan);
     if (saved && saved.length === texts.length) return saved;
     return texts.map((text, i) => ({ id: i, text, done: false }));
+  });
+
+  const toggleSection = (key) => setOpenSections(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
   });
 
   const toggleMission = (id) => {
@@ -3000,595 +3004,359 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     LS.set(`massiq:missions:${weekKey}`, updated);
   };
 
+  /* Collapsible section header */
+  const SectionRow = ({ sectionKey, label, meta }) => {
+    const isOpen = openSections.has(sectionKey);
+    return (
+      <div className="bp" onClick={() => toggleSection(sectionKey)} style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        paddingBottom: isOpen ? 14 : 0,
+        marginBottom: isOpen ? 2 : 0,
+        borderBottom: isOpen ? `1px solid rgba(255,255,255,0.06)` : 'none',
+        cursor: 'pointer',
+      }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: C.white }}>{label}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {meta && <span style={{ fontSize: 12, color: C.dimmed }}>{meta}</span>}
+          <span style={{
+            fontSize: 10, color: C.dimmed, display: 'inline-block',
+            transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform .18s ease',
+          }}>▾</span>
+        </div>
+      </div>
+    );
+  };
+
   /* ── No active plan ── */
   if (!activePlan) {
     return (
       <div className="screen">
-        <h1 className="screen-title">Your Plan</h1>
-        <div className="su" style={{
-          background: C.card, border: `1.5px solid ${C.green}`,
-          borderRadius: 20, padding: 36, textAlign: 'center',
+        <div style={{ fontSize: 11, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600, marginBottom: 20 }}>
+          Your plan
+        </div>
+        <div style={{
+          background: C.card, borderRadius: 20, padding: '36px 24px',
+          border: `1px solid rgba(255,255,255,0.08)`, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>Your plan comes from your scan</h2>
-          <p style={{ color: C.muted, fontSize: 14, lineHeight: 1.7, marginBottom: 28, maxWidth: 280, margin: '0 auto 28px' }}>
-            MassIQ analyzes your actual physique to generate a 12-week program. No guessing. No generic plans.
-          </p>
-          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Run Your First Scan →</Btn>
+          <div style={{ fontSize: 34, marginBottom: 18 }}>📋</div>
+          <div style={{ fontSize: 19, fontWeight: 700, color: C.white, marginBottom: 8 }}>
+            Your plan comes from your scan
+          </div>
+          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, maxWidth: 240, margin: '0 auto 28px' }}>
+            MassIQ analyzes your physique to build a 12-week program.
+          </div>
+          <button className="bp" onClick={() => setTab('scan')} style={{
+            background: C.green, color: '#0A0D0A', border: 'none',
+            padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 700, cursor: 'pointer',
+          }}>
+            Start scan →
+          </button>
         </div>
       </div>
     );
   }
 
-  /* ── Derive plan values ── */
-  const macros      = getActiveTargets(activePlan, profile);
-  const phase       = activePlan.phase  || profile?.goal || 'Maintain';
-  const phaseColor  = PHASE_COLORS[phase] || C.green;
-  const today        = new Date().toISOString().slice(0, 10);
-  const week        = activePlan.startDate
+  /* ── Derived values ── */
+  const macros     = getActiveTargets(activePlan, profile);
+  const phase      = activePlan.phase || profile?.goal || 'Maintain';
+  const today      = new Date().toISOString().slice(0, 10);
+  const week       = activePlan.startDate
     ? Math.min(12, Math.max(1, Math.floor(daysBetween(activePlan.startDate, today) / 7) + 1))
     : (activePlan.week || 1);
-  const phasePct    = Math.round((week / 12) * 100);
-  const startBF     = activePlan.startBF  || activePlan.bodyFat  || 18;
-  const targetBF    = activePlan.targetBF || (phase === 'Cut' ? startBF - 4 : phase === 'Bulk' ? startBF + 1 : startBF);
-  const trainDays   = activePlan.trainDays || 4;
-  const cardioDays  = activePlan.cardioDays || 2;
-  const sleepHrs    = activePlan.sleepHrs  || 8;
-  const waterL      = activePlan.waterL    || 3;
-  const steps       = activePlan.steps     || 8000;
-  const objective   = activePlan.objective || `Optimize body composition through targeted ${phase.toLowerCase()} protocols.`;
-  const whyItWorks  = activePlan.whyThisWorks || `This plan is calibrated to your current body composition and metabolic rate. By combining your calorie target with structured training, your body will prioritize the right adaptations each week.`;
-
-  const startDate    = activePlan.startDate   || today;
+  const phasePct   = Math.round((week / 12) * 100);
+  const startDate  = activePlan.startDate || today;
   const nextScanDate = activePlan.nextScanDate || (() => {
     const d = new Date(startDate); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10);
   })();
-  const totalDays    = daysBetween(startDate, nextScanDate) || 84;
-  const elapsed      = Math.max(0, daysBetween(startDate, today));
-  const daysLeft     = Math.max(0, daysBetween(today, nextScanDate));
-  const scanPct      = Math.min(100, Math.round((elapsed / totalDays) * 100));
+  const daysLeft   = Math.max(0, daysBetween(today, nextScanDate));
+  const startBF    = activePlan.startBF || activePlan.bodyFat || 18;
+  const targetBF   = activePlan.targetBF || (phase === 'Cut' ? startBF - 4 : phase === 'Bulk' ? startBF + 1 : startBF);
+  const trainDays  = activePlan.trainDays || 4;
+  const cardioDays = activePlan.cardioDays || 2;
+  const sleepHrs   = activePlan.sleepHrs || 8;
+  const waterL     = activePlan.waterL || 3;
+  const steps      = activePlan.steps || macros.steps || 8000;
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const latestScan  = scanHistory.slice(-1)[0] || null;
+
+  const FOCUS_CARDS = [
+    { label: 'Protein',  value: `${macros.protein || 150}g daily`,                reason: 'preserve muscle' },
+    { label: 'Training', value: `${trainDays} sessions/wk`,                       reason: 'consistency' },
+    { label: 'Sleep',    value: `${sleepHrs}h nightly`,                           reason: 'recovery' },
+    { label: 'Steps',    value: `${(steps).toLocaleString()}/day`,                reason: 'energy balance' },
+  ];
 
   const MILESTONES = [
-    { w: 3,  label: 'Baseline set',         desc: 'Locked in your targets and training routine' },
-    { w: 6,  label: 'Habits established',   desc: 'Consistency building toward long-term change' },
-    { w: 9,  label: 'Your check-in',        desc: 'Mid-plan progress assessment' },
-    { w: 12, label: 'Final scan + new plan', desc: 'Full rescan and updated 12-week program' },
+    { w: 3,  label: 'Baseline set' },
+    { w: 6,  label: 'Habits established' },
+    { w: 9,  label: 'Mid-plan check-in' },
+    { w: 12, label: 'Final scan + new plan' },
   ];
-
-  const tileStyle = (color) => ({
-    background: C.cardElevated, borderRadius: 16, padding: '14px 14px 16px',
-    display: 'flex', flexDirection: 'column', gap: 8,
-  });
-
-  const DAILY_TILES = [
-    { icon: '🔥', label: 'Calories', value: macros.calories || 2000, unit: 'kcal', color: C.orange },
-    { icon: '⚡', label: 'Protein',  value: macros.protein  || 150,  unit: 'g',    color: C.blue },
-    { icon: '🚶', label: 'Steps',    value: steps,                   unit: '/day', color: C.green },
-    { icon: '🌙', label: 'Sleep',    value: sleepHrs,                unit: 'hrs',  color: C.purple },
-    { icon: '💧', label: 'Water',    value: waterL,                  unit: 'L',    color: '#4AD4FF' },
-    { icon: '🏋️', label: 'Training', value: trainDays,              unit: 'x/wk', color: C.red },
-  ];
-  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-  const hasScanned = scanHistory && scanHistory.length > 0;
-  const latestScan = hasScanned ? scanHistory[scanHistory.length - 1] : null;
-  const currentScan = latestScan;
-  const previousScan = scanHistory[scanHistory.length - 2];
-  const trajectory = getTrajectoryStatus(scanHistory, phase);
-  const focusAreas = getPrimaryLimiters(currentScan, activePlan);
-  const bfDelta = (currentScan && previousScan) ? (getBF(currentScan) || 0) - (getBF(previousScan) || 0) : null;
-  const lmDelta = (currentScan && previousScan) ? Number(currentScan.leanMass || 0) - Number(previousScan.leanMass || 0) : null;
-  const coachingNote = trajectory.tone === 'good'
-    ? 'Progress is aligned with current phase. Keep training execution consistent.'
-    : trajectory.tone === 'warn'
-      ? 'Trajectory needs adjustment this week. Prioritize adherence and tighten recovery consistency.'
-      : 'Signal is still early. Keep execution stable and confirm trend on next scan.';
-  const thisWeekChecklist = [
-    `Calories: ${macros.calories || 2000} kcal/day`,
-    `Protein: ${macros.protein || 150} g/day`,
-    `Steps/Cardio: ${steps.toLocaleString()} steps + ${cardioDays} cardio sessions`,
-    `Training: ${trainDays} strength sessions`,
-    `Recovery: ${sleepHrs} h sleep + ${waterL} L water daily`,
-  ];
-  const workoutDays = LS.get(LS_KEYS.workoutplan, []) || [];
 
   return (
     <div className="screen">
-      <h1 className="screen-title">Your Plan</h1>
 
-      {/* 1 ── Phase Hero ── */}
-      <div className="su">
-        <SummaryCard
-          label={`Plan Summary · Week ${week} of 12`}
-          title={`${PHASE_META[phase]?.label || phase} Phase`}
-          subtitle={`${phasePct}% complete → next review ${fmt.date(nextScanDate)}`}
-          progressPct={phasePct}
-          tone={phaseColor}
-          metrics={[
-            ...(hasScanned
-              ? [{ label: 'Body Fat', value: `${getBFDisplay(latestScan)} \u2192 ${targetBF}%` }]
-              : [{ label: '📷 First Scan', value: 'Required' }]
-            ),
-            { label: 'Training', value: `${trainDays} sessions` },
-            { label: 'Cardio', value: `${cardioDays} sessions` },
-            { label: 'Sleep', value: `${sleepHrs} h` },
-          ]}
-          insight={
-            hasScanned
-              ? (objective || PHASE_META[phase]?.target)
-              : `Targeting your ${profile?.goal || phase} goal`
-          }
-          nextStep={trajectory.note}
-        />
+      {/* ══ 1. PLAN HERO ════════════════════════════════════════════════ */}
+      <div>
+        <div style={{ fontSize: 11, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600, marginBottom: 16 }}>
+          Your plan
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.white, letterSpacing: '-0.02em', marginBottom: 4 }}>
+          {PHASE_META[phase]?.label || phase} Phase
+        </div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>
+          {daysLeft > 0 ? `${daysLeft} days remaining` : 'Final week'}
+          {latestScan ? ` \u00b7 ${getBFDisplay(latestScan)} \u2192 ${targetBF}%` : ''}
+        </div>
+        <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
+          <div style={{
+            height: '100%', borderRadius: 99, background: C.green, opacity: 0.7,
+            width: `${phasePct}%`, transition: 'width .4s ease',
+          }} />
+        </div>
+        <div style={{ fontSize: 11, color: C.dimmed }}>Week {week} of 12</div>
       </div>
 
-      {/* 2 ── This Week (decision layer) ── */}
-      <Card className="su" style={{ animationDelay: '.02s' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>This Week</span>
-          {trajectory.label && <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />}
-        </div>
-        <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
-          {thisWeekChecklist.map((line) => (
-            <div key={line} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, color: C.white }}>
-              <span style={{ color: C.green, marginTop: 1 }}>•</span>
-              <span style={{ lineHeight: 1.5 }}>{line}</span>
-            </div>
-          ))}
-        </div>
-        <div style={{ paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>Coaching note</div>
-          <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{coachingNote}</p>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 12 }}>
-          {[
-            { key: 'workout', label: 'Workout Plan' },
-            { key: 'cardio', label: 'Cardio Structure' },
-            { key: 'nutrition', label: 'Nutrition Guide' },
-          ].map((item) => (
-            <button key={item.key} className="bp" onClick={() => setDetailView(item.key)} style={{ fontSize: 12, fontWeight: 620, borderRadius: 10, border: `1px solid ${C.border}`, background: C.cardElevated, color: C.white, padding: '9px 8px' }}>
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </Card>
-
-      {/* 3 ── Focus Areas ── */}
-      <Card className="su" style={{ animationDelay: '.03s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Focus Areas</div>
-        <div style={{ display: 'grid', gap: 9 }}>
-          {focusAreas.slice(0, 3).map((f, idx) => (
-            <div key={`${f}-${idx}`} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', borderRadius: 12, border: `1px solid ${C.border}`, background: 'rgba(255,255,255,0.02)' }}>
-              <span style={{ width: 20, height: 20, borderRadius: '50%', background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{idx + 1}</span>
-              <span style={{ fontSize: 13, color: C.white, lineHeight: 1.45 }}>{f}</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* 2 ── Transformation Timeline ── */}
-      <Card className="su" style={{ animationDelay: '.04s' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>Transformation Timeline</span>
-          <span style={{ fontSize: 12, color: C.muted }}>{daysLeft} days to next review</span>
-        </div>
-        {/* Progress bar with dots */}
-        <div style={{ position: 'relative', marginBottom: 8 }}>
-          <div style={{ height: 8, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${phasePct}%`, borderRadius: 99, background: `linear-gradient(90deg, ${C.orange}, ${C.green})` }} />
-          </div>
-          {/* Now dot */}
-          <div style={{ position: 'absolute', top: -4, left: `${Math.max(2, Math.min(96, phasePct))}%`, transform: 'translateX(-50%)', width: 16, height: 16, borderRadius: '50%', background: C.orange, border: `3px solid ${C.card}` }} />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.muted, marginBottom: 20 }}>
-          <span>Now {hasScanned ? `~${getBFDisplay(latestScan)}` : '—'}</span>
-          <span style={{ color: C.green, fontWeight: 600 }}>Goal ~{targetBF}% 🏁</span>
-        </div>
-        {/* 4 stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
-          {[
-            { label: 'Start BF',  value: hasScanned ? getBFDisplay(latestScan) : '—',   color: C.muted },
-            { label: 'Target BF', value: `${targetBF}%`,  color: C.green },
-            { label: 'Training',  value: `${trainDays}x/wk`, color: C.blue },
-            { label: 'Cardio',    value: `${cardioDays}x/wk`, color: C.orange },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: 'center', background: C.cardElevated, borderRadius: 12, padding: '10px 4px' }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 10, color: C.dimmed, marginTop: 3 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* 2.5 ── Progress Update ── */}
-      <Card className="su" style={{ animationDelay: '.05s' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>Progress Since Last Scan</span>
-          <span style={{ fontSize: 11, color: C.muted }}>{scanHistory.length > 1 ? `${fmt.date(previousScan?.date)} → ${fmt.date(currentScan?.date)}` : 'Awaiting comparison'}</span>
-        </div>
-        {scanHistory.length > 1 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Body Fat Change</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: (bfDelta || 0) <= 0 ? C.green : C.orange }}>
-                {(bfDelta || 0) > 0 ? '+' : ''}{(bfDelta || 0).toFixed(1)}%
-              </div>
-            </div>
-            <div style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Lean Mass Change</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: (lmDelta || 0) >= 0 ? C.green : C.orange }}>
-                {(lmDelta || 0) >= 0 ? '+' : ''}
-                {profile?.unitSystem === 'metric'
-                  ? `${((lmDelta || 0) * 0.453592).toFixed(1)} kg`
-                  : `${(lmDelta || 0).toFixed(1)} lb`}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <p style={{ margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>You need at least two scans to quantify trend and adaptation impact.</p>
-        )}
-      </Card>
-
-      {/* 3 ── Why This Works ── */}
-      <Card className="su" style={{ animationDelay: '.08s', background: C.card }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <span style={{ fontSize: 20 }}>✨</span>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>Why this plan works</span>
-        </div>
-        <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7 }}>{whyItWorks}</p>
-      </Card>
-
-      {/* 4 ── Daily Targets Grid ── */}
-      <div className="su" style={{ animationDelay: '.12s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today&apos;s Execution Targets</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          {DAILY_TILES.map(t => (
-            <div key={t.label} style={tileStyle(t.color)}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 28, height: 28, borderRadius: 8, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>{t.icon}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>{t.label}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: C.white, lineHeight: 1 }}>{t.value}</div>
-                <div style={{ fontSize: 11, color: C.dimmed }}>{t.unit}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 5 ── Weekly Missions ── */}
-      <div className="su" style={{ animationDelay: '.16s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>This Week&apos;s Priorities</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {missions.map(m => (
-            <div key={m.id} className="bp" onClick={() => toggleMission(m.id)} style={{
-              display: 'flex', alignItems: 'center', gap: 14,
-              background: C.card, borderRadius: 14, padding: '14px 16px',
-              border: `1px solid ${m.done ? C.greenDim : C.border}`,
-            }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
-                border: `2px solid ${m.done ? C.green : C.dimmed}`,
-                background: m.done ? C.greenBg : 'transparent',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+      {/* ══ 2. THIS WEEK ════════════════════════════════════════════════ */}
+      <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+        <SectionRow sectionKey="week" label="This week" meta={`${week}/12`} />
+        {openSections.has('week') && (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {[
+              { label: 'Calories',  value: `${(macros.calories || 2000).toLocaleString()} kcal` },
+              { label: 'Protein',   value: `${macros.protein || 150}g` },
+              { label: 'Training',  value: `${trainDays} sessions` },
+              { label: 'Steps',     value: `${(steps).toLocaleString()} / day` },
+              { label: 'Sleep',     value: `${sleepHrs}h` },
+            ].map((row, i, arr) => (
+              <div key={row.label} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                paddingTop: 12, paddingBottom: i < arr.length - 1 ? 12 : 0,
+                borderBottom: i < arr.length - 1 ? `1px solid rgba(255,255,255,0.05)` : 'none',
               }}>
-                {m.done && <span style={{ fontSize: 13, color: C.green }}>✓</span>}
+                <span style={{ fontSize: 14, color: C.muted }}>{row.label}</span>
+                <span style={{ fontSize: 14, fontWeight: 600, color: C.white }}>{row.value}</span>
               </div>
-              <span style={{
-                fontSize: 14, color: m.done ? C.muted : C.white, lineHeight: 1.4,
-                textDecoration: m.done ? 'line-through' : 'none',
-              }}>{m.text}</span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 6 ── Milestones Timeline ── */}
-      <div className="su" style={{ animationDelay: '.20s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>Milestones</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          {MILESTONES.map((m, i) => {
-            const isPast    = week > m.w;
-            const isCurrent = week <= m.w && week > (MILESTONES[i - 1]?.w || 0);
-            const dotColor  = isPast ? C.green : isCurrent ? C.green : C.dimmed;
-            const dotFill   = isPast || isCurrent;
-            return (
-              <div key={m.w} style={{ display: 'flex', gap: 16, paddingBottom: i < MILESTONES.length - 1 ? 0 : 0 }}>
-                {/* Dot + line */}
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+      {/* ══ 3. FOCUS ════════════════════════════════════════════════════ */}
+      <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+        <SectionRow sectionKey="focus" label="Focus" />
+        {openSections.has('focus') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {FOCUS_CARDS.map(card => (
+              <div key={card.label} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: '11px 14px',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{
-                    width: 16, height: 16, borderRadius: '50%', marginTop: 2, flexShrink: 0,
-                    background: dotFill ? dotColor : 'transparent',
-                    border: `2px solid ${dotColor}`,
-                    boxShadow: isCurrent ? `0 0 10px ${C.green}88` : 'none',
-                  }} />
-                  {i < MILESTONES.length - 1 && (
-                    <div style={{ width: 2, flex: 1, minHeight: 36, background: isPast ? C.green : C.border, margin: '4px 0' }} />
-                  )}
+                    fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+                    color: C.green, background: C.greenBg, borderRadius: 6, padding: '3px 8px', flexShrink: 0,
+                  }}>{card.label}</div>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.white }}>{card.value}</span>
                 </div>
-                {/* Content */}
-                <div style={{ paddingBottom: 24 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 11, color: isCurrent ? C.green : C.dimmed, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>W{m.w}</span>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: isCurrent ? C.white : isPast ? C.muted : C.dimmed }}>{m.label}</span>
-                    {isCurrent && <span style={{ fontSize: 10, color: C.green, background: C.greenBg, padding: '2px 8px', borderRadius: 99, fontWeight: 600 }}>Current</span>}
-                  </div>
-                  <p style={{ fontSize: 13, color: C.dimmed, lineHeight: 1.5 }}>{m.desc}</p>
-                </div>
+                <span style={{ fontSize: 12, color: C.dimmed, flexShrink: 0, marginLeft: 8 }}>{card.reason}</span>
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 7 ── Next Scan Card ── */}
-      <Card className="su" style={{ animationDelay: '.24s', border: `1px solid ${C.greenDim}` }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 4 }}>Next scan in</div>
-            <div style={{ fontSize: 28, fontWeight: 800, color: C.white }}>{daysLeft} <span style={{ fontSize: 16, fontWeight: 400, color: C.muted }}>days</span></div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 11, color: C.muted }}>Scheduled</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>{fmt.date(nextScanDate)}</div>
-          </div>
-        </div>
-        <div style={{ marginBottom: 16 }}>
-          <ProgressBar value={elapsed} max={totalDays} color={C.green} height={8} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.dimmed, marginTop: 5 }}>
-            <span>Day {elapsed}</span>
-            <span>Day {totalDays}</span>
-          </div>
-        </div>
-        <Btn onClick={() => setTab('scan')} variant="outline" style={{ width: '100%' }}>
-          Schedule Scan 📸
-        </Btn>
-      </Card>
-
-      {/* 8 ── Weekly Meal Plan ── */}
-      {mealPlanDays && (
-        <div className="su" style={{ animationDelay: '.28s' }}>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Weekly Meal Plan</div>
-
-          {/* Weekly summary */}
-          {(() => {
-            const KEYS = ['breakfast','lunch','dinner','snack'];
-            let totalProt = 0, plannedCount = 0, trainCount = 0;
-            mealPlanDays.forEach(d => {
-              if (d.isTrainingDay) trainCount++;
-              KEYS.forEach(k => { if (d[k]?.protein) { totalProt += d[k].protein; plannedCount++; } });
-            });
-            const targetProt = macros?.protein || (mealPlanDays.length ? Math.round(totalProt / mealPlanDays.length) : 0);
-            return (
-              <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-                {[
-                  { label: `${targetProt}g protein/day` },
-                  { label: `${trainCount} training days` },
-                  { label: `${plannedCount} meals` },
-                ].map((s, i) => (
-                  <span key={i} style={{ fontSize: 11, color: C.dimmed, background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 99, padding: '3px 10px' }}>{s.label}</span>
-                ))}
-              </div>
-            );
-          })()}
-
-          {/* Day selector */}
-          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 8, marginBottom: 16 }}>
-            {mealPlanDays.map((d, i) => {
-              const isToday = d.day === new Date().toLocaleDateString('en-US', { weekday: 'long' });
-              const isActive = activeDayIdx === i;
+      {/* ══ 4. TIMELINE ═════════════════════════════════════════════════ */}
+      <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+        <SectionRow sectionKey="timeline" label="Timeline" meta={`Week ${week} of 12`} />
+        {openSections.has('timeline') && (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {MILESTONES.map((m, i) => {
+              const isPast    = week > m.w;
+              const isCurrent = week <= m.w && week > (MILESTONES[i - 1]?.w || 0);
               return (
-                <button key={i} className="bp" onClick={() => setActiveDayIdx(i)} style={{
-                  flexShrink: 0, padding: '7px 13px', borderRadius: 99,
-                  border: `1.5px solid ${isActive ? C.green : isToday ? `${C.green}44` : C.border}`,
-                  background: isActive ? C.greenBg : 'transparent',
-                  color: isActive ? C.green : isToday ? C.white : C.muted,
-                  fontSize: 12, fontWeight: isActive || isToday ? 700 : 500, cursor: 'pointer',
-                }}>
-                  {d.day.slice(0, 3)}{d.isTrainingDay ? ' 💪' : ''}
-                </button>
+                <div key={m.w} style={{ display: 'flex', gap: 12, paddingBottom: i < MILESTONES.length - 1 ? 16 : 0 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: '50%', marginTop: 3, flexShrink: 0,
+                      background: isPast || isCurrent ? C.green : 'transparent',
+                      border: `1.5px solid ${isPast || isCurrent ? C.green : C.dimmed}`,
+                      opacity: isCurrent ? 1 : isPast ? 0.55 : 0.3,
+                    }} />
+                    {i < MILESTONES.length - 1 && (
+                      <div style={{ width: 1, flex: 1, minHeight: 22, background: isPast ? `${C.green}44` : 'rgba(255,255,255,0.07)', margin: '3px 0' }} />
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 0 }}>
+                      <span style={{ fontSize: 11, color: C.dimmed, fontWeight: 600 }}>W{m.w}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: isCurrent ? C.white : isPast ? C.muted : C.dimmed }}>
+                        {m.label}
+                      </span>
+                      {isCurrent && (
+                        <span style={{ fontSize: 10, color: C.green, background: C.greenBg, padding: '1px 7px', borderRadius: 99, fontWeight: 600 }}>
+                          Now
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
               );
             })}
           </div>
+        )}
+      </div>
 
-          {/* Active day meals */}
-          {(() => {
-            const day = mealPlanDays[activeDayIdx];
-            if (!day) return null;
+      {/* ══ 5. MEALS ════════════════════════════════════════════════════ */}
+      {mealPlanDays && (
+        <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+          <SectionRow sectionKey="meals" label="Today's meals" meta="tap to expand" />
+          {openSections.has('meals') && (() => {
+            const day    = mealPlanDays[activeDayIdx];
             const today2 = todayStr();
             const MEAL_KEYS = [
-              { key: 'breakfast', label: 'Breakfast', color: '#6FA7FF' },
-              { key: 'lunch',     label: 'Lunch',     color: '#FFD60A' },
-              { key: 'dinner',    label: 'Dinner',    color: '#34D17B' },
-              { key: 'snack',     label: 'Snack',     color: '#66746B'  },
+              { key: 'breakfast', label: 'Breakfast' },
+              { key: 'lunch',     label: 'Lunch' },
+              { key: 'dinner',    label: 'Dinner' },
+              { key: 'snack',     label: 'Snack' },
             ];
-
-            // Daily totals
-            const dayKcal = MEAL_KEYS.reduce((s, { key }) => s + (day[key]?.calories || 0), 0);
-            const dayProt = MEAL_KEYS.reduce((s, { key }) => s + (day[key]?.protein  || 0), 0);
-
             return (
               <>
-                {/* Daily summary bar */}
-                <div style={{ display: 'flex', gap: 12, marginBottom: 12, padding: '8px 12px', background: C.cardElevated, borderRadius: 10, alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, color: C.muted }}><span style={{ color: C.orange, fontWeight: 700 }}>{dayKcal}</span> kcal</span>
-                  <span style={{ color: C.border }}>·</span>
-                  <span style={{ fontSize: 12, color: C.muted }}><span style={{ color: C.blue, fontWeight: 700 }}>{dayProt}g</span> protein</span>
-                  <span style={{ color: C.border }}>·</span>
-                  <span style={{ fontSize: 12, color: day.isTrainingDay ? C.green : C.dimmed }}>{day.isTrainingDay ? '💪 Training' : 'Rest day'}</span>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {MEAL_KEYS.map(({ key, label, color }) => {
-                    const meal = day[key];
-                    if (!meal?.name) return null;
-                    const logKey = `${day.day}-${key}`;
-                    const isLogged = !!loggedMeals[logKey];
-                    const isSwapping = swappingKey === logKey;
+                {/* Day selector */}
+                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 10, marginBottom: 14 }}>
+                  {mealPlanDays.map((d, i) => {
+                    const isTodayDay = d.day === new Date().toLocaleDateString('en-US', { weekday: 'long' });
+                    const isActive   = activeDayIdx === i;
                     return (
-                      <div key={key} style={{
-                        background: C.card, borderRadius: 14,
-                        border: `1px solid ${isLogged ? C.greenDim : C.border}`,
-                        borderLeft: `3px solid ${isLogged ? C.green : color}`,
-                        opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
-                        overflow: 'hidden',
+                      <button key={i} className="bp" onClick={() => setActiveDayIdx(i)} style={{
+                        flexShrink: 0, padding: '6px 12px', borderRadius: 99,
+                        border: `1.5px solid ${isActive ? C.green : isTodayDay ? `${C.green}44` : C.border}`,
+                        background: isActive ? C.greenBg : 'transparent',
+                        color: isActive ? C.green : isTodayDay ? C.white : C.muted,
+                        fontSize: 12, fontWeight: isActive || isTodayDay ? 700 : 500, cursor: 'pointer',
                       }}>
-                        {/* Top row: label + calories */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px 4px' }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '.08em' }}>{label}</span>
-                          <span style={{ fontSize: 12, color: C.muted }}>{meal.calories} kcal</span>
-                        </div>
-                        {/* Meal name — tappable */}
-                        <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{ padding: '0 14px 8px', cursor: 'pointer' }}>
-                          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 3 }}>
-                            {isLogged && <span style={{ color: C.green, marginRight: 5 }}>✓</span>}
-                            {meal.name}
-                          </div>
-                          <div style={{ fontSize: 11, color: C.dimmed }}>P {meal.protein}g · C {meal.carbs}g · F {meal.fat}g</div>
-                        </div>
-                        {/* Actions */}
-                        <div style={{ display: 'flex', gap: 0, borderTop: `1px solid rgba(255,255,255,0.04)` }}>
-                          <button className="bp" onClick={async () => {
-                            if (isSwapping) return;
-                            setSwappingKey(logKey);
-                            try {
-                              const newMeal = await swapMealAPI({ ...meal, mealType: label }, profile, activePlan);
-                              const updated = mealPlanDays.map((d2, i2) => i2 !== activeDayIdx ? d2 : { ...d2, [key]: { ...d2[key], ...newMeal } });
-                              setMealPlanDays(updated);
-                              LS.set(LS_KEYS.mealplan, { ...LS.get(LS_KEYS.mealplan, {}), days: updated });
-                              showToast?.('✓ Meal swapped');
-                            } catch { showToast?.('Swap failed'); }
-                            setSwappingKey(null);
-                          }} style={{
-                            flex: 1, padding: '8px 0', background: 'none', border: 'none', borderRight: `1px solid rgba(255,255,255,0.04)`,
-                            color: C.dimmed, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                          }}>
-                            {isSwapping ? '⟳ Swapping…' : '↺ Swap'}
-                          </button>
-                          <button className="bp" onClick={() => {
-                            if (isLogged) return;
-                            const todayMeals = LS.get(LS_KEYS.meals(today2), []);
-                            const entry = { id: Date.now(), name: meal.name, category: label, calories: meal.calories || 0, protein: meal.protein || 0, carbs: meal.carbs || 0, fat: meal.fat || 0 };
-                            LS.set(LS_KEYS.meals(today2), [...todayMeals, entry]);
-                            const updated = { ...loggedMeals, [logKey]: true };
-                            setLoggedMeals(updated);
-                            LS.set(LS_KEYS.logged(today2), updated);
-                            showToast?.('✓ Logged');
-                          }} style={{
-                            flex: 1, padding: '8px 0', background: 'none', border: 'none',
-                            color: isLogged ? C.green : C.muted, fontSize: 12, fontWeight: 600,
-                            cursor: isLogged ? 'default' : 'pointer',
-                          }}>
-                            {isLogged ? '✓ Logged' : 'Log →'}
-                          </button>
-                        </div>
-                      </div>
+                        {d.day.slice(0, 3)}{d.isTrainingDay ? ' ·' : ''}
+                      </button>
                     );
                   })}
                 </div>
+
+                {/* Meal rows */}
+                {day && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {MEAL_KEYS.map(({ key, label }) => {
+                      const meal       = day[key];
+                      if (!meal?.name) return null;
+                      const logKey     = `${day.day}-${key}`;
+                      const isLogged   = !!loggedMeals[logKey];
+                      const isSwapping = swappingKey === logKey;
+                      return (
+                        <div key={key} style={{
+                          borderRadius: 14, overflow: 'hidden',
+                          border: `1px solid ${isLogged ? `${C.green}38` : C.border}`,
+                          background: C.cardElevated,
+                          opacity: isSwapping ? 0.6 : 1,
+                        }}>
+                          <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            padding: '12px 14px', cursor: 'pointer',
+                          }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>
+                                {label}
+                              </div>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: isLogged ? C.muted : C.white }}>
+                                {isLogged && <span style={{ color: C.green, marginRight: 6 }}>✓</span>}
+                                {meal.name}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: C.white }}>{meal.calories} kcal</div>
+                              <div style={{ fontSize: 11, color: C.dimmed }}>{meal.protein}g P</div>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', borderTop: `1px solid rgba(255,255,255,0.04)` }}>
+                            <button className="bp" onClick={async () => {
+                              if (isSwapping) return;
+                              setSwappingKey(logKey);
+                              try {
+                                const newMeal = await swapMealAPI({ ...meal, mealType: label }, profile, activePlan);
+                                const updated = mealPlanDays.map((d2, i2) => i2 !== activeDayIdx ? d2 : { ...d2, [key]: { ...d2[key], ...newMeal } });
+                                setMealPlanDays(updated);
+                                LS.set(LS_KEYS.mealplan, { ...LS.get(LS_KEYS.mealplan, {}), days: updated });
+                                showToast?.('Meal swapped');
+                              } catch { showToast?.('Swap failed'); }
+                              setSwappingKey(null);
+                            }} style={{
+                              flex: 1, padding: '9px 0', background: 'none',
+                              border: 'none', borderRight: `1px solid rgba(255,255,255,0.04)`,
+                              color: C.dimmed, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            }}>
+                              {isSwapping ? '⟳' : '\u21ba Swap'}
+                            </button>
+                            <button className="bp" onClick={() => {
+                              if (isLogged) return;
+                              const todayMeals = LS.get(LS_KEYS.meals(today2), []);
+                              const entry = { id: Date.now(), name: meal.name, category: label, calories: meal.calories || 0, protein: meal.protein || 0, carbs: meal.carbs || 0, fat: meal.fat || 0 };
+                              LS.set(LS_KEYS.meals(today2), [...todayMeals, entry]);
+                              const updated = { ...loggedMeals, [logKey]: true };
+                              setLoggedMeals(updated);
+                              LS.set(LS_KEYS.logged(today2), updated);
+                              showToast?.('Logged');
+                            }} style={{
+                              flex: 1, padding: '9px 0', background: 'none', border: 'none',
+                              color: isLogged ? C.green : C.muted, fontSize: 12, fontWeight: 600,
+                              cursor: isLogged ? 'default' : 'pointer',
+                            }}>
+                              {isLogged ? '\u2713 Logged' : 'Log \u2192'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             );
           })()}
         </div>
       )}
 
-      {detailView === 'workout' && (
-        <DetailSheet
-          title="Weekly Workout Structure"
-          subtitle="Phase-aligned split based on your current plan and training frequency."
-          onClose={() => setDetailView(null)}
-        >
-          <Card>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {(workoutDays.length ? workoutDays : []).map((day, idx) => (
-                <div key={`${day.day}-${idx}`} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: day.isTrainingDay ? C.cardElevated : 'rgba(255,255,255,0.02)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 700 }}>{day.day} · {day.workoutType}</div>
-                    <span style={{ fontSize: 11, color: day.isTrainingDay ? C.green : C.muted }}>{day.duration}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>{day.focus?.join(' • ') || 'Recovery focus'}</div>
-                  {day.isTrainingDay ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                      {(day.exercises || []).slice(0, 5).map((ex) => (
-                        <div key={ex.name} style={{ fontSize: 12, color: C.white, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                          <span>{ex.name}</span>
-                          <span style={{ color: C.muted }}>{ex.sets}×{ex.reps}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>Recovery day. Optional low-intensity walk and mobility work.</div>
+      {/* ══ 6. PRIORITIES ═══════════════════════════════════════════════ */}
+      <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+        <SectionRow sectionKey="priorities" label="This week's priorities" />
+        {openSections.has('priorities') && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {missions.map((m, idx) => (
+              <div key={m.id} className="bp" onClick={() => toggleMission(m.id)} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 12,
+                padding: '12px 2px',
+                borderBottom: idx < missions.length - 1 ? `1px solid rgba(255,255,255,0.05)` : 'none',
+                cursor: 'pointer',
+              }}>
+                <div style={{
+                  width: 20, height: 20, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+                  background: m.done ? C.green : 'transparent',
+                  border: m.done ? 'none' : `1.5px solid rgba(255,255,255,0.2)`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {m.done && (
+                    <svg width="9" height="7" viewBox="0 0 10 8" fill="none">
+                      <path d="M1 4l2.5 2.5L9 1" stroke="#0A0D0A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
                   )}
                 </div>
-              ))}
-              {!workoutDays.length && <div style={{ fontSize: 13, color: C.muted }}>Workout split is being prepared. Re-open after plan generation completes.</div>}
-            </div>
-          </Card>
-        </DetailSheet>
-      )}
-
-      {detailView === 'cardio' && (
-        <DetailSheet
-          title="Cardio Structure"
-          subtitle="Cardio is calibrated to support the active phase without interfering with strength progression."
-          onClose={() => setDetailView(null)}
-        >
-          <Card>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.cardElevated }}>
-                <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>Frequency</div>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>{cardioDays} sessions / week</div>
+                <span style={{
+                  fontSize: 14, color: m.done ? C.dimmed : C.muted, lineHeight: 1.45,
+                  textDecoration: m.done ? 'line-through' : 'none', flex: 1,
+                }}>{m.text}</span>
               </div>
-              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.cardElevated }}>
-                <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 4 }}>Session Guidance</div>
-                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-                  20–30 min low-intensity steady cardio on non-leg days. Keep effort conversational. If recovery is reduced, lower duration before lowering strength volume.
-                </div>
-              </div>
-            </div>
-          </Card>
-        </DetailSheet>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
 
-      {detailView === 'nutrition' && (
-        <DetailSheet
-          title="How to Hit Today's Targets"
-          subtitle="Practical macro distribution based on your active phase targets."
-          onClose={() => setDetailView(null)}
-        >
-          <Card>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>Protein pacing target: ~{Math.round((macros.protein || 150) / 4)} g per main meal across 4 feedings.</div>
-            {(() => {
-              // Try to get real meal names from today's meal plan
-              const storedPlan = LS.get(LS_KEYS.mealplan, null);
-              const todayPlanMeals = storedPlan?.days?.[0]?.meals || storedPlan?.meals || null;
-              const fallbackLabels = ['Breakfast', 'Lunch', 'Dinner', 'Snack'];
-              const distributions = [
-                { protein: 0.25, carbs: 0.22, fats: 0.25 },
-                { protein: 0.25, carbs: 0.33, fats: 0.25 },
-                { protein: 0.25, carbs: 0.28, fats: 0.25 },
-                { protein: 0.25, carbs: 0.17, fats: 0.25 },
-              ];
-              return (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  {distributions.map((m, i) => {
-                    const mealName = todayPlanMeals?.[i]?.name || fallbackLabels[i];
-                    return (
-                      <div key={i} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, background: C.cardElevated }}>
-                        <div style={{ fontSize: 12, fontWeight: 650, marginBottom: 4 }}>{mealName}</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>Protein {Math.round((macros.protein || 150) * m.protein)} g</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>Carbs {Math.round((macros.carbs || 200) * m.carbs)} g</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>Fat {Math.round((macros.fat || 55) * m.fats)} g</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </Card>
-        </DetailSheet>
-      )}
-
+      {/* selectedMeal modal */}
       {selectedMeal && (
         <RecipeModal
           meal={selectedMeal}
@@ -3600,7 +3368,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             const entry = { id: Date.now(), name: selectedMeal.name, category: selectedMeal.mealType || 'Meal', calories: selectedMeal.calories || 0, protein: selectedMeal.protein || 0, carbs: selectedMeal.carbs || 0, fat: selectedMeal.fat || 0 };
             LS.set(LS_KEYS.meals(today2), [...todayMeals, entry]);
             setSelectedMeal(null);
-            showToast?.('✓ Meal logged');
+            showToast?.('Meal logged');
           }}
           onSwap={() => setSelectedMeal(null)}
         />
@@ -3608,6 +3376,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     </div>
   );
 }
+
 
 /* ─── Profile Tab ────────────────────────────────────────────────────────── */
 
