@@ -197,8 +197,8 @@ function calcTargets(profile, scanData = null) {
     const leanMassKg = scanData.leanMass * 0.453592; // leanMass stored in lbs
     protein = Math.round(leanMassKg * 2.2);
   } else {
-    const multiplier = goal === 'cut' ? 2.2 : goal === 'bulk' ? 2.0 : 1.8;
-    protein = Math.round(weightKg * multiplier);
+    // Flat 2.0 g/kg body weight — consistent across all goals
+    protein = Math.round(weightKg * 2.0);
   }
 
   // Fat — 25% of calories
@@ -399,6 +399,71 @@ function getPrimaryLimiters(scan, activePlan) {
   const actions = activePlan?.engineDiagnosis?.primary?.primary_issue ? [activePlan.engineDiagnosis.primary.primary_issue] : [];
   if (actions.length) return actions;
   return ['Execution consistency is the current bottleneck.'];
+}
+
+/* ─── Physique Projection helpers ──────────────────────────────────────────
+   Deterministic stage classification + projection logic for the Physique
+   Projection feature. No LLM. No fake images. Reference-stage system only.
+─────────────────────────────────────────────────────────────────────────── */
+const PHYSIQUE_STAGES_M = [
+  { key: 'competition', label: 'Competition Lean', bfMax: 10, tier: 0, desc: 'Extreme definition — striations visible at rest', color: '#00E676' },
+  { key: 'lean',        label: 'Lean & Defined',   bfMax: 14, tier: 1, desc: 'Clear abdominal definition, visible vascularity',   color: '#00C853' },
+  { key: 'athletic',    label: 'Athletic',          bfMax: 18, tier: 2, desc: 'Fit appearance with some visible muscle definition', color: '#FFD600' },
+  { key: 'average',     label: 'Average',           bfMax: 23, tier: 3, desc: 'Healthy weight, limited surface definition',         color: '#FF9800' },
+  { key: 'above',       label: 'Above Average',     bfMax: 28, tier: 4, desc: 'Noticeable excess fat, reduced definition',          color: '#FF5722' },
+  { key: 'high',        label: 'High Body Fat',     bfMax: 100, tier: 5, desc: 'Significant body fat — fat loss is the priority',   color: '#EF4444' },
+];
+const PHYSIQUE_STAGES_F = [
+  { key: 'competition', label: 'Athletic & Lean',   bfMax: 17, tier: 0, desc: 'Athletic competition shape, prominent muscle tone',  color: '#00E676' },
+  { key: 'lean',        label: 'Lean & Toned',      bfMax: 22, tier: 1, desc: 'Visible muscle tone and athletic silhouette',         color: '#00C853' },
+  { key: 'athletic',    label: 'Athletic',           bfMax: 26, tier: 2, desc: 'Fit and healthy appearance',                         color: '#FFD600' },
+  { key: 'average',     label: 'Average',            bfMax: 31, tier: 3, desc: 'Healthy, typical body composition',                  color: '#FF9800' },
+  { key: 'above',       label: 'Above Average',      bfMax: 36, tier: 4, desc: 'Some excess body fat, reduced definition',           color: '#FF5722' },
+  { key: 'high',        label: 'High Body Fat',      bfMax: 100, tier: 5, desc: 'Elevated body fat — health-focused nutrition key',  color: '#EF4444' },
+];
+
+function getPhysiqueStage(bf, gender = 'Male') {
+  const stages = gender === 'Female' ? PHYSIQUE_STAGES_F : PHYSIQUE_STAGES_M;
+  return stages.find(s => bf < s.bfMax) || stages[stages.length - 1];
+}
+
+function getPhysiqueProjection(currentBF, goal, gender = 'Male', confidence = 'medium') {
+  const goalKey = (goal || '').toLowerCase();
+  // Projected BF after 10 weeks (half a 12-week plan) at realistic rates
+  let projectedBF = currentBF;
+  let timeline = '8–10 weeks';
+  let projCopy = '';
+
+  if (goalKey === 'cut') {
+    const rate = confidence === 'high' ? 0.65 : confidence === 'low' ? 0.4 : 0.55; // % per week
+    projectedBF = Math.max(5, +(currentBF - rate * 10).toFixed(1));
+    timeline = '10 weeks';
+    projCopy = 'With consistent adherence to your deficit and protein target, your plan trends toward a visibly leaner look.';
+  } else if (goalKey === 'bulk' || goalKey === 'build') {
+    projectedBF = Math.min(35, +(currentBF + 1.5).toFixed(1)); // slight BF increase acceptable
+    timeline = '10–12 weeks';
+    projCopy = 'Lean bulk — muscle density and size should increase while body fat stays controlled.';
+  } else if (goalKey === 'recomp') {
+    projectedBF = Math.max(5, +(currentBF - 0.3 * 10).toFixed(1));
+    timeline = '10–12 weeks';
+    projCopy = 'Recomp is slow but sustainable — expect gradual fat loss alongside muscle improvement.';
+  } else {
+    // Maintain
+    projectedBF = currentBF;
+    timeline = 'Ongoing';
+    projCopy = 'Maintenance phase — the goal is to preserve current composition with lifestyle consistency.';
+  }
+
+  const currentStage   = getPhysiqueStage(currentBF,   gender);
+  const projectedStage = getPhysiqueStage(projectedBF,  gender);
+  const improving      = projectedStage.tier < currentStage.tier;
+  const stageCopy      = improving
+    ? `If you follow the plan, you are projected to move from the "${currentStage.label}" stage toward "${projectedStage.label}".`
+    : goalKey === 'bulk' || goalKey === 'build'
+    ? `Lean bulk — focus is on muscle density, not body fat reduction. Stage stays similar by design.`
+    : `Maintenance keeps your current stage stable over this period.`;
+
+  return { currentStage, projectedStage, projectedBF, timeline, projCopy, stageCopy, improving };
 }
 
 function getActiveTargets(activePlan, profile) {
@@ -2695,6 +2760,29 @@ const DEFAULT_MISSIONS = [
   'Get 7+ hours of sleep at least 5 nights',
 ];
 
+// Generate actionable weekly priorities — never raw numbers
+function getWeeklyPriorities(profile, targets, plan) {
+  const goal     = profile?.goal || 'Maintain';
+  const protein  = targets?.protein  || 150;
+  const calories = targets?.calories || 2000;
+  const trainDays = plan?.trainDays || targets?.trainingDaysPerWeek || 4;
+  const sleep    = plan?.sleepHrs   || targets?.sleepHours          || 8;
+
+  const p1 = goal === 'Cut'
+    ? `Hit ${protein}g protein every day to preserve muscle while in deficit`
+    : goal === 'Bulk'
+    ? `Reach ${calories} kcal daily — especially on training days to fuel growth`
+    : `Hit ${protein}g protein and stay within ${calories} kcal each day`;
+
+  const p2 = plan?.trainingFocus?.primary
+    ? `Train ${plan.trainingFocus.primary} — complete all ${trainDays} sessions this week`
+    : `Complete all ${trainDays} training sessions — consistency drives results`;
+
+  const p3 = `Sleep ${sleep} hours per night — recovery is when muscle is built`;
+
+  return [p1, p2, p3];
+}
+
 function PlanTab({ profile, activePlan, setTab, showToast }) {
   const weekKey = getWeekKey();
   const [selectedMeal,  setSelectedMeal]  = useState(null);
@@ -2713,7 +2801,14 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const [loggedMeals,   setLoggedMeals]   = useState(() => LS.get(LS_KEYS.logged(todayStr()), {}));
   const [missions, setMissions] = useState(() => {
     const saved = LS.get(`massiq:missions:${weekKey}`, null);
-    const texts = activePlan?.weeklyMissions || DEFAULT_MISSIONS;
+    // Filter out raw-number missions like "3436 kcal/day" or "130g/day"
+    const isRawNumber = (t) => /^\d[\d,]*\s*(kcal|g)\s*(\/day)?$/i.test(String(t).trim());
+    const storedMissions = (activePlan?.weeklyMissions || []).filter(t => !isRawNumber(t));
+    // Use stored actionable missions, or generate smart priorities from profile
+    const activeMacros  = getActiveTargets(activePlan, profile);
+    const texts = storedMissions.length >= 2
+      ? storedMissions
+      : getWeeklyPriorities(profile, activeMacros, activePlan);
     if (saved && saved.length === texts.length) return saved;
     return texts.map((text, i) => ({ id: i, text, done: false }));
   });
@@ -3108,6 +3203,10 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
                   const logKey = `${day.day}-${key}`;
                   const isLogged = loggedMeals[logKey];
                   const isSwapping = swappingKey === logKey;
+                  // Warning thresholds (scaled to user's calorie target)
+                  const cals       = macros.calories || 2000;
+                  const mealCaps   = { breakfast: cals * 0.32, lunch: cals * 0.37, dinner: cals * 0.37, snack: cals * 0.20 };
+                  const isHighCal  = meal?.calories > mealCaps[key];
                   return (
                     <div key={key} style={{
                       background: C.card, borderRadius: 16, padding: 14,
@@ -3120,7 +3219,10 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
                           display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
                         }}>{icon}</div>
                         <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
-                          <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2 }}>{label}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                            <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
+                            {isHighCal && <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: `${C.orange}18`, padding: '1px 6px', borderRadius: 99 }}>⚠ High cal</span>}
+                          </div>
                           <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4 }}>{meal.name}</div>
                           <div style={{ display: 'flex', gap: 8, fontSize: 11, color: C.muted }}>
                             <span style={{ color: C.orange }}>{meal.calories} kcal</span>
@@ -3935,10 +4037,12 @@ Return ONLY this JSON (no markdown, no extra text):
       const engineOutput   = await callEngine(profile, [...currentHistory, scanForEngine]);
 
       // Step 3: Merge — visual assessment from Claude, targets from engine
+      // Protein always from calcTargets (uses leanMass from scan) — single authoritative formula
+      const scanTargets = calcTargets(profile, { leanMass: visualData.leanMass });
+      const engineBase  = engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal });
       const data = {
         ...visualData,
-        // Engine-calculated targets (authoritative)
-        dailyTargets:    clampMacros(engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal }), profile),
+        dailyTargets:    clampMacros({ ...engineBase, protein: scanTargets.protein }, profile),
         phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
         whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || visualData.diagnosis,
         weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
@@ -3957,7 +4061,8 @@ Return ONLY this JSON (no markdown, no extra text):
     const today  = new Date().toISOString().slice(0, 10);
     const eng    = result.engineOutput;          // engine output attached by runScan
     const previousPlanTargets = getActiveTargets(LS.get(LS_KEYS.activePlan, null), profile);
-    const baseTargets = clampMacros(eng?.macro_targets || result.dailyTargets || calcMacros(profile), profile);
+    // Use result.dailyTargets which already has protein from calcTargets (set in runScan)
+    const baseTargets = clampMacros(result.dailyTargets || calcMacros(profile), profile);
     const isLowConfidence = (result.confidence || '').toLowerCase() === 'low';
     const m = isLowConfidence
       ? clampMacros({
@@ -4304,6 +4409,100 @@ Return ONLY this JSON (no markdown, no extra text):
             ))}
           </div>
         </div>
+
+        {/* 6.5 – Physique Projection */}
+        {(() => {
+          const bf  = Number(result.bodyFatPct || 0);
+          if (!bf) return null;
+          const gen = profile?.gender || 'Male';
+          const proj = getPhysiqueProjection(bf, profile?.goal, gen, result.confidence);
+          const curr = proj.currentStage;
+          const prj  = proj.projectedStage;
+          const isSameStage = curr.key === prj.key;
+
+          // SVG body silhouette — width encodes leanness (narrower = leaner)
+          const SilhouetteFig = ({ tier, color, isProjected }) => {
+            // torso half-width: 14 (lean) → 20 (high BF)
+            const hw = Math.round(14 + tier * 1.4);
+            const opacity = isProjected ? 1 : 0.75;
+            return (
+              <svg viewBox="0 0 60 110" width={60} height={90} style={{ display: 'block', opacity }}>
+                {/* Head */}
+                <ellipse cx="30" cy="11" rx="8" ry="9" fill={color} />
+                {/* Neck */}
+                <rect x="27" y="19" width="6" height="7" rx="2" fill={color} />
+                {/* Torso */}
+                <path d={`M${30 - hw} 26 Q${30 - hw - 2} 60 ${30 - hw + 4} 72 L${30 + hw - 4} 72 Q${30 + hw + 2} 60 ${30 + hw} 26 Z`} fill={color} />
+                {/* Left leg */}
+                <rect x={30 - hw + 2} y="71" width={hw - 4} height={30} rx="4" fill={color} />
+                {/* Right leg */}
+                <rect x="30" y="71" width={hw - 4} height={30} rx="4" fill={color} />
+              </svg>
+            );
+          };
+
+          return (
+            <Card className="su" style={{ animationDelay: '.065s', background: '#0A0A12', border: '1px solid rgba(255,255,255,0.1)' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.12em', marginBottom: 4 }}>Physique Projection</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>Visual Trajectory</div>
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, background: C.cardElevated, padding: '4px 10px', borderRadius: 99, border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
+                  {proj.timeline}
+                </div>
+              </div>
+
+              {/* Stage comparison */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 24px 1fr', gap: 4, alignItems: 'center', marginBottom: 16 }}>
+                {/* Current */}
+                <div style={{ background: C.cardElevated, borderRadius: 14, padding: '14px 10px', textAlign: 'center', border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Now</div>
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+                    <SilhouetteFig tier={curr.tier} color={curr.color} isProjected={false} />
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: curr.color, marginBottom: 3 }}>{curr.label}</div>
+                  <div style={{ fontSize: 10, color: C.dimmed }}>{bf}% body fat</div>
+                </div>
+
+                {/* Arrow */}
+                <div style={{ textAlign: 'center', fontSize: 14, color: proj.improving ? C.green : C.muted }}>→</div>
+
+                {/* Projected */}
+                <div style={{
+                  background: isSameStage ? C.cardElevated : `${prj.color}12`,
+                  borderRadius: 14, padding: '14px 10px', textAlign: 'center',
+                  border: `1px solid ${isSameStage ? C.border : prj.color + '44'}`,
+                }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: proj.improving ? prj.color : C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Projected</div>
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+                    <SilhouetteFig tier={prj.tier} color={prj.color} isProjected={true} />
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: prj.color, marginBottom: 3 }}>{prj.label}</div>
+                  <div style={{ fontSize: 10, color: C.dimmed }}>~{proj.projectedBF}% body fat</div>
+                </div>
+              </div>
+
+              {/* Stage description copy */}
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: '0 0 10px' }}>{proj.stageCopy}</p>
+              <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.55, margin: 0 }}>{proj.projCopy}</p>
+
+              {/* Confidence indicator */}
+              {result.confidence && (
+                <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.orange : C.gold, flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: C.dimmed }}>Projection confidence: <span style={{ color: C.muted, fontWeight: 600 }}>{result.confidence}</span> — based on scan reliability</span>
+                </div>
+              )}
+
+              {/* Disclaimer */}
+              <p style={{ fontSize: 10, color: C.dimmed, margin: '10px 0 0', lineHeight: 1.5, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+                Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan, scan data, and expected rate of progress.
+              </p>
+            </Card>
+          );
+        })()}
 
         {/* 7 – Training focus */}
         {(result.trainingFocus || result.priorityAreas?.length > 0) && (

@@ -414,9 +414,19 @@ export function buildMealPlan(
   dietPrefs: string[] = [],
   avoid: string[] = [],
 ): MealDay[] {
-  // Meal-type calorie distribution (training vs rest day)
-  const distTrain = { breakfast: 0.28, lunch: 0.32, dinner: 0.30, snack: 0.10 }
-  const distRest  = { breakfast: 0.30, lunch: 0.30, dinner: 0.32, snack: 0.08 }
+  // Sensible per-meal distribution: 25 / 30 / 30 / 15
+  // Flat split regardless of training vs rest — avoids disproportionate single meals
+  const dist = { breakfast: 0.25, lunch: 0.30, dinner: 0.30, snack: 0.15 }
+
+  // Per-meal calorie caps to prevent unrealistic single-meal portions.
+  // For high-calorie targets the caps scale proportionally (never below the 2000 kcal reference).
+  const scale     = Math.max(1, targetCalories / 2000)
+  const CAPS = {
+    breakfast: Math.round(650 * scale),
+    lunch:     Math.round(750 * scale),
+    dinner:    Math.round(750 * scale),
+    snack:     Math.round(350 * scale),
+  }
 
   const trainingPattern = TRAINING_PATTERN[Math.max(3, Math.min(6, trainDays))] || TRAINING_PATTERN[4]
 
@@ -438,14 +448,17 @@ export function buildMealPlan(
 
   return DAYS.map((day, i) => {
     const isTrain = trainingPattern[i]
-    const dist    = isTrain ? distTrain : distRest
-    // Training days get +5% calories for glycogen replenishment
-    const dayCals = Math.round(targetCalories * (isTrain ? 1.05 : 0.95))
+    // Training days get a modest +3% bonus, rest days −3%
+    const dayCals = Math.round(targetCalories * (isTrain ? 1.03 : 0.97))
 
-    const breakfast = scaleMeal(bfPick[i], Math.round(dayCals * dist.breakfast))
-    const lunch     = scaleMeal(lnPick[i], Math.round(dayCals * dist.lunch))
-    const dinner    = scaleMeal(dnPick[i], Math.round(dayCals * dist.dinner))
-    const snack     = scaleMeal(snPick[i], Math.round(dayCals * dist.snack))
+    // Scale each meal to its target, then cap at the per-meal limit
+    const clamp = (meal: Meal, target: number, cap: number) =>
+      scaleMeal(meal, Math.min(target, cap))
+
+    const breakfast = clamp(bfPick[i], Math.round(dayCals * dist.breakfast), CAPS.breakfast)
+    const lunch     = clamp(lnPick[i], Math.round(dayCals * dist.lunch),     CAPS.lunch)
+    const dinner    = clamp(dnPick[i], Math.round(dayCals * dist.dinner),    CAPS.dinner)
+    const snack     = clamp(snPick[i], Math.round(dayCals * dist.snack),     CAPS.snack)
 
     const totalCalories = breakfast.calories + lunch.calories + dinner.calories + snack.calories
     const totalProtein  = breakfast.protein  + lunch.protein  + dinner.protein  + snack.protein
