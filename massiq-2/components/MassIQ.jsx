@@ -732,7 +732,7 @@ Return ONLY JSON: {"name":"","description":"","icon":"emoji","calories":${curren
 class TabErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(err) { return { error: err }; }
-  componentDidCatch(err, info) { console.error('[TabErrorBoundary]', err, info); }
+  componentDidCatch(err, info) { if (process.env.NODE_ENV === 'development') console.error('[TabErrorBoundary]', err, info); }
   render() {
     if (this.state.error) {
       return (
@@ -1958,8 +1958,6 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         </div>
       )}
 
-      {/* ══ TODAY'S WORKOUT ══════════════════════════════════════════════════ */}
-      {activePlan && <TodayWorkoutCard />}
 
       {/* ══ YOUR PATTERNS ════════════════════════════════════════════════════ */}
       {activePlan && <AIPatterns profile={profile} activePlan={activePlan} />}
