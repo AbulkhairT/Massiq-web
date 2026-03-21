@@ -2680,7 +2680,9 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     { icon: '🏋️', label: 'Training', value: trainDays,              unit: 'x/wk', color: C.red },
   ];
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-  const currentScan = scanHistory[scanHistory.length - 1];
+  const hasScanned = scanHistory && scanHistory.length > 0;
+  const latestScan = hasScanned ? scanHistory[scanHistory.length - 1] : null;
+  const currentScan = latestScan;
   const previousScan = scanHistory[scanHistory.length - 2];
   const trajectory = getTrajectoryStatus(scanHistory, phase);
   const focusAreas = getPrimaryLimiters(currentScan, activePlan);
@@ -2713,12 +2715,16 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           progressPct={phasePct}
           tone={phaseColor}
           metrics={[
-            { label: 'Body Fat', value: `${startBF}% → ${targetBF}%` },
+            { label: 'Body Fat', value: hasScanned ? `${latestScan.bodyFat}% → ${targetBF}%` : `— → ${targetBF}%` },
             { label: 'Training', value: `${trainDays} sessions` },
             { label: 'Cardio', value: `${cardioDays} sessions` },
             { label: 'Sleep', value: `${sleepHrs} h` },
           ]}
-          insight={objective || PHASE_META[phase]?.target}
+          insight={
+            hasScanned
+              ? (objective || PHASE_META[phase]?.target)
+              : `Targeting your ${profile?.goal || phase} goal`
+          }
           nextStep={trajectory.note}
         />
       </div>
@@ -2782,13 +2788,13 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           <div style={{ position: 'absolute', top: -4, left: `${Math.max(2, Math.min(96, phasePct))}%`, transform: 'translateX(-50%)', width: 16, height: 16, borderRadius: '50%', background: C.orange, border: `3px solid ${C.card}` }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.muted, marginBottom: 20 }}>
-          <span>Now ~{startBF}%</span>
+          <span>Now {hasScanned ? `~${latestScan.bodyFat}%` : '—'}</span>
           <span style={{ color: C.green, fontWeight: 600 }}>Goal ~{targetBF}% 🏁</span>
         </div>
         {/* 4 stats */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
           {[
-            { label: 'Start BF',  value: `${startBF}%`,   color: C.muted },
+            { label: 'Start BF',  value: hasScanned ? `${latestScan.bodyFat}%` : '—',   color: C.muted },
             { label: 'Target BF', value: `${targetBF}%`,  color: C.green },
             { label: 'Training',  value: `${trainDays}x/wk`, color: C.blue },
             { label: 'Cardio',    value: `${cardioDays}x/wk`, color: C.orange },
