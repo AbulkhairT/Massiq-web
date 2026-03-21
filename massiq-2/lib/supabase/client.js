@@ -275,49 +275,28 @@ export async function fetchUser(token) {
 }
 
 export async function upsertProfile(token, userId, profile) {
-  const row = serializeProfile(userId, profile);
-  try {
-    return await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
-      method: 'POST',
-      headers: {
-        ...authHeaders(token),
-        Prefer: 'resolution=merge-duplicates,return=representation',
-      },
-      body: JSON.stringify(row),
-    });
-  } catch (err) {
-    if (!isMissingUnitSystemColumnError(err) && !isMissingNameColumnError(err)) throw err;
-    // Fallback: remove columns that may not exist in the schema yet
-    const fallbackRow = { ...row };
-    delete fallbackRow.unit_system;
-    delete fallbackRow.name;
-    return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
-      method: 'POST',
-      headers: {
-        ...authHeaders(token),
-        Prefer: 'resolution=merge-duplicates,return=representation',
-      },
-      body: JSON.stringify(fallbackRow),
-    });
-  }
+  const full = serializeProfile(userId, profile);
+  // Strip columns that don't exist in the current DB schema
+  // (name, unit_system are optional additions not yet in the base schema)
+  const row = { ...full };
+  delete row.name;
+  delete row.unit_system;
+  return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
+    method: 'POST',
+    headers: {
+      ...authHeaders(token),
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
+    body: JSON.stringify(row),
+  });
 }
 
 export async function getProfile(token, userId) {
-  try {
-    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,name,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
-  } catch (err) {
-    if (!isMissingUnitSystemColumnError(err) && !isMissingNameColumnError(err)) throw err;
-    // Fallback: select without columns that may not exist yet
-    const rows = await supabaseFetch(`/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
-  }
+  const rows = await supabaseFetch(
+    `/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
 }
 
 export async function ensureProfile(token, userId) {
@@ -336,11 +315,32 @@ export async function ensureProfile(token, userId) {
 
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
-  return supabaseFetch('/rest/v1/plans?on_conflict=user_id', {
+
+  // Check if a plan already exists for this user
+  const existing = await supabaseFetch(
+    `/rest/v1/plans?select=id&user_id=eq.${userId}&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  const existingId = Array.isArray(existing) && existing[0]?.id;
+
+  if (existingId) {
+    // Update existing row by primary key
+    return supabaseFetch(`/rest/v1/plans?id=eq.${existingId}`, {
+      method: 'PATCH',
+      headers: {
+        ...authHeaders(token),
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(row),
+    });
+  }
+
+  // No existing plan — insert new row
+  return supabaseFetch('/rest/v1/plans', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'resolution=merge-duplicates,return=representation',
+      Prefer: 'return=representation',
     },
     body: JSON.stringify(row),
   });
