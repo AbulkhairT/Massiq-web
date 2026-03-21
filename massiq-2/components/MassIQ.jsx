@@ -19,21 +19,21 @@ import {
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
-  bg: '#0B0F0C',
-  card: '#141A17',
-  cardElevated: '#1A231E',
-  border: 'rgba(255,255,255,0.09)',
-  green: '#34D17B',
-  greenDim: '#2F5B46',
-  greenBg: 'rgba(52,209,123,0.16)',
-  white: '#FFFFFF',
-  muted: '#A3AEA6',
-  dimmed: '#66746B',
-  orange: '#FF6B35',
-  blue: '#6FA7FF',
-  purple: '#9B7FD4',
-  red: '#FF5A5F',
-  gold: '#FFD60A',
+  bg:           '#0A0D0A',
+  card:         '#131713',
+  cardElevated: '#181D18',
+  border:       'rgba(255,255,255,0.08)',
+  green:        '#72B895',        /* soft sage — muted, not neon */
+  greenDim:     '#2A4237',
+  greenBg:      'rgba(114,184,149,0.08)',
+  white:        '#FFFFFF',
+  muted:        '#9BA89E',
+  dimmed:       '#5C6B62',
+  orange:       '#D4724A',
+  blue:         '#6FA7FF',
+  purple:       '#9B7FD4',
+  red:          '#C95C5C',
+  gold:         '#C4A832',
 };
 
 /* ─── Global CSS ─────────────────────────────────────────────────────────── */
@@ -1498,11 +1498,70 @@ function TargetTile({ icon, label, current, target, unit, color, showProgress = 
   );
 }
 
+/* ─── Home insight derivation ────────────────────────────────────────────── */
+function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
+  if (!activePlan) return null;
+
+  /* 1 — Engine diagnosis (most authoritative) */
+  const diag = activePlan?.engineDiagnosis?.primary;
+  if (diag?.primary_issue) {
+    const latestScan = Array.isArray(scanHistory) ? scanHistory.slice(-1)[0] : null;
+    const currentBF  = getBF(latestScan);
+    const targetBF   = activePlan?.goalBF || activePlan?.targetBF;
+    return {
+      title:       diag.primary_issue,
+      explanation: diag.explanation || null,
+      actionType:  'diagnosis',
+      projection:  (currentBF && targetBF) ? `${currentBF}% → ${targetBF}% · ~10 weeks` : null,
+    };
+  }
+
+  /* 2 — Trajectory warning */
+  const traj = getTrajectoryStatus(scanHistory, activePlan?.phase);
+  if (traj.tone === 'warn') {
+    const titleMap = {
+      'Too aggressive': 'Cutting too aggressively',
+      'Behind':         'Progress is slower than expected',
+      'Off balance':    'Fat gain is outpacing muscle growth',
+    };
+    return {
+      title:       titleMap[traj.label] || traj.note?.split('.')[0] || 'Trajectory needs attention',
+      explanation: traj.note?.split('.')?.[1]?.trim() || null,
+      actionType:  'trajectory',
+      projection:  null,
+    };
+  }
+
+  /* 3 — Today's protein lagging */
+  const protPct = macros?.protein > 0 ? todayStats.protein / macros.protein : 1;
+  if (protPct < 0.45 && todayStats.calories > 300) {
+    return {
+      title:       'Protein intake is too low',
+      explanation: 'Your current rate risks muscle loss — add a high-protein meal',
+      actionType:  'protein',
+      projection:  null,
+    };
+  }
+
+  /* 4 — On track positive */
+  if (traj.tone === 'good') {
+    return {
+      title:       "Progress is on track",
+      explanation: traj.note || null,
+      actionType:  'positive',
+      projection:  null,
+    };
+  }
+
+  return null;
+}
+
+/* ─── Home Tab ───────────────────────────────────────────────────────────── */
 function HomeTab({ profile, activePlan, setTab, showToast }) {
-  const today = new Date().toISOString().slice(0, 10);
-  const macros = getActiveTargets(activePlan, profile);
-  const [meals, setMeals] = useState(() => LS.get(LS_KEYS.meals(today), []));
-  const [scanning, setScanning] = useState(false);
+  const today      = new Date().toISOString().slice(0, 10);
+  const macros     = getActiveTargets(activePlan, profile);
+  const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
+  const [scanning, setScanning]     = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [expandedItem, setExpandedItem] = useState(null);
   const fileRef = useRef(null);
@@ -1517,33 +1576,55 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
 
   const focusItems = [
     {
-      id: 'calories', icon: '🔥', label: 'Calories',
-      current: todayStats.calories, target: macros?.calories || 2000, unit: 'kcal',
-      color: C.orange, met: calMet,
-      detail: `${todayStats.calories} of ${macros?.calories || 2000} kcal eaten today`,
+      id: 'calories', label: 'Calories',
+      current: todayStats.calories, target: macros?.calories || 2000, unit: 'kcal', met: calMet,
+      detail: `${todayStats.calories} of ${macros?.calories || 2000} kcal`,
     },
     {
-      id: 'protein', icon: '⚡', label: 'Protein',
-      current: todayStats.protein, target: macros?.protein || 150, unit: 'g',
-      color: C.blue, met: protMet,
+      id: 'protein', label: 'Protein',
+      current: todayStats.protein, target: macros?.protein || 150, unit: 'g', met: protMet,
       detail: `${todayStats.protein}g of ${macros?.protein || 150}g target`,
     },
     {
-      id: 'training', icon: '🏋️', label: 'Training',
-      current: 0, target: activePlan?.trainDays || 3, unit: 'sessions/wk',
-      color: C.red, met: false,
-      detail: `${activePlan?.trainDays || 3} sessions planned this week`,
+      id: 'training', label: 'Training',
+      current: 0, target: activePlan?.trainDays || 3, unit: 'sessions/wk', met: false,
+      detail: `${activePlan?.trainDays || 3} sessions this week`,
     },
     {
-      id: 'steps', icon: '👟', label: 'Steps',
-      current: 0, target: macros?.steps || 8000, unit: 'steps',
-      color: C.purple, met: false,
-      detail: `Target: ${(macros?.steps || 8000).toLocaleString()} steps/day`,
+      id: 'steps', label: 'Steps',
+      current: 0, target: macros?.steps || 8000, unit: 'steps', met: false,
+      detail: `Target: ${(macros?.steps || 8000).toLocaleString()} per day`,
     },
   ];
 
   const completedCount = focusItems.filter(i => i.met).length;
+  const scanHistory    = LS.get(LS_KEYS.scanHistory, []);
+  const insight        = getHomeInsight(activePlan, scanHistory, macros, todayStats);
 
+  /* Status line */
+  const statusText = !activePlan
+    ? 'Start your first scan'
+    : completedCount === focusItems.length ? 'All goals hit today'
+    : completedCount >= 2               ? "You're on track"
+    : getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'warn'
+                                        ? 'Needs attention today'
+    : "Let's get going";
+  const statusGood = activePlan && (completedCount >= 2 || getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'good');
+
+  /* Insight action pills — context-aware navigation */
+  const insightActions = (() => {
+    if (!insight) return [];
+    const t = (insight.actionType || '');
+    if (t === 'diagnosis') return [
+      { label: 'View plan',    fn: () => setTab('plan') },
+      { label: 'Log meal',     fn: () => setTab('nutrition') },
+    ];
+    if (t === 'trajectory')  return [{ label: 'View progress', fn: () => setTab('profile') }];
+    if (t === 'protein')     return [{ label: 'Log meal',      fn: () => setTab('nutrition') }];
+    return [];
+  })();
+
+  /* Food scan */
   const handleScanFile = (file) => {
     if (!file) return;
     setScanning(true);
@@ -1589,156 +1670,238 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
     setScanResult(null);
-    showToast?.('✓ Meal logged');
+    showToast?.('Meal logged');
   };
 
   return (
-    <div className="screen" style={{ paddingBottom: 130 }}>
-      {/* Header */}
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 2 }}>Good {getGreeting()}</div>
-        <h1 style={{ fontSize: 26, fontWeight: 800, color: C.white, margin: 0 }}>{profile?.name || 'Athlete'}</h1>
+    <div className="screen" style={{ paddingBottom: 120 }}>
+
+      {/* ══ 1. STATUS ══════════════════════════════════════════════════════ */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+          background: statusGood ? C.green : C.gold,
+          opacity: 0.85,
+        }} />
+        <span style={{ fontSize: 13, color: C.muted, fontWeight: 500 }}>{statusText}</span>
       </div>
 
       {!activePlan ? (
+
+        /* ── No plan — first scan prompt ── */
         <div style={{
-          background: C.greenBg, border: `1.5px solid ${C.green}`,
-          borderRadius: 20, padding: 28, textAlign: 'center',
+          background: C.card, borderRadius: 20, padding: '36px 24px',
+          border: `1px solid rgba(255,255,255,0.08)`, textAlign: 'center',
+          marginTop: 8,
         }}>
-          <div style={{ fontSize: 40, marginBottom: 14 }}>📸</div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Run your first scan</h2>
-          <p style={{ color: C.muted, fontSize: 14, marginBottom: 24, lineHeight: 1.6 }}>
-            Your personalized 12-week plan is one scan away
-          </p>
-          <Btn onClick={() => setTab('scan')} style={{ width: '100%' }}>Start Body Scan →</Btn>
+          <div style={{ fontSize: 34, marginBottom: 18 }}>📸</div>
+          <div style={{ fontSize: 19, fontWeight: 700, color: C.white, marginBottom: 8 }}>
+            Run your first scan
+          </div>
+          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, maxWidth: 240, margin: '0 auto 28px' }}>
+            Your personalized 12-week plan is one photo away
+          </div>
+          <button className="bp" onClick={() => setTab('scan')} style={{
+            background: C.green, color: '#0A0D0A', border: 'none',
+            padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 700, cursor: 'pointer',
+          }}>
+            Start scan →
+          </button>
         </div>
+
       ) : (
         <>
-          {/* ── Daily progress bar ── */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ fontSize: 13, color: C.muted }}>{completedCount} of {focusItems.length} goals hit</span>
-              <span style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>{completedCount}/{focusItems.length}</span>
-            </div>
-            <div style={{ height: 4, borderRadius: 99, background: 'rgba(255,255,255,0.08)' }}>
-              <div style={{ height: '100%', borderRadius: 99, background: C.green, width: `${(completedCount / focusItems.length) * 100}%`, transition: 'width .4s ease' }} />
-            </div>
-          </div>
 
-          {/* ── Focus checklist ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {focusItems.map(item => {
-              const isExpanded = expandedItem === item.id;
-              const pct = item.target > 0 ? Math.min(100, Math.round((item.current / item.target) * 100)) : 0;
-              return (
-                <div key={item.id} className="bp" onClick={() => setExpandedItem(isExpanded ? null : item.id)} style={{
-                  background: C.card, borderRadius: 16, padding: '14px 16px',
-                  border: `1px solid ${item.met ? item.color + '50' : C.border}`,
-                  cursor: 'pointer',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontSize: 20, flexShrink: 0, width: 28, textAlign: 'center' }}>{item.icon}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: C.white }}>{item.label}</span>
-                        {item.met
-                          ? <span style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>✓</span>
-                          : <span style={{ fontSize: 12, color: C.muted }}>{item.current}{item.unit === 'kcal' ? ' kcal' : item.unit === 'g' ? 'g' : ''} / {item.target}{item.unit === 'kcal' ? '' : item.unit === 'g' ? 'g' : ''}</span>
-                        }
-                      </div>
-                      <div style={{ height: 3, borderRadius: 99, background: 'rgba(255,255,255,0.08)' }}>
-                        <div style={{ height: '100%', borderRadius: 99, background: item.met ? C.green : item.color, width: `${pct}%`, transition: 'width .4s ease' }} />
-                      </div>
-                    </div>
-                  </div>
-                  {isExpanded && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid rgba(255,255,255,0.06)`, fontSize: 12, color: C.muted, paddingLeft: 40 }}>
-                      {item.detail}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Today's log (last 3) ── */}
-          {meals.length > 0 && (
-            <div style={{ marginTop: 24 }}>
-              <div style={{ fontSize: 13, color: C.muted, fontWeight: 600, marginBottom: 10 }}>Today's log</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {meals.slice(-3).map(m => (
-                  <div key={m.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '10px 14px', background: C.cardElevated, borderRadius: 12,
-                    border: `1px solid ${C.border}`,
-                  }}>
-                    <span style={{ fontSize: 14, color: C.white, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 10 }}>{m.name}</span>
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 }}>
-                      <span style={{ fontSize: 12, color: C.orange }}>{m.calories} kcal</span>
-                      <span style={{ fontSize: 12, color: C.blue }}>{m.protein}g P</span>
-                    </div>
-                  </div>
-                ))}
-                {meals.length > 3 && (
-                  <button className="bp" onClick={() => setTab('nutrition')} style={{ background: 'none', border: 'none', color: C.dimmed, fontSize: 12, cursor: 'pointer', textAlign: 'center', padding: '4px 0' }}>
-                    +{meals.length - 3} more · View all →
-                  </button>
-                )}
+          {/* ══ 2. SYSTEM INSIGHT ══════════════════════════════════════════ */}
+          {insight && (
+            <div style={{
+              background: C.card, borderRadius: 20, padding: '22px 20px',
+              border: `1px solid rgba(255,255,255,0.08)`,
+            }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: C.white, lineHeight: 1.35, marginBottom: insight.explanation ? 8 : (insightActions.length ? 16 : 0) }}>
+                {insight.title}
               </div>
+
+              {insight.explanation && (
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: insightActions.length ? 16 : (insight.projection ? 14 : 0) }}>
+                  {insight.explanation}
+                </div>
+              )}
+
+              {insightActions.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, marginBottom: insight.projection ? 14 : 0 }}>
+                  {insightActions.map(a => (
+                    <button key={a.label} className="bp" onClick={a.fn} style={{
+                      flex: 1, padding: '9px 12px', borderRadius: 10,
+                      background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.09)`,
+                      color: C.white, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    }}>
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {insight.projection && (
+                <div style={{ fontSize: 11, color: C.dimmed, letterSpacing: '0.02em' }}>
+                  {insight.projection}
+                </div>
+              )}
             </div>
           )}
+
+          {/* ══ 3. TODAY'S FOCUS ═══════════════════════════════════════════ */}
+          <div>
+            {/* Header + progress */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
+                Today's focus
+              </span>
+              <span style={{ fontSize: 12, color: C.muted }}>
+                {completedCount} of {focusItems.length} completed
+              </span>
+            </div>
+            <div style={{ height: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 99, background: C.green, opacity: 0.65,
+                width: `${(completedCount / focusItems.length) * 100}%`,
+                transition: 'width .4s ease',
+              }} />
+            </div>
+
+            {/* Checklist */}
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {focusItems.map((item, idx) => {
+                const isExpanded = expandedItem === item.id;
+                const isLast     = idx === focusItems.length - 1;
+                return (
+                  <div
+                    key={item.id}
+                    className="bp"
+                    onClick={() => setExpandedItem(isExpanded ? null : item.id)}
+                    style={{
+                      padding: '14px 2px',
+                      borderBottom: isLast ? 'none' : `1px solid rgba(255,255,255,0.05)`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                      {/* Circle check */}
+                      <div style={{
+                        width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: item.met ? C.green : 'transparent',
+                        border: item.met ? 'none' : `1.5px solid rgba(255,255,255,0.2)`,
+                      }}>
+                        {item.met && (
+                          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                            <path d="M1 4l2.5 2.5L9 1" stroke="#0A0D0A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </div>
+
+                      {/* Label */}
+                      <span style={{
+                        fontSize: 15, fontWeight: 500, flex: 1,
+                        color: item.met ? C.dimmed : C.white,
+                        textDecoration: item.met ? 'line-through' : 'none',
+                      }}>
+                        {item.label}
+                      </span>
+
+                      {/* Chevron */}
+                      <span style={{
+                        fontSize: 10, color: C.dimmed, lineHeight: 1,
+                        transform: isExpanded ? 'rotate(180deg)' : 'none',
+                        transition: 'transform .18s ease',
+                        display: 'inline-block',
+                      }}>▾</span>
+                    </div>
+
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <div style={{ paddingLeft: 36, paddingTop: 7, fontSize: 12, color: C.muted }}>
+                        {item.detail}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
         </>
       )}
 
       {/* Hidden camera input */}
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={e => handleScanFile(e.target.files?.[0])} />
+      <input
+        ref={fileRef} type="file" accept="image/*" capture="environment"
+        style={{ display: 'none' }}
+        onChange={e => handleScanFile(e.target.files?.[0])}
+      />
 
-      {/* Floating Scan button */}
-      <button className="bp" onClick={() => fileRef.current?.click()} disabled={scanning} style={{
-        position: 'fixed', bottom: 90, left: '50%', transform: 'translateX(-50%)', zIndex: 50,
-        height: 52, paddingInline: 26, borderRadius: 26,
-        background: scanning ? C.greenDim : C.green, border: 'none', color: '#000',
-        fontSize: 15, fontWeight: 700, cursor: scanning ? 'default' : 'pointer',
-        display: 'flex', alignItems: 'center', gap: 8,
-        boxShadow: `0 4px 20px rgba(0,200,83,0.4)`,
-        whiteSpace: 'nowrap',
-      }}>
-        {scanning ? '⏳ Scanning…' : '📷 Scan food'}
+      {/* ══ 4. PRIMARY ACTION — floating Scan button ═══════════════════════ */}
+      <button
+        className="bp"
+        onClick={() => fileRef.current?.click()}
+        disabled={scanning}
+        style={{
+          position: 'fixed', bottom: 88, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 50, height: 50, paddingInline: 28, borderRadius: 25,
+          background: scanning ? C.greenDim : C.green, border: 'none',
+          color: '#0A0D0A', fontSize: 14, fontWeight: 700,
+          display: 'flex', alignItems: 'center', gap: 7,
+          cursor: scanning ? 'default' : 'pointer',
+          whiteSpace: 'nowrap', opacity: scanning ? 0.7 : 1,
+        }}
+      >
+        <span style={{ fontSize: 16, lineHeight: 1 }}>⊙</span>
+        {scanning ? 'Scanning…' : 'Scan'}
       </button>
 
       {/* Scan result confirm sheet */}
       {scanResult && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end' }} onClick={() => setScanResult(null)}>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: '100%', maxWidth: 480, margin: '0 auto',
-            background: C.card, borderRadius: '20px 20px 0 0', padding: 28,
-            border: `1px solid ${C.border}`,
-          }}>
-            <div style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 4 }}>{scanResult.name || 'Food'}</div>
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end' }}
+          onClick={() => setScanResult(null)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '100%', maxWidth: 480, margin: '0 auto',
+              background: C.card, borderRadius: '20px 20px 0 0', padding: '28px 22px',
+              border: `1px solid ${C.border}`,
+            }}
+          >
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 3 }}>
+              {scanResult.name || 'Food'}
+            </div>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 20 }}>Review before logging</div>
-            <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 24 }}>
               {[
-                { label: 'kcal', value: scanResult.calories || 0, color: C.orange },
-                { label: 'protein', value: `${scanResult.protein || 0}g`, color: C.blue },
-                { label: 'carbs', value: `${scanResult.carbs || 0}g`, color: C.gold },
-                { label: 'fat', value: `${scanResult.fat || 0}g`, color: C.muted },
+                { label: 'kcal',    value: scanResult.calories || 0 },
+                { label: 'protein', value: `${scanResult.protein || 0}g` },
+                { label: 'carbs',   value: `${scanResult.carbs || 0}g` },
+                { label: 'fat',     value: `${scanResult.fat || 0}g` },
               ].map(s => (
-                <div key={s.label} style={{ flex: 1, textAlign: 'center', background: C.cardElevated, borderRadius: 12, padding: '10px 6px' }}>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: s.color }}>{s.value}</div>
-                  <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{s.label}</div>
+                <div key={s.label} style={{ textAlign: 'center', background: C.cardElevated, borderRadius: 12, padding: '12px 6px' }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.white }}>{s.value}</div>
+                  <div style={{ fontSize: 10, color: C.dimmed, marginTop: 3 }}>{s.label}</div>
                 </div>
               ))}
             </div>
+
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="bp" onClick={() => setScanResult(null)} style={{
                 flex: 1, padding: 14, borderRadius: 14,
                 background: C.cardElevated, border: `1px solid ${C.border}`,
-                color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer',
+                color: C.muted, fontSize: 14, fontWeight: 600, cursor: 'pointer',
               }}>Cancel</button>
               <button className="bp" onClick={confirmScan} style={{
                 flex: 2, padding: 14, borderRadius: 14,
                 background: C.green, border: 'none',
-                color: '#000', fontSize: 15, fontWeight: 700, cursor: 'pointer',
+                color: '#0A0D0A', fontSize: 14, fontWeight: 700, cursor: 'pointer',
               }}>Add to log</button>
             </div>
           </div>
