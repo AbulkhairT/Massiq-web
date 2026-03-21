@@ -283,6 +283,13 @@ function weekKey2() {
   return `${d.getFullYear()}-W${Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7)}`;
 }
 
+// Returns a safely-formatted number, or fallback ('—') if the value is missing/zero/NaN
+const safeNum = (val, decimals = 0, fallback = '—') => {
+  const n = parseFloat(val);
+  if (isNaN(n) || n <= 0) return fallback;
+  return decimals > 0 ? n.toFixed(decimals) : String(Math.round(n));
+};
+
 const fmt = {
   date: (iso) => {
     if (!iso) return '—';
@@ -346,7 +353,13 @@ function getPrimaryLimiters(scan, activePlan) {
 }
 
 function getActiveTargets(activePlan, profile) {
-  const targets = activePlan?.dailyTargets || activePlan?.macros || calcMacros(profile);
+  const stored = activePlan?.dailyTargets || activePlan?.macros;
+  const fresh = calcMacros(profile);
+  // Always use fresh protein/macro calculation to avoid stale stored values
+  // after formula updates. Preserve non-macro plan settings (steps, sleep, etc.).
+  const targets = stored
+    ? { ...stored, calories: fresh?.calories || stored.calories, protein: fresh?.protein || stored.protein, carbs: fresh?.carbs || stored.carbs, fat: fresh?.fat || stored.fat }
+    : fresh;
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
 }
 
@@ -447,7 +460,7 @@ function sanitizeScanData(scan, profile) {
     bodyFatReasoning: scan.bodyFatReasoning || '',
     leanMass: Number(leanMass.toFixed(1)),
     leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
-    physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || 60))),
+    physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60))),
     symmetryScore: Math.min(95, Math.max(60, Number(scan.symmetryScore || 75))),
     symmetryDetails: scan.symmetryDetails || '',
     confidence,
@@ -3377,15 +3390,15 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                       <div style={{ fontSize: 10, color: C.muted }}>{s.date ? fmt.date(s.date) : `Scan ${i + 1}`}</div>
                       {s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Base</span>}
                     </div>
-                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{s.physiqueScore || '—'}</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(s.physiqueScore)}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
                     <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ color: C.muted }}>
-                        BF: <span style={{ fontWeight: 600, color: C.white }}>{s.bodyFat}%</span>
+                        BF: <span style={{ fontWeight: 600, color: C.white }}>{safeNum(s.bodyFat, 1)}%</span>
                         {bfΔ !== null && <span style={{ color: bfΔ <= 0 ? C.green : C.red }}> ({bfΔ > 0 ? '+' : ''}{bfΔ.toFixed(1)}%)</span>}
                       </div>
                       <div style={{ color: C.muted }}>
-                        LM: <span style={{ fontWeight: 600, color: C.white }}>{fmt.leanMass(s.leanMass || 0, profile?.unitSystem)}</span>
+                        LM: <span style={{ fontWeight: 600, color: C.white }}>{s.leanMass > 0 ? fmt.leanMass(s.leanMass, profile?.unitSystem) : '—'}</span>
                         {lmΔ !== null && <span style={{ color: lmΔ >= 0 ? C.green : C.red }}> ({lmΔ >= 0 ? '+' : ''}{lmΔ.toFixed(1)})</span>}
                       </div>
                     </div>
@@ -3408,45 +3421,50 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
 
       {/* 2 ── Health Score ── */}
       <Card className="su glass" style={{ animationDelay: '.04s' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 20 }}>
-          <div>
-            <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1, background: `linear-gradient(135deg, ${C.gold}, ${C.green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              {healthScore}
+        {!lastScan ? (
+          <div style={{ textAlign: 'center', padding: '24px 0' }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>📸</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: C.white, marginBottom: 6 }}>No scan yet</div>
+            <div style={{ fontSize: 13, color: C.muted }}>Complete your first scan to see your health score, body fat, and lean mass.</div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 20 }}>
+              <div>
+                <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1, background: `linear-gradient(135deg, ${C.gold}, ${C.green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                  {healthScore}
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{healthLabel}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+                  Composite score from body fat, muscle mass & physique consistency
+                </p>
+              </div>
             </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{healthLabel}</div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-              Composite score from body fat, muscle mass & physique consistency
-            </p>
-          </div>
-        </div>
-        {(() => {
-          const useMetric = profile?.unitSystem === 'metric';
-          const leanMassDisplay = useMetric
-            ? `${leanKg} kg`
-            : `${lastScan?.leanMass ? Number(lastScan.leanMass).toFixed(1) : Math.round(leanKg * 2.2046)} lbs`;
-          const fatMassDisplay = useMetric
-            ? `${(fatMassLbs * 0.453592).toFixed(1)} kg`
-            : `${fatMassLbs} lbs`;
-          return [
-            { icon: '💧', label: 'Body Fat',   sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
-              value: `${bf}%`,           color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
-            { icon: '🏋️', label: 'Lean Mass',  sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
-              value: leanMassDisplay,    color: C.blue },
-            { icon: '⚖️', label: 'Fat Mass',   sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
-              value: fatMassDisplay,     color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
-          ];
-        })().map(row => (
-          <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{row.label}</div>
-              <div style={{ fontSize: 12, color: C.muted }}>{row.sub}</div>
-            </div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: row.color }}>{row.value}</div>
-          </div>
-        ))}
+            {(() => {
+              const unit = profile?.unitSystem || 'imperial';
+              const leanMassLbsVal = leanMassLbs || (leanKg * 2.2046);
+              return [
+                { icon: '💧', label: 'Body Fat',  sub: bf < 12 ? 'Very lean' : bf < 18 ? 'Healthy range' : bf < 25 ? 'Moderate' : 'High',
+                  value: `${bf}%`,                                        color: bf < 18 ? C.green : bf < 25 ? C.orange : '#ef4444' },
+                { icon: '🏋️', label: 'Lean Mass', sub: leanKg >= 68 ? 'Well built' : leanKg >= 55 ? 'Good foundation' : 'Building phase',
+                  value: fmt.leanMass(leanMassLbsVal, unit),              color: C.blue },
+                { icon: '⚖️', label: 'Fat Mass',  sub: fatMassLbs <= 20 ? 'Low' : fatMassLbs <= 35 ? 'Moderate' : 'Elevated',
+                  value: fmt.weight(fatMassLbs, unit),                    color: fatMassLbs <= 25 ? C.green : fatMassLbs <= 40 ? C.orange : '#ef4444' },
+              ];
+            })().map(row => (
+              <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: `${row.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{row.icon}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{row.label}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{row.sub}</div>
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: row.color }}>{row.value}</div>
+              </div>
+            ))}
+          </>
+        )}
       </Card>
 
       {/* 3 ── AI Patterns ── */}
@@ -4013,7 +4031,7 @@ Return ONLY this JSON (no markdown, no extra text):
                   <span style={{ fontSize: 11, fontWeight: 700, color: confColor, background: confColor + '22', padding: '4px 10px', borderRadius: 99, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
                     {conf} confidence
                   </span>
-                  <span style={{ fontSize: 11, color: C.muted }}>Score: {result.physiqueScore ?? '—'}/100</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(result.physiqueScore)}/100</span>
                 </div>
               </div>
               {conf !== 'high' && (
@@ -4134,10 +4152,10 @@ Return ONLY this JSON (no markdown, no extra text):
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              { label: 'Lean Mass', value: fmt.leanMass(result.leanMass, profile?.unitSystem), color: C.blue },
-              { label: 'Score',     value: `${result.physiqueScore ?? '—'}/100`,               color: C.green },
-              { label: 'Symmetry',  value: `${result.symmetryScore ?? '—'}/100`,               color: C.purple },
-              { label: 'Body Fat',  value: `${result.bodyFatPct ?? '—'}%`,                     color: C.orange },
+              { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
+              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+              { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
+              { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
             ].map(m => (
               <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
                 <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
@@ -4341,11 +4359,11 @@ Return ONLY this JSON (no markdown, no extra text):
                       <span style={{ fontSize: 9, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '2px 7px', borderRadius: 99, border: `1px solid ${C.purple}44`, textTransform: 'uppercase', letterSpacing: '.06em' }}>Baseline</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {Number(s.bodyFat || 0).toFixed(1)}% · Lean {fmt.leanMass(s.leanMass || 0, profile?.unitSystem)}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {safeNum(s.bodyFat, 1)}% · Lean {s.leanMass > 0 ? fmt.leanMass(s.leanMass, profile?.unitSystem) : '—'}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-                  {s.physiqueScore}/100
+                  {s.physiqueScore > 0 ? s.physiqueScore : '—'}/100
                 </div>
               </div>
             )})}
