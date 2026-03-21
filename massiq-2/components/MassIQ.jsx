@@ -4150,7 +4150,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   };
 
   const runScan = async (base64, mediaType) => {
-    setScanning(true); setResult(null); setConsistencyWarnings([]); setWarningsAccepted(false);
+    setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
       const age    = profile?.age       || 25;
       const gender = profile?.gender    || 'Male';
@@ -4202,7 +4202,7 @@ Return ONLY this JSON (no markdown, no extra text):
 {"bodyFatRange":{"low":0,"high":0,"midpoint":0},"bodyFatConfidence":"medium","bodyFatReasoning":"specific visual markers that led to this range","leanMass":0,"leanMassTrend":"maintaining","physiqueScore":0,"symmetryScore":0,"symmetryDetails":"specific description of balance or imbalances","muscleGroups":{"chest":"moderate","shoulders":"moderate","back":"moderate","arms":"moderate","core":"moderate","legs":"moderate"},"weakestGroups":[],"limitingFactor":"the single most important thing holding this physique back","limitingFactorExplanation":"specific explanation with reference to their stats and what is visible","strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"2-3 sentence honest assessment referencing their specific stats","photoQualityIssues":[],"photoQuality":{"overall":"medium","lighting":"good","clothing":"acceptable","pose":"acceptable","notes":""},"recommendation":"2-3 sentence specific recommendation referencing their weight and goal","disclaimer":"Visual AI estimate based on photo. Accuracy improves with consistent lighting and front/side pose."}` },
             ],
           }],
-          max_tokens: 1100,
+          max_tokens: 1800,
         }),
       });
 
@@ -4972,7 +4972,10 @@ Return ONLY this JSON (no markdown, no extra text):
       </Card>
 
       {error && (
-        <div style={{ background: `${C.red}18`, border: `1px solid ${C.red}44`, borderRadius: 14, padding: '12px 16px', fontSize: 13, color: C.red }}>{error}</div>
+        <div style={{ background: `${C.red}18`, border: `1px solid ${C.red}44`, borderRadius: 14, padding: '12px 16px', fontSize: 13, color: C.red, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <button onClick={() => setError('')} style={{ background: 'none', border: 'none', color: C.red, cursor: 'pointer', padding: 0, fontSize: 16, lineHeight: 1, flexShrink: 0, opacity: 0.7 }}>×</button>
+        </div>
       )}
 
       {/* Buttons */}
