@@ -3,18 +3,18 @@ import { useEffect } from "react";
 
 /* ─── Design tokens ───────────────────────────────────────────────────────── */
 const C = {
-  bg:          '#080C08',
-  bg2:         '#0B0F0B',
+  bg:          '#0A0D0A',
+  bg2:         '#0D100D',
   card:        'rgba(255,255,255,0.028)',
-  cardSolid:   '#111611',
-  border:      'rgba(255,255,255,0.09)',
-  borderHi:    'rgba(52,209,123,0.24)',
-  green:       '#34D17B',
-  greenBg:     'rgba(52,209,123,0.12)',
+  cardSolid:   '#111411',
+  border:      'rgba(255,255,255,0.08)',
+  borderHi:    'rgba(108,178,140,0.18)',
+  green:       '#72B895',        /* soft sage — muted, not neon */
+  greenBg:     'rgba(108,178,140,0.07)',
   white:       '#FFFFFF',
-  muted:       'rgba(255,255,255,0.62)',
-  dim:         'rgba(255,255,255,0.3)',
-  orange:      '#FF6B35',
+  muted:       'rgba(255,255,255,0.58)',
+  dim:         'rgba(255,255,255,0.28)',
+  orange:      '#D4724A',        /* toned down from neon */
 };
 
 /* ─── CSS ─────────────────────────────────────────────────────────────────── */
@@ -42,10 +42,9 @@ const CSS = `
   .d5 { transition-delay: .44s; }
 
   /* ── Animations ── */
-  @keyframes float  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-  @keyframes blink  { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.2)} }
+  @keyframes float  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
 
-  .float { animation: float 5.5s ease-in-out infinite; }
+  .float { animation: float 6s ease-in-out infinite; }
 
   /* ── Nav ── */
   .nav {
@@ -79,11 +78,11 @@ const CSS = `
 
   /* ── Section label — consistent everywhere ── */
   .lbl {
-    font-size: 11px; font-weight: 600; letter-spacing: 3px;
+    font-size: 10px; font-weight: 600; letter-spacing: 2.5px;
     text-transform: uppercase; color: ${C.green}; margin-bottom: 16px;
     display: flex; align-items: center; gap: 8px;
   }
-  .lbl-dot { width: 5px; height: 5px; border-radius: 50%; background: ${C.green}; flex-shrink: 0; animation: blink 2s ease-in-out infinite; }
+  .lbl-dot { width: 4px; height: 4px; border-radius: 50%; background: ${C.green}; flex-shrink: 0; opacity: 0.7; }
 
   /* ── Section headings ── */
   .sec-h2 { font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -1px; color: ${C.white}; }
@@ -101,13 +100,12 @@ const CSS = `
   .hero-ctas { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 36px; }
   .btn-primary {
     display: inline-flex; align-items: center; justify-content: center;
-    background: ${C.green}; color: #000; font-weight: 700;
+    background: ${C.green}; color: #0A0D0A; font-weight: 700;
     font-size: 15px; padding: 16px 32px; border-radius: 99px;
-    box-shadow: 0 0 32px rgba(0,200,83,0.28);
-    transition: transform .15s ease, box-shadow .15s ease;
+    transition: opacity .15s ease, transform .15s ease;
     width: fit-content;
   }
-  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 40px rgba(52,209,123,0.35); }
+  .btn-primary:hover { opacity: .88; transform: translateY(-1px); }
   .btn-ghost {
     display: inline-flex; align-items: center; justify-content: center;
     background: rgba(255,255,255,0.04); color: ${C.muted}; font-weight: 600;
@@ -126,7 +124,7 @@ const CSS = `
   .proof-strip {
     border-top: 1px solid ${C.border};
     border-bottom: 1px solid ${C.border};
-    background: rgba(0,200,83,0.03);
+    background: transparent;
     padding: 16px 20px;
   }
   .proof-inner {
@@ -155,7 +153,7 @@ const CSS = `
     display: flex; align-items: center; justify-content: center;
     font-size: 13px; font-weight: 800; flex-shrink: 0;
   }
-  .step-m-vline { width: 1px; flex: 1; min-height: 32px; margin: 6px 0; background: rgba(0,200,83,0.3); }
+  .step-m-vline { width: 1px; flex: 1; min-height: 32px; margin: 6px 0; background: rgba(255,255,255,0.07); }
   .step-m-body { flex: 1; padding: 7px 0 36px; }
 
   /* Steps — desktop: grid with single connecting line ── */
@@ -173,7 +171,7 @@ const CSS = `
     text-transform: uppercase; color: ${C.dim};
     border-bottom: 1px solid ${C.border};
   }
-  .comp-table th.massiq-th { color: ${C.green}; }
+  .comp-table th.massiq-th { color: ${C.white}; }
   .comp-table td {
     padding: 13px 16px; font-size: 13px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -181,8 +179,8 @@ const CSS = `
   }
   .comp-table td:first-child { color: ${C.muted}; }
   .comp-table .ck { color: ${C.green}; font-size: 15px; }
-  .comp-table .cx { color: rgba(255,255,255,0.15); font-size: 15px; }
-  .comp-table .massiq-td { background: rgba(0,200,83,0.05); }
+  .comp-table .cx { color: rgba(255,255,255,0.12); font-size: 15px; }
+  .comp-table .massiq-td { background: rgba(255,255,255,0.03); }
 
   /* ── Outcome grid ── */
   .outcome-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
@@ -257,24 +255,24 @@ function IntelPanel() {
   ];
   return (
     <div className="float" style={{
-      background: '#0C130C',
-      border: `1px solid ${C.borderHi}`,
+      background: '#101410',
+      border: `1px solid rgba(255,255,255,0.1)`,
       borderRadius: 20,
       overflow: 'hidden',
       width: '100%',
       maxWidth: 380,
-      boxShadow: `0 0 80px rgba(0,200,83,0.07), 0 32px 64px rgba(0,0,0,0.5)`,
+      boxShadow: `0 24px 56px rgba(0,0,0,0.45)`,
     }}>
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '13px 16px',
-        background: 'rgba(0,200,83,0.06)',
-        borderBottom: `1px solid rgba(0,200,83,0.14)`,
+        background: 'rgba(255,255,255,0.03)',
+        borderBottom: `1px solid rgba(255,255,255,0.07)`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 7, height: 7, borderRadius: '50%', background: C.green, animation: 'blink 2.5s ease-in-out infinite' }} />
-          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.5px', color: C.green, textTransform: 'uppercase' }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, opacity: 0.8 }} />
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.5px', color: C.muted, textTransform: 'uppercase' }}>
             Body Scan · Mar 15
           </span>
         </div>
@@ -295,7 +293,7 @@ function IntelPanel() {
           </div>
         </div>
         <div style={{ height: 3, background: 'rgba(255,255,255,0.06)', borderRadius: 99, overflow: 'hidden', marginBottom: 6 }}>
-          <div style={{ height: '100%', width: '40%', background: `linear-gradient(90deg, ${C.green}, #4DF09A)`, borderRadius: 99 }} />
+          <div style={{ height: '100%', width: '40%', background: C.green, borderRadius: 99 }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ fontSize: 10, color: C.dim }}>Week 4</span>
@@ -407,40 +405,24 @@ export default function LandingPage() {
           HERO
       ═══════════════════════════════════════════════════════════ */}
       <section className="hero-sec" style={{ background: C.bg }}>
-        {/* Corner glow */}
-        <div style={{
-          position: 'absolute', top: -160, right: -120, width: 600, height: 600,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,200,83,0.08) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
-
         <div className="hero-grid sec-inner">
           {/* Copy */}
           <div>
             <div className="fu" style={{ marginBottom: 24 }}>
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: 8,
-                background: C.greenBg, border: `1px solid ${C.borderHi}`,
+                background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.1)`,
                 borderRadius: 99, padding: '5px 14px',
               }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>
-                  AI Physique Intelligence
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: C.green, display: 'inline-block', opacity: 0.8 }} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: C.muted, letterSpacing: '1.5px', textTransform: 'uppercase' }}>
+                  Physique Intelligence
                 </span>
               </div>
             </div>
 
-            {/* H1 with glow behind it */}
-            <div className="fu d1" style={{ position: 'relative' }}>
-              {/* Glow behind headline */}
-              <div style={{
-                position: 'absolute', top: '50%', left: -40,
-                transform: 'translateY(-50%)',
-                width: 600, height: 300, borderRadius: '50%',
-                background: 'radial-gradient(ellipse, rgba(0,200,83,0.08) 0%, transparent 70%)',
-                pointerEvents: 'none', zIndex: 0,
-              }} />
+            {/* H1 */}
+            <div className="fu d1">
               <h1 className="hero-h1">
                 Know exactly<br />
                 what&apos;s holding<br />
@@ -560,8 +542,8 @@ export default function LandingPage() {
 
             {/* ── Right: what MassIQ tells you ── */}
             <div style={{
-              background: '#0D1F0D',
-              border: '1px solid rgba(0,200,83,0.25)',
+              background: C.cardSolid,
+              border: `1px solid rgba(255,255,255,0.1)`,
               borderRadius: 20, padding: 32,
             }}>
               <div style={{
@@ -570,13 +552,13 @@ export default function LandingPage() {
               }}>
                 <div style={{
                   width: 30, height: 30, borderRadius: 8,
-                  background: 'rgba(0,200,83,0.15)',
+                  background: 'rgba(255,255,255,0.05)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
                 }}>🧠</div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
-                  textTransform: 'uppercase', color: C.green,
+                  textTransform: 'uppercase', color: C.white,
                 }}>What MassIQ tells you</span>
               </div>
 
@@ -588,13 +570,13 @@ export default function LandingPage() {
               ].map(item => (
                 <div key={item.heading} style={{
                   padding: '14px 18px',
-                  background: 'rgba(0,200,83,0.08)',
+                  background: 'rgba(255,255,255,0.04)',
                   borderRadius: 10, marginBottom: 8,
-                  border: '1px solid rgba(0,200,83,0.15)',
+                  border: `1px solid rgba(255,255,255,0.07)`,
                 }}>
                   <div style={{
-                    fontSize: 11, fontWeight: 700, color: C.green,
-                    letterSpacing: '1px', marginBottom: 4,
+                    fontSize: 10, fontWeight: 700, color: C.green,
+                    letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 4,
                   }}>{item.heading}</div>
                   <div style={{ fontSize: 14, color: C.white, lineHeight: 1.5 }}>{item.body}</div>
                 </div>
@@ -624,14 +606,14 @@ export default function LandingPage() {
               <div key={s.n} className="step-m-item">
                 <div className="step-m-left">
                   <div className="step-m-circle" style={{
-                    background: i === 0 ? C.green : 'rgba(0,200,83,0.15)',
-                    color: i === 0 ? '#000' : C.green,
-                    border: i === 0 ? 'none' : '2px solid rgba(0,200,83,0.4)',
+                    background: i === 0 ? C.green : 'transparent',
+                    color: i === 0 ? '#0A0D0A' : C.muted,
+                    border: i === 0 ? 'none' : `1px solid rgba(255,255,255,0.14)`,
                   }}>{s.n}</div>
                   {i < STEPS.length - 1 && <div className="step-m-vline" />}
                 </div>
                 <div className="step-m-body">
-                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.green, marginBottom: 6 }}>{s.label}</div>
+                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.muted, marginBottom: 6 }}>{s.label}</div>
                   <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 8, lineHeight: 1.3 }}>{s.title}</div>
                   <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>{s.body}</p>
                 </div>
@@ -645,11 +627,11 @@ export default function LandingPage() {
               {/* Single line connecting all 4 circle centers */}
               <div style={{
                 position: 'absolute',
-                top: 24,                    /* half of 48px circle */
-                left: 'calc(12.5%)',        /* center of col 1 */
-                right: 'calc(12.5%)',       /* center of col 4 */
+                top: 24,
+                left: 'calc(12.5%)',
+                right: 'calc(12.5%)',
                 height: 1,
-                background: 'rgba(0,200,83,0.3)',
+                background: 'rgba(255,255,255,0.07)',
                 zIndex: 0,
               }} />
 
@@ -664,20 +646,19 @@ export default function LandingPage() {
                     alignItems: 'center', textAlign: 'center',
                     padding: '0 16px',
                   }}>
-                    {/* Circle sits on top of the line */}
                     <div style={{
                       width: 48, height: 48, borderRadius: '50%',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 13, fontWeight: 800,
-                      background: i === 0 ? C.green : 'rgba(0,200,83,0.15)',
-                      color: i === 0 ? '#000' : C.green,
-                      border: i === 0 ? 'none' : '2px solid rgba(0,200,83,0.4)',
+                      background: i === 0 ? C.green : 'transparent',
+                      color: i === 0 ? '#0A0D0A' : C.muted,
+                      border: i === 0 ? 'none' : `1px solid rgba(255,255,255,0.14)`,
                       position: 'relative', zIndex: 1,
                       flexShrink: 0,
                       marginBottom: 24,
                     }}>{s.n}</div>
 
-                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.green, marginBottom: 8 }}>{s.label}</div>
+                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>{s.label}</div>
                     <div style={{ fontSize: 16, fontWeight: 700, color: C.white, marginBottom: 10, lineHeight: 1.3 }}>{s.title}</div>
                     <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65 }}>{s.body}</p>
                   </div>
@@ -729,11 +710,11 @@ export default function LandingPage() {
               }}>
                 <div style={{
                   width: 42, height: 42, borderRadius: 12,
-                  background: C.greenBg, border: `1px solid ${C.borderHi}`,
+                  background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.08)`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 20, marginBottom: 16,
                 }}>{card.icon}</div>
-                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: C.green, marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: C.muted, marginBottom: 10 }}>
                   {card.tag}
                 </div>
                 <h3 style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>{card.title}</h3>
@@ -787,7 +768,7 @@ export default function LandingPage() {
 
           <div className="fu d2" style={{
             marginTop: 24, padding: '18px 24px',
-            background: C.greenBg, border: `1px solid ${C.borderHi}`,
+            background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(255,255,255,0.08)`,
             borderRadius: 20,
             fontSize: 14, color: C.muted, lineHeight: 1.6,
           }}>
@@ -839,7 +820,7 @@ export default function LandingPage() {
                   letterSpacing: '-4px', lineHeight: 1,
                   pointerEvents: 'none', userSelect: 'none',
                 }}>{card.num}</div>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.5px', color: C.green, marginBottom: 14 }}>{card.num}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '1.5px', color: C.dim, marginBottom: 14 }}>{card.num}</div>
                 <h3 style={{ fontSize: 20, fontWeight: 700, color: C.white, marginBottom: 12, lineHeight: 1.3 }}>{card.title}</h3>
                 <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>{card.body}</p>
               </div>
@@ -860,11 +841,11 @@ export default function LandingPage() {
           }}>
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: 8,
-              background: C.greenBg, border: `1px solid ${C.borderHi}`,
+              background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.1)`,
               borderRadius: 99, padding: '5px 14px', marginBottom: 24,
             }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block', animation: 'blink 2s ease-in-out infinite' }} />
-              <span style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '2px', textTransform: 'uppercase' }}>Public Beta</span>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: C.green, display: 'inline-block', opacity: 0.8 }} />
+              <span style={{ fontSize: 10, fontWeight: 600, color: C.muted, letterSpacing: '2px', textTransform: 'uppercase' }}>Public Beta</span>
             </div>
             <h2 style={{ fontSize: 26, fontWeight: 800, color: C.white, marginBottom: 16, lineHeight: 1.3 }}>
               Built for people who are serious<br />about changing their physique.
@@ -890,17 +871,10 @@ export default function LandingPage() {
           FINAL CTA
       ═══════════════════════════════════════════════════════════ */}
       <section className="sec" style={{
-        background: 'linear-gradient(180deg, #080C08 0%, #0C170C 100%)',
-        textAlign: 'center', position: 'relative', overflow: 'hidden',
+        background: C.bg2,
+        textAlign: 'center',
       }}>
-        <div style={{
-          position: 'absolute', top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 600, height: 300, borderRadius: '50%',
-          background: 'radial-gradient(ellipse, rgba(0,200,83,0.09) 0%, transparent 70%)',
-          pointerEvents: 'none',
-        }} />
-        <div className="fu sec-inner" style={{ position: 'relative' }}>
+        <div className="fu sec-inner">
           <div style={{ maxWidth: 680, margin: '0 auto' }}>
             <Lbl>Get Started</Lbl>
             <h2 className="cta-h2" style={{ marginBottom: 20 }}>
