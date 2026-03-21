@@ -364,6 +364,27 @@ const fmt = {
   },
 };
 
+// ── Body-fat value helpers ────────────────────────────────────────────────
+// scan.bodyFat may be a number OR {low, high, midpoint} object — normalise both
+const getBF = (scan) => {
+  if (!scan) return null;
+  const bf = scan.bodyFatPct ?? scan.bodyFat;
+  if (bf == null) return null;
+  if (typeof bf === 'number') return bf;
+  if (typeof bf === 'object') return bf.midpoint ?? bf.low ?? Object.values(bf)[0] ?? null;
+  return parseFloat(bf) || null;
+};
+const getBFDisplay = (scan) => {
+  if (!scan) return '—';
+  const bf = scan.bodyFatPct ?? scan.bodyFat;
+  if (bf == null) return '—';
+  if (typeof bf === 'number') return bf.toFixed(1) + '%';
+  if (typeof bf === 'object' && bf.low != null && bf.high != null) return bf.low + '\u2013' + bf.high + '%';
+  if (typeof bf === 'object' && bf.midpoint != null) return bf.midpoint.toFixed(1) + '%';
+  const n = parseFloat(bf);
+  return isNaN(n) ? '—' : n.toFixed(1) + '%';
+};
+
 const PHASE_META = {
   Cut:     { label: 'Cut',     emoji: '📉', target: 'Reduce body fat while preserving lean tissue' },
   Bulk:    { label: 'Bulk',    emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
@@ -377,7 +398,7 @@ function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
   if (scanHistory.length < 2) return { tone: 'neutral', label: '', note: 'Complete your next scan to validate your trajectory.' };
   const prev = scanHistory[scanHistory.length - 2];
   const curr = scanHistory[scanHistory.length - 1];
-  const bfDelta = Number(curr.bodyFat || 0) - Number(prev.bodyFat || 0);
+  const bfDelta = (getBF(curr) || 0) - (getBF(prev) || 0);
   const lmDelta = Number(curr.leanMass || 0) - Number(prev.leanMass || 0);
   if (phase === 'Cut') {
     if (bfDelta < -0.3 && lmDelta >= -1) return { tone: 'good', label: 'On track', note: 'Body fat is trending down while lean mass is stable.' };
@@ -1546,7 +1567,7 @@ function HomeTab({ profile, activePlan, setTab }) {
 
             <div style={{ display: 'flex', borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
               {[
-                { label: 'Body Fat', value: lastScan?.bodyFat ? fmt.pct(lastScan.bodyFat, 1) : '—', unit: '' },
+                { label: 'Body Fat', value: getBFDisplay(lastScan), unit: '' },
                 { label: 'Lean Mass', value: lastScan?.leanMass ? fmt.leanMass(lastScan.leanMass, profile?.unitSystem) : '—', unit: '' },
                 { label: 'Next Scan', value: fmt.date(activePlan?.nextScanDate), unit: '' },
               ].map((s, i) => (
@@ -2909,7 +2930,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const previousScan = scanHistory[scanHistory.length - 2];
   const trajectory = getTrajectoryStatus(scanHistory, phase);
   const focusAreas = getPrimaryLimiters(currentScan, activePlan);
-  const bfDelta = (currentScan && previousScan) ? Number(currentScan.bodyFat || 0) - Number(previousScan.bodyFat || 0) : null;
+  const bfDelta = (currentScan && previousScan) ? (getBF(currentScan) || 0) - (getBF(previousScan) || 0) : null;
   const lmDelta = (currentScan && previousScan) ? Number(currentScan.leanMass || 0) - Number(previousScan.leanMass || 0) : null;
   const coachingNote = trajectory.tone === 'good'
     ? 'Progress is aligned with current phase. Keep training execution consistent.'
@@ -2939,7 +2960,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           tone={phaseColor}
           metrics={[
             ...(hasScanned
-              ? [{ label: 'Body Fat', value: `${latestScan.bodyFat}% → ${targetBF}%` }]
+              ? [{ label: 'Body Fat', value: `${getBFDisplay(latestScan)} \u2192 ${targetBF}%` }]
               : [{ label: '📷 First Scan', value: 'Required' }]
             ),
             { label: 'Training', value: `${trainDays} sessions` },
@@ -3014,13 +3035,13 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           <div style={{ position: 'absolute', top: -4, left: `${Math.max(2, Math.min(96, phasePct))}%`, transform: 'translateX(-50%)', width: 16, height: 16, borderRadius: '50%', background: C.orange, border: `3px solid ${C.card}` }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.muted, marginBottom: 20 }}>
-          <span>Now {hasScanned ? `~${latestScan.bodyFat}%` : '—'}</span>
+          <span>Now {hasScanned ? `~${getBFDisplay(latestScan)}` : '—'}</span>
           <span style={{ color: C.green, fontWeight: 600 }}>Goal ~{targetBF}% 🏁</span>
         </div>
         {/* 4 stats */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
           {[
-            { label: 'Start BF',  value: hasScanned ? `${latestScan.bodyFat}%` : '—',   color: C.muted },
+            { label: 'Start BF',  value: hasScanned ? getBFDisplay(latestScan) : '—',   color: C.muted },
             { label: 'Target BF', value: `${targetBF}%`,  color: C.green },
             { label: 'Training',  value: `${trainDays}x/wk`, color: C.blue },
             { label: 'Cardio',    value: `${cardioDays}x/wk`, color: C.orange },
@@ -3541,7 +3562,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
 
   /* Health score from last scan or profile defaults */
   const lastScan    = scanHistory[scanHistory.length - 1];
-  const bf          = lastScan?.bodyFat || 20;
+  const bf          = getBF(lastScan) || 20;
 
   // leanMass is stored in lbs (from Claude scan). Convert to kg for display and scoring.
   const leanMassLbs = lastScan?.leanMass;
@@ -3561,7 +3582,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
 
   /* Delta summary for scan history */
   const firstScan = scanHistory[0];
-  const bfDelta   = firstScan && lastScan ? (lastScan.bodyFat  - firstScan.bodyFat).toFixed(1)  : null;
+  const bfDelta   = firstScan && lastScan ? ((getBF(lastScan) || 0) - (getBF(firstScan) || 0)).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
@@ -3649,7 +3670,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
             <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 8, marginBottom: 14 }}>
               {scanHistory.map((s, i) => {
                 const prev = scanHistory[i - 1];
-                const bfΔ = prev ? Number((s.bodyFat || 0) - (prev.bodyFat || 0)) : null;
+                const bfΔ = prev ? Number((getBF(s) || 0) - (getBF(prev) || 0)) : null;
                 const lmΔ = prev ? Number((s.leanMass || 0) - (prev.leanMass || 0)) : null;
                 const scoreΔ = prev ? (s.physiqueScore || 0) - (prev.physiqueScore || 0) : null;
                 const isLatestScan = i === scanHistory.length - 1;
@@ -3667,7 +3688,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
                     <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ color: C.muted }}>
-                        BF: <span style={{ fontWeight: 600, color: C.white }}>{safeNum(s.bodyFat, 1)}%</span>
+                        BF: <span style={{ fontWeight: 600, color: C.white }}>{getBFDisplay(s)}</span>
                         {bfΔ !== null && <span style={{ color: bfΔ <= 0 ? C.green : C.red }}> ({bfΔ > 0 ? '+' : ''}{bfΔ.toFixed(1)}%)</span>}
                       </div>
                       <div style={{ color: C.muted }}>
@@ -3916,7 +3937,7 @@ function validateScanConsistency(newScan, prevScan, daysBetween) {
   const issues = [];
   // ~0.5% BF / week max realistic change, floor 2%
   const maxBFChange = Math.max(2, days / 14);
-  const bfChange = Math.abs((newScan.bodyFatPct || 0) - (prevScan.bodyFat || 0));
+  const bfChange = Math.abs((newScan.bodyFatPct || 0) - (getBF(prevScan) || 0));
   if (bfChange > maxBFChange) {
     issues.push({
       metric: 'bodyFat',
@@ -4001,7 +4022,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
           {/* Key metrics 2×2 grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              { label: 'Body Fat',      value: safeNum(scan.bodyFat, 1) !== '—' ? `${safeNum(scan.bodyFat, 1)}%${scan.bodyFatRange ? ` (${scan.bodyFatRange})` : ''}` : '—', color: C.orange },
+              { label: 'Body Fat',      value: getBFDisplay(scan), color: C.orange },
               { label: 'Lean Mass',     value: scan.leanMass > 0 ? fmt.leanMass(scan.leanMass, profile?.unitSystem) : '—',                                                    color: C.blue },
               { label: 'Physique Score', value: `${safeNum(scan.physiqueScore)}/100`,                                                                                          color: C.green },
               { label: 'Symmetry',      value: `${safeNum(scan.symmetryScore)}/100`,                                                                                           color: C.purple },
@@ -4332,7 +4353,7 @@ Return ONLY this JSON (no markdown, no extra text):
     const dt      = result.dailyTargets || {};
     const mg      = result.muscleGroups || {};
     const prevScan = scanHistory[scanHistory.length - 1];
-    const bfTrend = prevScan ? Number(result.bodyFatPct || 0) - Number(prevScan.bodyFat || 0) : null;
+    const bfTrend = prevScan ? Number(result.bodyFatPct || 0) - (getBF(prevScan) || 0) : null;
     const lmTrend = prevScan ? Number(result.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
     const predictedTrajectory = getTrajectoryStatus(prevScan ? [...scanHistory, { bodyFat: result.bodyFatPct, leanMass: result.leanMass }] : scanHistory, profile.goal);
     const nextDecision = result.confidence === 'low'
@@ -4592,106 +4613,239 @@ Return ONLY this JSON (no markdown, no extra text):
           const proj = getPhysiqueProjection(bf, profile?.goal, gen, result.confidence);
           const curr = proj.currentStage;
           const prj  = proj.projectedStage;
-          const isSameStage = curr.key === prj.key;
           const confColor = result.confidence === 'high' ? C.green : result.confidence === 'low' ? '#EF4444' : C.gold;
 
-          // SVG silhouette — hw from stage definition, encodes actual BF-based width
-          const SilhouetteFig = ({ stage, isProjected }) => {
-            const hw  = stage.hw; // pre-computed half-width per tier
-            const col = stage.color;
-            const glow = isProjected && proj.improving
-              ? `0 0 14px ${col}66, 0 0 28px ${col}33`
-              : 'none';
+          // Map muscle group values to display tier
+          const mgLevel = (val) => {
+            const v = (val || '').toLowerCase();
+            if (v.includes('well') || v.includes('strong') || v.includes('excellent') || v.includes('developed')) return 'strong';
+            if (v.includes('under') || v.includes('weak') || v.includes('poor') || v.includes('minimal')) return 'weak';
+            return 'average';
+          };
+          const mg = result.muscleGroups || {};
+
+          // Anatomical body figure
+          const BodyFigure = ({ bfVal, muscleGroups, isProjected }) => {
+            const shoulderW = Math.max(30, 52 - (bfVal * 0.3));
+            const torsoW    = Math.min(60, 38 + (bfVal * 0.8));
+            const waistW    = torsoW * Math.max(0.55, 0.72 - bfVal * 0.008);
+            const hipW      = torsoW * 0.9;
+            const legW      = Math.min(22, 14 + (bfVal * 0.3));
+            const cx        = 60;
+
+            const fillBase  = isProjected ? 'rgba(0,200,83,0.25)' : 'rgba(0,200,83,0.15)';
+            const stroke    = isProjected ? '#00C853' : 'rgba(0,200,83,0.4)';
+            const sw        = isProjected ? 1.5 : 1;
+            const fillLow   = isProjected ? 'rgba(0,200,83,0.2)' : 'rgba(0,200,83,0.1)';
+
+            const regionFill = (group) => {
+              if (isProjected) return 'rgba(0,200,83,0.35)'; // projected = all strong
+              const lv = mgLevel(muscleGroups?.[group]);
+              if (lv === 'strong')  return 'rgba(0,200,83,0.35)';
+              if (lv === 'weak')    return 'rgba(255,107,53,0.2)';
+              return fillBase;
+            };
+            const regionStroke = (group) => {
+              if (isProjected) return stroke;
+              return mgLevel(muscleGroups?.[group]) === 'weak' ? 'rgba(255,107,53,0.55)' : stroke;
+            };
+
             return (
-              <div style={{ filter: isProjected && proj.improving ? `drop-shadow(0 0 8px ${col}88)` : 'none' }}>
-                <svg viewBox="0 0 60 102" width={60} height={88} style={{ display: 'block', opacity: isProjected ? 1 : 0.72 }}>
-                  <ellipse cx="30" cy="10" rx="8" ry="9" fill={col} />
-                  <rect x="27" y="18" width="6" height="7" rx="2" fill={col} />
-                  <path d={`M${30 - hw} 25 Q${30 - hw - 3} 58 ${30 - hw + 4} 70 L${30 + hw - 4} 70 Q${30 + hw + 3} 58 ${30 + hw} 25 Z`} fill={col} />
-                  <rect x={30 - hw + 2} y="69" width={hw - 4} height={29} rx="4" fill={col} />
-                  <rect x="30" y="69" width={hw - 4} height={29} rx="4" fill={col} />
+              <div style={{ filter: isProjected ? 'drop-shadow(0 0 10px rgba(0,200,83,0.3))' : 'none', width: '100%', height: '100%' }}>
+                <svg viewBox="0 0 120 220" style={{ width: '100%', height: '100%' }}>
+                  {/* Head */}
+                  <circle cx={cx} cy={18} r={14}
+                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
+
+                  {/* Neck */}
+                  <rect x={cx - 5} y={30} width={10} height={10}
+                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
+
+                  {/* Shoulders — trapezoid, wider at top for lean, blockier for high BF */}
+                  <path d={`M ${cx - shoulderW / 2} 50 L ${cx - torsoW / 2} 62 L ${cx + torsoW / 2} 62 L ${cx + shoulderW / 2} 50 Z`}
+                    fill={regionFill('shoulders')} stroke={regionStroke('shoulders')} strokeWidth={sw} />
+
+                  {/* Left arm */}
+                  <path d={`M ${cx - shoulderW / 2} 52 L ${cx - shoulderW / 2 - 8} 78 L ${cx - shoulderW / 2 - 5} 102 L ${cx - torsoW / 2} 102 L ${cx - torsoW / 2} 76 L ${cx - shoulderW / 2} 62 Z`}
+                    fill={regionFill('arms')} stroke={regionStroke('arms')} strokeWidth={sw} />
+
+                  {/* Right arm */}
+                  <path d={`M ${cx + shoulderW / 2} 52 L ${cx + shoulderW / 2 + 8} 78 L ${cx + shoulderW / 2 + 5} 102 L ${cx + torsoW / 2} 102 L ${cx + torsoW / 2} 76 L ${cx + shoulderW / 2} 62 Z`}
+                    fill={regionFill('arms')} stroke={regionStroke('arms')} strokeWidth={sw} />
+
+                  {/* Chest */}
+                  <path d={`M ${cx - torsoW / 2} 62 L ${cx - torsoW / 2} 97 L ${cx + torsoW / 2} 97 L ${cx + torsoW / 2} 62 Z`}
+                    fill={regionFill('chest')} stroke={regionStroke('chest')} strokeWidth={sw} />
+
+                  {/* Chest center line — projected only */}
+                  {isProjected && (
+                    <line x1={cx} y1={64} x2={cx} y2={95}
+                      stroke="rgba(0,200,83,0.3)" strokeWidth={0.8} />
+                  )}
+
+                  {/* Core/Abs — tapered waist */}
+                  <path d={`M ${cx - torsoW / 2} 97 Q ${cx - waistW / 2} 102 ${cx - waistW / 2} 116 L ${cx + waistW / 2} 116 Q ${cx + waistW / 2} 102 ${cx + torsoW / 2} 97 Z`}
+                    fill={regionFill('core')} stroke={regionStroke('core')} strokeWidth={sw} />
+
+                  {/* Abs horizontal lines — projected + lean only */}
+                  {isProjected && proj.projBFMid < 14 && [103, 110].map(y => (
+                    <line key={y}
+                      x1={cx - waistW / 2 + 4} y1={y}
+                      x2={cx + waistW / 2 - 4} y2={y}
+                      stroke="rgba(0,200,83,0.25)" strokeWidth={0.7} />
+                  ))}
+
+                  {/* Hips */}
+                  <path d={`M ${cx - waistW / 2} 116 Q ${cx - hipW / 2} 120 ${cx - hipW / 2} 130 L ${cx + hipW / 2} 130 Q ${cx + hipW / 2} 120 ${cx + waistW / 2} 116 Z`}
+                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
+
+                  {/* Left thigh */}
+                  <path d={`M ${cx - hipW / 2} 130 L ${cx - legW - 2} 130 L ${cx - legW} 176 L ${cx - 4} 176 L ${cx - 4} 130 Z`}
+                    fill={regionFill('legs')} stroke={regionStroke('legs')} strokeWidth={sw} />
+
+                  {/* Right thigh */}
+                  <path d={`M ${cx + hipW / 2} 130 L ${cx + legW + 2} 130 L ${cx + legW} 176 L ${cx + 4} 176 L ${cx + 4} 130 Z`}
+                    fill={regionFill('legs')} stroke={regionStroke('legs')} strokeWidth={sw} />
+
+                  {/* Left calf */}
+                  <path d={`M ${cx - legW} 176 L ${cx - legW + 2} 212 L ${cx - 4} 212 L ${cx - 4} 176 Z`}
+                    fill={fillLow} stroke={stroke} strokeWidth={sw} />
+
+                  {/* Right calf */}
+                  <path d={`M ${cx + legW} 176 L ${cx + legW - 2} 212 L ${cx + 4} 212 L ${cx + 4} 176 Z`}
+                    fill={fillLow} stroke={stroke} strokeWidth={sw} />
+
+                  {/* Shoulder definition arc — projected only */}
+                  {isProjected && (
+                    <>
+                      <path d={`M ${cx - shoulderW / 2} 54 Q ${cx - shoulderW / 2 - 6} 56 ${cx - shoulderW / 2 - 5} 62`}
+                        fill="none" stroke="rgba(0,200,83,0.25)" strokeWidth={0.8} />
+                      <path d={`M ${cx + shoulderW / 2} 54 Q ${cx + shoulderW / 2 + 6} 56 ${cx + shoulderW / 2 + 5} 62`}
+                        fill="none" stroke="rgba(0,200,83,0.25)" strokeWidth={0.8} />
+                    </>
+                  )}
                 </svg>
               </div>
             );
           };
 
+          // Whether any muscle group is weak (to show legend)
+          const hasMgData = Object.keys(mg).length > 0;
+          const hasWeak   = hasMgData && Object.values(mg).some(v => mgLevel(v) === 'weak');
+          const leanMassDisplay = result.leanMass > 0
+            ? fmt.leanMass(result.leanMass, profile?.unitSystem) : null;
+          const projLeanMassDisplay = result.leanMass > 0
+            ? fmt.leanMass(
+                profile?.goal?.toLowerCase() === 'cut' ? result.leanMass : result.leanMass + 1.5,
+                profile?.unitSystem
+              )
+            : null;
+
           return (
-            <Card className="su" style={{ animationDelay: '.065s', background: '#0A0A12', border: '1px solid rgba(255,255,255,0.1)' }}>
+            <div className="su" style={{
+              animationDelay: '.065s',
+              background: '#0D1A0D',
+              border: '1px solid rgba(0,200,83,0.2)',
+              borderRadius: 20,
+              padding: 20,
+            }}>
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.12em', marginBottom: 4 }}>Physique Projection</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>Visual Trajectory</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 4 }}>Physique Projection</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>Visual Trajectory</div>
                 </div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, background: C.cardElevated, padding: '4px 10px', borderRadius: 99, border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
-                  {proj.timeline}
+                <div style={{ background: '#1C2A1C', borderRadius: 99, padding: '6px 14px' }}>
+                  <span style={{ color: '#8A9A8A', fontSize: 13 }}>{proj.timeline}</span>
                 </div>
               </div>
 
-              {/* Stage comparison */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 24px 1fr', gap: 4, alignItems: 'center', marginBottom: 14 }}>
-                {/* Current */}
-                <div style={{ background: C.cardElevated, borderRadius: 14, padding: '14px 10px', textAlign: 'center', border: `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Now</div>
-                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
-                    <SilhouetteFig stage={curr} isProjected={false} />
+              {/* Two figures side by side */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'center' }}>
+                {/* NOW */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#556655', textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 8 }}>NOW</div>
+                  <div style={{ height: 200 }}>
+                    <BodyFigure bfVal={bf} muscleGroups={mg} isProjected={false} />
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: curr.color, marginBottom: 3, lineHeight: 1.3 }}>{curr.label}</div>
-                  <div style={{ fontSize: 10, color: C.dimmed }}>{bf}% BF</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: curr.color, marginTop: 8, lineHeight: 1.3 }}>{curr.label}</div>
+                  <div style={{ fontSize: 12, color: '#8A9A8A', marginTop: 2 }}>{bf}% body fat</div>
+                  {leanMassDisplay && <div style={{ fontSize: 11, color: '#556655', marginTop: 2 }}>{leanMassDisplay} lean</div>}
                 </div>
 
                 {/* Arrow */}
-                <div style={{ textAlign: 'center', fontSize: 14, color: proj.improving ? C.green : C.muted }}>→</div>
+                <div style={{ color: C.green, fontSize: 22, lineHeight: 1, paddingBottom: 40 }}>→</div>
 
-                {/* Projected */}
-                <div style={{
-                  background: isSameStage ? C.cardElevated : `${prj.color}0E`,
-                  borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                  border: `1px solid ${isSameStage ? C.border : prj.color + '55'}`,
-                }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: proj.improving ? prj.color : C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Projected</div>
-                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
-                    <SilhouetteFig stage={prj} isProjected={true} />
+                {/* PROJECTED */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 8 }}>PROJECTED</div>
+                  <div style={{ height: 200, filter: 'drop-shadow(0 0 10px rgba(0,200,83,0.3))' }}>
+                    <BodyFigure bfVal={proj.projBFMid} muscleGroups={{}} isProjected={true} />
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: prj.color, marginBottom: 3, lineHeight: 1.3 }}>{proj.projLabel}</div>
-                  {/* BF shown as range, not a precise number */}
-                  <div style={{ fontSize: 10, color: C.dimmed }}>
-                    {proj.projBFLow === proj.projBFHigh ? `~${proj.projBFMid}%` : `~${proj.projBFLow}–${proj.projBFHigh}%`} BF
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginTop: 8, lineHeight: 1.3 }}>{proj.projLabel}</div>
+                  <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>
+                    ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`} body fat
                   </div>
+                  {projLeanMassDisplay && <div style={{ fontSize: 11, color: '#556655', marginTop: 2 }}>{projLeanMassDisplay} lean</div>}
                 </div>
               </div>
 
-              {/* Week progress dots */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 14 }}>
+              {/* Muscle legend — only if scan has muscle data */}
+              {hasMgData && (
+                <div style={{ display: 'flex', gap: 16, marginTop: 16, justifyContent: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(0,200,83,0.35)', border: '1px solid rgba(0,200,83,0.6)' }} />
+                    <span style={{ color: '#8A9A8A', fontSize: 11 }}>Strong</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(0,200,83,0.15)', border: '1px solid rgba(0,200,83,0.3)' }} />
+                    <span style={{ color: '#8A9A8A', fontSize: 11 }}>Average</span>
+                  </div>
+                  {hasWeak && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(255,107,53,0.3)', border: '1px solid rgba(255,107,53,0.55)' }} />
+                      <span style={{ color: '#8A9A8A', fontSize: 11 }}>Needs work</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Timeline dots */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginTop: 20 }}>
                 <div style={{ flex: 1, height: 2, background: C.green, borderRadius: 99 }} />
-                {['Wk 4', 'Wk 8', 'Wk 12'].map((w, i) => (
-                  <div key={w} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', padding: '0 8px' }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: i === 0 ? C.green : C.border, border: `1px solid ${i === 0 ? C.green : C.dimmed}` }} />
-                    <div style={{ fontSize: 8, color: C.dimmed, marginTop: 4, whiteSpace: 'nowrap' }}>{w}</div>
+                {[4, 8, 12].map((wk, i) => (
+                  <div key={wk} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '0 6px' }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: '50%',
+                      background: i === 0 ? C.green : 'transparent',
+                      border: `2px solid ${i === 0 ? C.green : '#556655'}`,
+                    }} />
+                    <span style={{ color: '#556655', fontSize: 10, whiteSpace: 'nowrap' }}>Wk {wk}</span>
                   </div>
                 ))}
-                <div style={{ flex: 1, height: 2, background: C.border, borderRadius: 99 }} />
+                <div style={{ flex: 1, height: 2, background: '#1C2A1C', borderRadius: 99 }} />
               </div>
 
-              {/* Copy */}
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: '0 0 8px' }}>{proj.stageCopy}</p>
-              <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.55, margin: 0 }}>{proj.projCopy}</p>
+              {/* Insight */}
+              <div style={{ marginTop: 16, padding: '12px 14px', background: 'rgba(0,0,0,0.3)', borderRadius: 12 }}>
+                <p style={{ color: '#8A9A8A', fontSize: 13, lineHeight: 1.6, margin: 0 }}>{proj.projCopy}</p>
+              </div>
 
-              {/* Confidence indicator */}
+              {/* Confidence */}
               {result.confidence && (
-                <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, color: C.dimmed }}>
-                    Projection confidence: <span style={{ color: confColor, fontWeight: 700 }}>{result.confidence}</span> — based on scan reliability
+                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
+                  <span style={{ color: '#556655', fontSize: 12 }}>
+                    Projection confidence: <strong style={{ color: C.white }}>{result.confidence}</strong> — based on scan data
                   </span>
                 </div>
               )}
 
               {/* Disclaimer */}
-              <p style={{ fontSize: 10, color: C.dimmed, margin: '10px 0 0', lineHeight: 1.5, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
-                Reference projection — not an exact image of your future body. Visuals represent likely physique stage, not a generated transformation.
+              <p style={{ marginTop: 12, color: '#3A4A3A', fontSize: 11, lineHeight: 1.6 }}>
+                Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan and scan data.
               </p>
-            </Card>
+            </div>
           );
         })()}
 
@@ -4889,7 +5043,7 @@ Return ONLY this JSON (no markdown, no extra text):
                       <span style={{ fontSize: 9, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '2px 7px', borderRadius: 99, border: `1px solid ${C.purple}44`, textTransform: 'uppercase', letterSpacing: '.06em' }}>Baseline</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {safeNum(s.bodyFat, 1)}% · Lean {s.leanMass > 0 ? fmt.leanMass(s.leanMass, profile?.unitSystem) : '—'}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {getBFDisplay(s)} · Lean {s.leanMass > 0 ? fmt.leanMass(s.leanMass, profile?.unitSystem) : '—'}</div>
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
@@ -4914,7 +5068,7 @@ Return ONLY this JSON (no markdown, no extra text):
 
 function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   if (!scan) return null;
-  const bfDelta = prevScan ? Number(scan.bodyFat || 0) - Number(prevScan.bodyFat || 0) : null;
+  const bfDelta = prevScan ? (getBF(scan) || 0) - (getBF(prevScan) || 0) : null;
   const lmDelta = prevScan ? Number(scan.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
   const lmDeltaDisplay = unitSystem === 'metric' ? (lmDelta || 0) * 0.453592 : (lmDelta || 0);
   const trajectory = getTrajectoryStatus(prevScan ? [prevScan, scan] : [], scan.phase || 'Maintain');
@@ -4936,7 +5090,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
-              { label: 'Body Fat', value: fmt.pct(scan.bodyFat || 0, 1), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
+              { label: 'Body Fat', value: getBFDisplay(scan), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
               { label: 'Lean Mass', value: fmt.leanMass(scan.leanMass || 0, unitSystem), tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
               { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
               { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
