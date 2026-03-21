@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, Component } from "react";
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
-import { runCalculations, buildMacroTargets } from '../lib/engine/calculator';
 import {
   initializeSession,
   signInWithPassword,
@@ -159,26 +158,75 @@ const LS_KEYS = {
 
 /* ─── Macro Calculator ───────────────────────────────────────────────────── */
 /* ─── Physiological macro calculator (Mifflin-St Jeor / ISSN guidelines) ── */
-function calcMacros(profile) {
-  if (!profile) return null;
-  try {
-    const physio = runCalculations(profile);
-    const macroTargets = buildMacroTargets(physio, profile.goal);
-    return {
-      calories: macroTargets.calories,
-      protein: macroTargets.protein,
-      carbs: macroTargets.carbs,
-      fat: macroTargets.fat,
-      steps: macroTargets.steps,
-      sleepHours: macroTargets.sleepHours,
-      waterLiters: macroTargets.waterLiters,
-      trainingDaysPerWeek: macroTargets.trainingDaysPerWeek,
-      cardioDays: macroTargets.cardioDays,
-      tdee: physio.tdee,
-    };
-  } catch {
-    return { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+// Single authoritative macro calculation function.
+// Uses actual stored profile field names (weightLbs, heightCm, activity, unitSystem).
+// scanData.leanMass is stored in lbs (always, per sanitizeScanData).
+function calcTargets(profile, scanData = null) {
+  if (!profile) return { calories: 2000, protein: 150, carbs: 200, fat: 67, tdee: 2400, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
+
+  // Weight: always stored as lbs (onboarding converts metric → lbs on save)
+  const weightLbs = Number(profile.weightLbs) || 165;
+  const weightKg  = weightLbs * 0.453592;
+
+  // Height: always stored as cm
+  const heightCm = Number(profile.heightCm) || 175;
+
+  const age    = Number(profile.age) || 25;
+  const isMale = (profile.gender || 'Male') !== 'Female';
+
+  // BMR — Mifflin-St Jeor
+  const bmr = isMale
+    ? (10 * weightKg) + (6.25 * heightCm) - (5 * age) + 5
+    : (10 * weightKg) + (6.25 * heightCm) - (5 * age) - 161;
+
+  // TDEE
+  const activityMult = { Sedentary: 1.2, Light: 1.375, Moderate: 1.55, Active: 1.725 };
+  const mult = activityMult[profile.activity] || 1.375;
+  const tdee = Math.round(bmr * mult);
+
+  // Calorie target
+  const goal = (profile.goal || 'Maintain').toLowerCase();
+  let calories = goal === 'cut' ? tdee - 400
+    : goal === 'bulk' ? tdee + 300
+    : tdee;
+  calories = Math.max(calories, 1500);
+
+  // Protein — use lean mass from scan if available, else body weight
+  let protein;
+  if (scanData && scanData.leanMass > 0) {
+    const leanMassKg = scanData.leanMass * 0.453592; // leanMass stored in lbs
+    protein = Math.round(leanMassKg * 2.2);
+  } else {
+    const multiplier = goal === 'cut' ? 2.2 : goal === 'bulk' ? 2.0 : 1.8;
+    protein = Math.round(weightKg * multiplier);
   }
+
+  // Fat — 25% of calories
+  const fat = Math.round((calories * 0.25) / 9);
+
+  // Carbs — remaining calories
+  const carbs = Math.max(50, Math.round((calories - protein * 4 - fat * 9) / 4));
+
+  const trainingDaysPerWeek = goal === 'bulk' ? 5 : goal === 'cut' ? 4 : 3;
+  const cardioDays = goal === 'cut' ? 3 : goal === 'bulk' ? 1 : 2;
+
+  return {
+    calories,
+    protein,
+    carbs,
+    fat,
+    tdee,
+    steps:               goal === 'cut' ? 10000 : 9000,
+    sleepHours:          8,
+    waterLiters:         Math.round(weightKg * 0.033 * 10) / 10,
+    trainingDaysPerWeek,
+    cardioDays,
+  };
+}
+
+// Kept as thin wrapper so call sites that pass (profile) still work
+function calcMacros(profile) {
+  return calcTargets(profile, null);
 }
 
 /* ─── Macro sanity clamp ─────────────────────────────────────────────────
@@ -354,13 +402,19 @@ function getPrimaryLimiters(scan, activePlan) {
 }
 
 function getActiveTargets(activePlan, profile) {
-  const stored = activePlan?.dailyTargets || activePlan?.macros;
-  const fresh = calcMacros(profile);
-  // Always use fresh protein/macro calculation to avoid stale stored values
-  // after formula updates. Preserve non-macro plan settings (steps, sleep, etc.).
-  const targets = stored
-    ? { ...stored, calories: fresh?.calories || stored.calories, protein: fresh?.protein || stored.protein, carbs: fresh?.carbs || stored.carbs, fat: fresh?.fat || stored.fat }
-    : fresh;
+  // Always recalculate from calcTargets — never use stale stored plan macros
+  const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
+  const fresh = calcTargets(profile, latestScan);
+  const stored = activePlan?.dailyTargets || activePlan?.macros || {};
+  // Preserve non-macro plan targets (steps, sleep, water) from plan if set
+  const targets = {
+    ...fresh,
+    steps:               stored.steps               || fresh.steps,
+    sleepHours:          stored.sleepHours          || fresh.sleepHours,
+    waterLiters:         stored.waterLiters         || fresh.waterLiters,
+    trainingDaysPerWeek: stored.trainingDaysPerWeek || fresh.trainingDaysPerWeek,
+    cardioDays:          stored.cardioDays          || fresh.cardioDays,
+  };
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
 }
 
@@ -3132,21 +3186,33 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         >
           <Card>
             <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>Protein pacing target: ~{Math.round((macros.protein || 150) / 4)} g per main meal across 4 feedings.</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {[
-                { label: 'Meal 1', protein: 0.25, carbs: 0.22, fats: 0.25 },
-                { label: 'Meal 2', protein: 0.25, carbs: 0.33, fats: 0.25 },
-                { label: 'Meal 3', protein: 0.25, carbs: 0.28, fats: 0.25 },
-                { label: 'Meal 4', protein: 0.25, carbs: 0.17, fats: 0.25 },
-              ].map((m) => (
-                <div key={m.label} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, background: C.cardElevated }}>
-                  <div style={{ fontSize: 12, fontWeight: 650, marginBottom: 4 }}>{m.label}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>Protein {Math.round((macros.protein || 150) * m.protein)} g</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>Carbs {Math.round((macros.carbs || 200) * m.carbs)} g</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>Fat {Math.round((macros.fat || 55) * m.fats)} g</div>
+            {(() => {
+              // Try to get real meal names from today's meal plan
+              const storedPlan = LS.get(LS_KEYS.mealplan, null);
+              const todayPlanMeals = storedPlan?.days?.[0]?.meals || storedPlan?.meals || null;
+              const fallbackLabels = ['Breakfast', 'Lunch', 'Dinner', 'Snack'];
+              const distributions = [
+                { protein: 0.25, carbs: 0.22, fats: 0.25 },
+                { protein: 0.25, carbs: 0.33, fats: 0.25 },
+                { protein: 0.25, carbs: 0.28, fats: 0.25 },
+                { protein: 0.25, carbs: 0.17, fats: 0.25 },
+              ];
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {distributions.map((m, i) => {
+                    const mealName = todayPlanMeals?.[i]?.name || fallbackLabels[i];
+                    return (
+                      <div key={i} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, background: C.cardElevated }}>
+                        <div style={{ fontSize: 12, fontWeight: 650, marginBottom: 4 }}>{mealName}</div>
+                        <div style={{ fontSize: 11, color: C.muted }}>Protein {Math.round((macros.protein || 150) * m.protein)} g</div>
+                        <div style={{ fontSize: 11, color: C.muted }}>Carbs {Math.round((macros.carbs || 200) * m.carbs)} g</div>
+                        <div style={{ fontSize: 11, color: C.muted }}>Fat {Math.round((macros.fat || 55) * m.fats)} g</div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
+              );
+            })()}
           </Card>
         </DetailSheet>
       )}
