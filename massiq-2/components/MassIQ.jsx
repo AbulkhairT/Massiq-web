@@ -2973,6 +2973,12 @@ function getWeeklyPriorities(profile, targets, plan) {
 function PlanTab({ profile, activePlan, setTab, showToast }) {
   const weekKey = getWeekKey();
   const [openSections,  setOpenSections]  = useState(() => new Set(['week', 'focus']));
+  const [workoutPage,   setWorkoutPage]   = useState(() => {
+    const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const days = LS.get(LS_KEYS.workoutplan, []) || [];
+    const idx = days.findIndex(d => d.day === dayName);
+    return idx >= 0 ? idx : 0;
+  });
   const [selectedMeal,  setSelectedMeal]  = useState(null);
   const [swappingKey,   setSwappingKey]   = useState(null);
   const [mealPlanDays,  setMealPlanDays]  = useState(() => {
@@ -3366,47 +3372,115 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
       {(() => {
         const workoutDays = LS.get(LS_KEYS.workoutplan, []) || [];
         if (!workoutDays.length) return null;
+        const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+        const safeIdx = Math.min(workoutPage, workoutDays.length - 1);
+        const day = workoutDays[safeIdx];
+        const isToday = day.day === todayName;
         return (
           <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
             <SectionRow sectionKey="workouts" label="Workout plan" meta={`${trainDays}x/wk`} />
             {openSections.has('workouts') && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {workoutDays.map((day, idx) => (
-                  <div key={`${day.day}-${idx}`} style={{
-                    borderRadius: 14, overflow: 'hidden',
-                    background: C.cardElevated,
-                    border: `1px solid ${day.isTrainingDay ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'}`,
-                    opacity: day.isTrainingDay ? 1 : 0.6,
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 14px' }}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: C.white, marginBottom: 2 }}>
-                          {day.day}
-                          <span style={{ fontSize: 12, fontWeight: 500, color: C.muted, marginLeft: 8 }}>{day.workoutType}</span>
-                        </div>
-                        {day.isTrainingDay && (day.focus || []).length > 0 && (
-                          <div style={{ fontSize: 11, color: C.dimmed }}>{(day.focus || []).join(' · ')}</div>
-                        )}
-                      </div>
-                      <span style={{ fontSize: 11, color: day.isTrainingDay ? C.green : C.dimmed, fontWeight: 600 }}>
-                        {day.isTrainingDay ? day.duration || 'Train' : 'Rest'}
-                      </span>
-                    </div>
-                    {day.isTrainingDay && (day.exercises || []).length > 0 && (
-                      <div style={{ borderTop: `1px solid rgba(255,255,255,0.05)`, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {(day.exercises || []).slice(0, 6).map(ex => (
-                          <div key={ex.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: 13, color: C.white }}>{ex.name}</span>
-                            <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>{ex.sets}×{ex.reps}</span>
-                          </div>
-                        ))}
-                        {(day.exercises || []).length > 6 && (
-                          <div style={{ fontSize: 11, color: C.dimmed }}>+{day.exercises.length - 6} more</div>
-                        )}
-                      </div>
-                    )}
+              <div>
+                {/* Pager nav */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                  <button
+                    onClick={() => setWorkoutPage(p => Math.max(0, p - 1))}
+                    disabled={safeIdx === 0}
+                    style={{ background: 'none', border: 'none', cursor: safeIdx === 0 ? 'default' : 'pointer',
+                      color: safeIdx === 0 ? C.dimmed : C.muted, fontSize: 20, padding: '4px 8px', lineHeight: 1 }}
+                  >‹</button>
+
+                  {/* Dot indicators */}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {workoutDays.map((d, i) => {
+                      const isCur  = i === safeIdx;
+                      const isDot  = d.day === todayName;
+                      return (
+                        <button
+                          key={d.day}
+                          onClick={() => setWorkoutPage(i)}
+                          style={{
+                            width: isCur ? 20 : 6, height: 6, borderRadius: 99,
+                            background: isCur ? C.green : isDot ? 'rgba(114,184,149,0.35)' : 'rgba(255,255,255,0.15)',
+                            border: 'none', cursor: 'pointer', padding: 0,
+                            transition: 'width .2s ease, background .2s ease',
+                          }}
+                        />
+                      );
+                    })}
                   </div>
-                ))}
+
+                  <button
+                    onClick={() => setWorkoutPage(p => Math.min(workoutDays.length - 1, p + 1))}
+                    disabled={safeIdx === workoutDays.length - 1}
+                    style={{ background: 'none', border: 'none', cursor: safeIdx === workoutDays.length - 1 ? 'default' : 'pointer',
+                      color: safeIdx === workoutDays.length - 1 ? C.dimmed : C.muted, fontSize: 20, padding: '4px 8px', lineHeight: 1 }}
+                  >›</button>
+                </div>
+
+                {/* Single workout card */}
+                <div style={{
+                  borderRadius: 16, overflow: 'hidden',
+                  background: C.cardElevated,
+                  border: `1px solid ${isToday ? 'rgba(114,184,149,0.22)' : 'rgba(255,255,255,0.07)'}`,
+                  opacity: day.isTrainingDay ? 1 : 0.65,
+                }}>
+                  {/* Header */}
+                  <div style={{ padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                        <span style={{ fontSize: 16, fontWeight: 800, color: C.white }}>{day.day}</span>
+                        {isToday && (
+                          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', color: C.green,
+                            background: C.greenBg, padding: '2px 8px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
+                            TODAY
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 14, color: C.muted, fontWeight: 500 }}>{day.workoutType}</div>
+                      {day.isTrainingDay && (day.focus || []).length > 0 && (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                          {(day.focus || []).map(f => (
+                            <span key={f} style={{ fontSize: 11, color: C.blue, background: 'rgba(74,158,255,0.08)',
+                              padding: '3px 10px', borderRadius: 99, border: '1px solid rgba(74,158,255,0.15)', fontWeight: 600 }}>
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <span style={{ fontSize: 12, color: day.isTrainingDay ? C.green : C.dimmed, fontWeight: 600, marginTop: 2 }}>
+                      {day.isTrainingDay ? (day.duration || 'Train') : 'Rest'}
+                    </span>
+                  </div>
+
+                  {/* Exercise list — full, no truncation */}
+                  {day.isTrainingDay && (day.exercises || []).length > 0 && (
+                    <div style={{ borderTop: `1px solid rgba(255,255,255,0.05)`, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+                      {(day.exercises || []).map((ex, ei) => (
+                        <div key={`${ex.name}-${ei}`} style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '9px 0',
+                          borderBottom: ei < day.exercises.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none',
+                        }}>
+                          <div>
+                            <div style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{ex.name}</div>
+                            {ex.notes && <div style={{ fontSize: 11, color: C.dimmed, marginTop: 1 }}>{ex.notes}</div>}
+                          </div>
+                          <span style={{ fontSize: 13, color: C.muted, fontWeight: 600, flexShrink: 0, marginLeft: 12 }}>
+                            {ex.sets}×{ex.reps}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!day.isTrainingDay && (
+                    <div style={{ padding: '12px 16px', borderTop: `1px solid rgba(255,255,255,0.05)`, fontSize: 13, color: C.dimmed }}>
+                      Active recovery — light walk, stretching, or full rest.
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
