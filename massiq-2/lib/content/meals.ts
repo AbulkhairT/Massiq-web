@@ -455,10 +455,22 @@ export function buildMealPlan(
     const clamp = (meal: Meal, target: number, cap: number) =>
       scaleMeal(meal, Math.min(target, cap))
 
-    const breakfast = clamp(bfPick[i], Math.round(dayCals * dist.breakfast), CAPS.breakfast)
-    const lunch     = clamp(lnPick[i], Math.round(dayCals * dist.lunch),     CAPS.lunch)
-    const dinner    = clamp(dnPick[i], Math.round(dayCals * dist.dinner),    CAPS.dinner)
-    const snack     = clamp(snPick[i], Math.round(dayCals * dist.snack),     CAPS.snack)
+    let breakfast = clamp(bfPick[i], Math.round(dayCals * dist.breakfast), CAPS.breakfast)
+    let lunch     = clamp(lnPick[i], Math.round(dayCals * dist.lunch),     CAPS.lunch)
+    let dinner    = clamp(dnPick[i], Math.round(dayCals * dist.dinner),    CAPS.dinner)
+    let snack     = clamp(snPick[i], Math.round(dayCals * dist.snack),     CAPS.snack)
+
+    // Cap daily protein to within 8% of target — scaleMeal scales protein with calories,
+    // which can overshoot if templates are protein-dense (e.g. 60g / 600 kcal).
+    const dayProt = breakfast.protein + lunch.protein + dinner.protein + snack.protein
+    if (dayProt > targetProtein * 1.08) {
+      const ratio = targetProtein / dayProt
+      const capProt = (m: Meal): Meal => ({ ...m, protein: Math.round(m.protein * ratio) })
+      breakfast = capProt(breakfast)
+      lunch     = capProt(lunch)
+      dinner    = capProt(dinner)
+      snack     = capProt(snack)
+    }
 
     const totalCalories = breakfast.calories + lunch.calories + dinner.calories + snack.calories
     const totalProtein  = breakfast.protein  + lunch.protein  + dinner.protein  + snack.protein
