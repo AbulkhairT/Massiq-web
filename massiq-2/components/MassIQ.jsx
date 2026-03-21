@@ -1830,6 +1830,12 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
             </div>
           </div>
 
+          {/* ══ 5. TODAY'S WORKOUT ══════════════════════════════════════════ */}
+          <TodayWorkoutCard />
+
+          {/* ══ 6. YOUR PATTERNS ════════════════════════════════════════════ */}
+          <AIPatterns profile={profile} activePlan={activePlan} />
+
         </>
       )}
 
@@ -3356,6 +3362,57 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         )}
       </div>
 
+      {/* ══ 7. WORKOUTS ═════════════════════════════════════════════════ */}
+      {(() => {
+        const workoutDays = LS.get(LS_KEYS.workoutplan, []) || [];
+        if (!workoutDays.length) return null;
+        return (
+          <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+            <SectionRow sectionKey="workouts" label="Workout plan" meta={`${trainDays}x/wk`} />
+            {openSections.has('workouts') && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {workoutDays.map((day, idx) => (
+                  <div key={`${day.day}-${idx}`} style={{
+                    borderRadius: 14, overflow: 'hidden',
+                    background: C.cardElevated,
+                    border: `1px solid ${day.isTrainingDay ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)'}`,
+                    opacity: day.isTrainingDay ? 1 : 0.6,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 14px' }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: C.white, marginBottom: 2 }}>
+                          {day.day}
+                          <span style={{ fontSize: 12, fontWeight: 500, color: C.muted, marginLeft: 8 }}>{day.workoutType}</span>
+                        </div>
+                        {day.isTrainingDay && (day.focus || []).length > 0 && (
+                          <div style={{ fontSize: 11, color: C.dimmed }}>{(day.focus || []).join(' · ')}</div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 11, color: day.isTrainingDay ? C.green : C.dimmed, fontWeight: 600 }}>
+                        {day.isTrainingDay ? day.duration || 'Train' : 'Rest'}
+                      </span>
+                    </div>
+                    {day.isTrainingDay && (day.exercises || []).length > 0 && (
+                      <div style={{ borderTop: `1px solid rgba(255,255,255,0.05)`, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {(day.exercises || []).slice(0, 6).map(ex => (
+                          <div key={ex.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: 13, color: C.white }}>{ex.name}</span>
+                            <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>{ex.sets}×{ex.reps}</span>
+                          </div>
+                        ))}
+                        {(day.exercises || []).length > 6 && (
+                          <div style={{ fontSize: 11, color: C.dimmed }}>+{day.exercises.length - 6} more</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* selectedMeal modal */}
       {selectedMeal && (
         <RecipeModal
@@ -3694,9 +3751,6 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
           ))}
         </Card>
       )}
-
-      {/* 3 ── AI Patterns ── */}
-      <AIPatterns profile={profile} activePlan={activePlan} />
 
       {/* 4 ── Profile Info ── */}
       <Card className="su" style={{ animationDelay: '.12s' }}>
