@@ -4107,7 +4107,8 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const [error,             setError]             = useState('');
   const [scanHistory,       setScanHistory]       = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [viewOld,           setViewOld]           = useState(null);
-  const [showCalcDetails,   setShowCalcDetails]   = useState(false);
+  const [showCalcDetails,      setShowCalcDetails]      = useState(false);
+  const [showPhysiqueDetails,  setShowPhysiqueDetails]  = useState(false);
   const [consistencyWarnings, setConsistencyWarnings] = useState([]);
   const [warningsAccepted,  setWarningsAccepted]  = useState(false);
   const [selectedScan,      setSelectedScan]      = useState(null);
@@ -4612,239 +4613,194 @@ Return ONLY this JSON (no markdown, no extra text):
           const gen  = profile?.gender || 'Male';
           const proj = getPhysiqueProjection(bf, profile?.goal, gen, result.confidence);
           const curr = proj.currentStage;
-          const prj  = proj.projectedStage;
-          const confColor = result.confidence === 'high' ? C.green : result.confidence === 'low' ? '#EF4444' : C.gold;
-
-          // Map muscle group values to display tier
-          const mgLevel = (val) => {
-            const v = (val || '').toLowerCase();
-            if (v.includes('well') || v.includes('strong') || v.includes('excellent') || v.includes('developed')) return 'strong';
-            if (v.includes('under') || v.includes('weak') || v.includes('poor') || v.includes('minimal')) return 'weak';
-            return 'average';
-          };
-          const mg = result.muscleGroups || {};
-
-          // Anatomical body figure
-          const BodyFigure = ({ bfVal, muscleGroups, isProjected }) => {
-            const shoulderW = Math.max(30, 52 - (bfVal * 0.3));
-            const torsoW    = Math.min(60, 38 + (bfVal * 0.8));
-            const waistW    = torsoW * Math.max(0.55, 0.72 - bfVal * 0.008);
-            const hipW      = torsoW * 0.9;
-            const legW      = Math.min(22, 14 + (bfVal * 0.3));
-            const cx        = 60;
-
-            const fillBase  = isProjected ? 'rgba(0,200,83,0.25)' : 'rgba(0,200,83,0.15)';
-            const stroke    = isProjected ? '#00C853' : 'rgba(0,200,83,0.4)';
-            const sw        = isProjected ? 1.5 : 1;
-            const fillLow   = isProjected ? 'rgba(0,200,83,0.2)' : 'rgba(0,200,83,0.1)';
-
-            const regionFill = (group) => {
-              if (isProjected) return 'rgba(0,200,83,0.35)'; // projected = all strong
-              const lv = mgLevel(muscleGroups?.[group]);
-              if (lv === 'strong')  return 'rgba(0,200,83,0.35)';
-              if (lv === 'weak')    return 'rgba(255,107,53,0.2)';
-              return fillBase;
-            };
-            const regionStroke = (group) => {
-              if (isProjected) return stroke;
-              return mgLevel(muscleGroups?.[group]) === 'weak' ? 'rgba(255,107,53,0.55)' : stroke;
-            };
-
-            return (
-              <div style={{ filter: isProjected ? 'drop-shadow(0 0 10px rgba(0,200,83,0.3))' : 'none', width: '100%', height: '100%' }}>
-                <svg viewBox="0 0 120 220" style={{ width: '100%', height: '100%' }}>
-                  {/* Head */}
-                  <circle cx={cx} cy={18} r={14}
-                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
-
-                  {/* Neck */}
-                  <rect x={cx - 5} y={30} width={10} height={10}
-                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
-
-                  {/* Shoulders — trapezoid, wider at top for lean, blockier for high BF */}
-                  <path d={`M ${cx - shoulderW / 2} 50 L ${cx - torsoW / 2} 62 L ${cx + torsoW / 2} 62 L ${cx + shoulderW / 2} 50 Z`}
-                    fill={regionFill('shoulders')} stroke={regionStroke('shoulders')} strokeWidth={sw} />
-
-                  {/* Left arm */}
-                  <path d={`M ${cx - shoulderW / 2} 52 L ${cx - shoulderW / 2 - 8} 78 L ${cx - shoulderW / 2 - 5} 102 L ${cx - torsoW / 2} 102 L ${cx - torsoW / 2} 76 L ${cx - shoulderW / 2} 62 Z`}
-                    fill={regionFill('arms')} stroke={regionStroke('arms')} strokeWidth={sw} />
-
-                  {/* Right arm */}
-                  <path d={`M ${cx + shoulderW / 2} 52 L ${cx + shoulderW / 2 + 8} 78 L ${cx + shoulderW / 2 + 5} 102 L ${cx + torsoW / 2} 102 L ${cx + torsoW / 2} 76 L ${cx + shoulderW / 2} 62 Z`}
-                    fill={regionFill('arms')} stroke={regionStroke('arms')} strokeWidth={sw} />
-
-                  {/* Chest */}
-                  <path d={`M ${cx - torsoW / 2} 62 L ${cx - torsoW / 2} 97 L ${cx + torsoW / 2} 97 L ${cx + torsoW / 2} 62 Z`}
-                    fill={regionFill('chest')} stroke={regionStroke('chest')} strokeWidth={sw} />
-
-                  {/* Chest center line — projected only */}
-                  {isProjected && (
-                    <line x1={cx} y1={64} x2={cx} y2={95}
-                      stroke="rgba(0,200,83,0.3)" strokeWidth={0.8} />
-                  )}
-
-                  {/* Core/Abs — tapered waist */}
-                  <path d={`M ${cx - torsoW / 2} 97 Q ${cx - waistW / 2} 102 ${cx - waistW / 2} 116 L ${cx + waistW / 2} 116 Q ${cx + waistW / 2} 102 ${cx + torsoW / 2} 97 Z`}
-                    fill={regionFill('core')} stroke={regionStroke('core')} strokeWidth={sw} />
-
-                  {/* Abs horizontal lines — projected + lean only */}
-                  {isProjected && proj.projBFMid < 14 && [103, 110].map(y => (
-                    <line key={y}
-                      x1={cx - waistW / 2 + 4} y1={y}
-                      x2={cx + waistW / 2 - 4} y2={y}
-                      stroke="rgba(0,200,83,0.25)" strokeWidth={0.7} />
-                  ))}
-
-                  {/* Hips */}
-                  <path d={`M ${cx - waistW / 2} 116 Q ${cx - hipW / 2} 120 ${cx - hipW / 2} 130 L ${cx + hipW / 2} 130 Q ${cx + hipW / 2} 120 ${cx + waistW / 2} 116 Z`}
-                    fill={fillBase} stroke={stroke} strokeWidth={sw} />
-
-                  {/* Left thigh */}
-                  <path d={`M ${cx - hipW / 2} 130 L ${cx - legW - 2} 130 L ${cx - legW} 176 L ${cx - 4} 176 L ${cx - 4} 130 Z`}
-                    fill={regionFill('legs')} stroke={regionStroke('legs')} strokeWidth={sw} />
-
-                  {/* Right thigh */}
-                  <path d={`M ${cx + hipW / 2} 130 L ${cx + legW + 2} 130 L ${cx + legW} 176 L ${cx + 4} 176 L ${cx + 4} 130 Z`}
-                    fill={regionFill('legs')} stroke={regionStroke('legs')} strokeWidth={sw} />
-
-                  {/* Left calf */}
-                  <path d={`M ${cx - legW} 176 L ${cx - legW + 2} 212 L ${cx - 4} 212 L ${cx - 4} 176 Z`}
-                    fill={fillLow} stroke={stroke} strokeWidth={sw} />
-
-                  {/* Right calf */}
-                  <path d={`M ${cx + legW} 176 L ${cx + legW - 2} 212 L ${cx + 4} 212 L ${cx + 4} 176 Z`}
-                    fill={fillLow} stroke={stroke} strokeWidth={sw} />
-
-                  {/* Shoulder definition arc — projected only */}
-                  {isProjected && (
-                    <>
-                      <path d={`M ${cx - shoulderW / 2} 54 Q ${cx - shoulderW / 2 - 6} 56 ${cx - shoulderW / 2 - 5} 62`}
-                        fill="none" stroke="rgba(0,200,83,0.25)" strokeWidth={0.8} />
-                      <path d={`M ${cx + shoulderW / 2} 54 Q ${cx + shoulderW / 2 + 6} 56 ${cx + shoulderW / 2 + 5} 62`}
-                        fill="none" stroke="rgba(0,200,83,0.25)" strokeWidth={0.8} />
-                    </>
-                  )}
-                </svg>
-              </div>
-            );
-          };
-
-          // Whether any muscle group is weak (to show legend)
-          const hasMgData = Object.keys(mg).length > 0;
-          const hasWeak   = hasMgData && Object.values(mg).some(v => mgLevel(v) === 'weak');
           const leanMassDisplay = result.leanMass > 0
             ? fmt.leanMass(result.leanMass, profile?.unitSystem) : null;
-          const projLeanMassDisplay = result.leanMass > 0
-            ? fmt.leanMass(
-                profile?.goal?.toLowerCase() === 'cut' ? result.leanMass : result.leanMass + 1.5,
-                profile?.unitSystem
-              )
-            : null;
+
+          // Premium smooth-bezier body silhouette — no harsh outlines, organic curves
+          const BodySilhouette = ({ bfPct, isProjected }) => {
+            const bfC = Math.max(6, Math.min(42, bfPct));
+            const t   = Math.min(1, Math.max(0, (bfC - 6) / 36)); // 0=lean, 1=heavy
+            const cx  = 40;
+            // Key half-widths
+            const shW = 19 - t * 3;     // shoulder: 19 lean → 16 heavy
+            const trW = shW - 3;         // torso side just below shoulder
+            const waW = 9  + t * 11;    // waist: 9 lean → 20 heavy
+            const hiW = 13 + t * 8;     // hip: 13 lean → 21 heavy
+            const thW = 8  + t * 5;     // thigh: 8 lean → 13 heavy
+            const clW = 4.5 + t * 2;    // calf: 4.5 lean → 6.5 heavy
+            const lgG = 3;              // leg inner gap from center
+            const nkW = 5;              // neck half-width
+            // Y positions
+            const nkY = 31;  const shY = 37;  const arY = 54;
+            const waY = 92;  const hiY = 110; const crY = 124;
+            const knY = 160; const anY = 196; const ftY = 200;
+
+            const gradId = isProjected ? 'siProjG' : 'siCurrG';
+
+            // One continuous smooth bezier outline: neck → shoulders → torso → hips →
+            // left leg down → foot across → inner left leg up → crotch arch →
+            // inner right leg down → right foot → right outer leg up → close
+            const d = `
+              M ${cx - nkW} ${nkY}
+              C ${cx - nkW - 4} ${nkY + 2}  ${cx - shW - 2} ${shY - 4}  ${cx - shW} ${shY}
+              C ${cx - shW - 2} ${shY + 6}  ${cx - trW - 1} ${arY - 5}  ${cx - trW} ${arY}
+              C ${cx - trW} ${arY + 5}  ${cx - waW - 2} ${waY - 12}  ${cx - waW} ${waY}
+              C ${cx - waW - 1} ${waY + 7}  ${cx - hiW + 1} ${hiY - 7}  ${cx - hiW} ${hiY}
+              C ${cx - hiW - 1} ${hiY + 6}  ${cx - thW - 1} ${crY - 5}  ${cx - thW} ${crY}
+              C ${cx - thW - 1} ${crY + 8}  ${cx - thW} ${knY - 8}  ${cx - thW + 1} ${knY}
+              C ${cx - thW + 1} ${knY + 10}  ${cx - clW} ${knY + 14}  ${cx - clW} ${knY + 18}
+              L ${cx - clW} ${anY}
+              L ${cx - clW + 1} ${ftY}
+              L ${cx - lgG} ${ftY}
+              L ${cx - lgG} ${crY}
+              Q ${cx} ${crY + 7}  ${cx + lgG} ${crY}
+              L ${cx + lgG} ${ftY}
+              L ${cx + clW - 1} ${ftY}
+              L ${cx + clW} ${anY}
+              L ${cx + clW} ${knY + 18}
+              C ${cx + clW} ${knY + 14}  ${cx + thW - 1} ${knY + 10}  ${cx + thW - 1} ${knY}
+              C ${cx + thW} ${knY - 8}  ${cx + thW + 1} ${crY + 8}  ${cx + thW} ${crY}
+              C ${cx + thW + 1} ${crY - 5}  ${cx + hiW + 1} ${hiY + 6}  ${cx + hiW} ${hiY}
+              C ${cx + hiW - 1} ${hiY - 7}  ${cx + waW + 1} ${waY + 7}  ${cx + waW} ${waY}
+              C ${cx + waW + 2} ${waY - 12}  ${cx + trW + 1} ${arY + 5}  ${cx + trW} ${arY}
+              C ${cx + trW + 1} ${arY - 5}  ${cx + shW + 2} ${shY + 6}  ${cx + shW} ${shY}
+              C ${cx + shW + 2} ${shY - 4}  ${cx + nkW + 4} ${nkY + 2}  ${cx + nkW} ${nkY}
+              Z`;
+
+            return (
+              <svg viewBox="0 0 80 210" style={{ width: '100%', height: '100%' }}>
+                <defs>
+                  {isProjected ? (
+                    <linearGradient id="siProjG" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor="rgba(90,230,150,0.38)" />
+                      <stop offset="55%"  stopColor="rgba(52,209,123,0.26)" />
+                      <stop offset="100%" stopColor="rgba(28,155,84,0.16)" />
+                    </linearGradient>
+                  ) : (
+                    <linearGradient id="siCurrG" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor="rgba(255,255,255,0.11)" />
+                      <stop offset="100%" stopColor="rgba(255,255,255,0.03)" />
+                    </linearGradient>
+                  )}
+                </defs>
+                {/* Head */}
+                <circle cx={cx} cy={13} r={9} fill={`url(#${gradId})`} />
+                {/* Neck */}
+                <rect x={cx - nkW} y={22} width={nkW * 2} height={10} rx={2} fill={`url(#${gradId})`} />
+                {/* Full body outline */}
+                <path d={d} fill={`url(#${gradId})`} />
+              </svg>
+            );
+          };
 
           return (
             <div className="su" style={{
               animationDelay: '.065s',
-              background: '#0D1A0D',
-              border: '1px solid rgba(0,200,83,0.2)',
-              borderRadius: 20,
-              padding: 20,
+              background: 'linear-gradient(160deg, #0B1310 0%, #090E0C 100%)',
+              border: '1px solid rgba(255,255,255,0.05)',
+              borderRadius: 24,
+              padding: '28px 24px 24px',
+              overflow: 'hidden',
+              position: 'relative',
             }}>
+              {/* Ambient glow — bottom right accent */}
+              <div style={{
+                position: 'absolute', bottom: -60, right: -40, width: 240, height: 240,
+                background: 'radial-gradient(ellipse, rgba(52,209,123,0.07) 0%, transparent 65%)',
+                pointerEvents: 'none',
+              }} />
+
               {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 4 }}>Physique Projection</div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>Visual Trajectory</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(52,209,123,0.45)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 7 }}>Physique Projection</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#F2F5F3', letterSpacing: '-.025em', lineHeight: 1.1 }}>Visual Trajectory</div>
                 </div>
-                <div style={{ background: '#1C2A1C', borderRadius: 99, padding: '6px 14px' }}>
-                  <span style={{ color: '#8A9A8A', fontSize: 13 }}>{proj.timeline}</span>
+                <div style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 99, padding: '6px 14px', marginTop: 2,
+                }}>
+                  <span style={{ color: '#5A6B5D', fontSize: 12, fontWeight: 500 }}>{proj.timeline}</span>
                 </div>
               </div>
 
-              {/* Two figures side by side */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'center' }}>
-                {/* NOW */}
+              {/* Silhouette comparison */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#556655', textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 8 }}>NOW</div>
-                  <div style={{ height: 200 }}>
-                    <BodyFigure bfVal={bf} muscleGroups={mg} isProjected={false} />
+                  <div style={{ fontSize: 10, fontWeight: 600, color: '#354038', textTransform: 'uppercase', letterSpacing: '.16em', marginBottom: 14 }}>Now</div>
+                  <div style={{ height: 190, opacity: 0.6 }}>
+                    <BodySilhouette bfPct={bf} isProjected={false} />
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: curr.color, marginTop: 8, lineHeight: 1.3 }}>{curr.label}</div>
-                  <div style={{ fontSize: 12, color: '#8A9A8A', marginTop: 2 }}>{bf}% body fat</div>
-                  {leanMassDisplay && <div style={{ fontSize: 11, color: '#556655', marginTop: 2 }}>{leanMassDisplay} lean</div>}
                 </div>
-
-                {/* Arrow */}
-                <div style={{ color: C.green, fontSize: 22, lineHeight: 1, paddingBottom: 40 }}>→</div>
-
-                {/* PROJECTED */}
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.14em', marginBottom: 8 }}>PROJECTED</div>
-                  <div style={{ height: 200, filter: 'drop-shadow(0 0 10px rgba(0,200,83,0.3))' }}>
-                    <BodyFigure bfVal={proj.projBFMid} muscleGroups={{}} isProjected={true} />
+                  <div style={{ fontSize: 10, fontWeight: 600, color: '#34D17B', textTransform: 'uppercase', letterSpacing: '.16em', marginBottom: 14 }}>Goal</div>
+                  <div style={{ height: 190, filter: 'drop-shadow(0 6px 24px rgba(52,209,123,0.22))' }}>
+                    <BodySilhouette bfPct={proj.projBFMid} isProjected={true} />
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginTop: 8, lineHeight: 1.3 }}>{proj.projLabel}</div>
-                  <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>
+                </div>
+              </div>
+
+              {/* Stage labels */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 28 }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: '#7A8A7D', letterSpacing: '-.01em', lineHeight: 1.3 }}>{curr.label}</div>
+                  <div style={{ fontSize: 12, color: '#3D4D3F', marginTop: 4 }}>{bf}% body fat</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#34D17B', letterSpacing: '-.01em', lineHeight: 1.3 }}>{proj.projLabel}</div>
+                  <div style={{ fontSize: 12, color: 'rgba(52,209,123,0.42)', marginTop: 4 }}>
                     ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`} body fat
                   </div>
-                  {projLeanMassDisplay && <div style={{ fontSize: 11, color: '#556655', marginTop: 2 }}>{projLeanMassDisplay} lean</div>}
                 </div>
               </div>
 
-              {/* Muscle legend — only if scan has muscle data */}
-              {hasMgData && (
-                <div style={{ display: 'flex', gap: 16, marginTop: 16, justifyContent: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(0,200,83,0.35)', border: '1px solid rgba(0,200,83,0.6)' }} />
-                    <span style={{ color: '#8A9A8A', fontSize: 11 }}>Strong</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(0,200,83,0.15)', border: '1px solid rgba(0,200,83,0.3)' }} />
-                    <span style={{ color: '#8A9A8A', fontSize: 11 }}>Average</span>
-                  </div>
-                  {hasWeak && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <div style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(255,107,53,0.3)', border: '1px solid rgba(255,107,53,0.55)' }} />
-                      <span style={{ color: '#8A9A8A', fontSize: 11 }}>Needs work</span>
+              {/* Hairline divider */}
+              <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent)', marginBottom: 20 }} />
+
+              {/* Summary */}
+              <p style={{ color: '#5A6B5D', fontSize: 13, lineHeight: 1.7, margin: '0 0 20px' }}>{proj.projCopy}</p>
+
+              {/* Details toggle */}
+              <button
+                onClick={() => setShowPhysiqueDetails(o => !o)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  color: '#3D4D3F', fontSize: 12, fontWeight: 500,
+                }}
+              >
+                <span>{showPhysiqueDetails ? 'Less' : 'Details'}</span>
+                <span style={{
+                  display: 'inline-block', fontSize: 9,
+                  transform: showPhysiqueDetails ? 'rotate(180deg)' : 'none',
+                  transition: 'transform .2s',
+                }}>▾</span>
+              </button>
+
+              {showPhysiqueDetails && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                  {result.confidence && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <div style={{
+                        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                        background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.red : C.gold,
+                      }} />
+                      <span style={{ color: '#3D4D3F', fontSize: 12 }}>
+                        {result.confidence} projection confidence
+                      </span>
                     </div>
                   )}
+                  {leanMassDisplay && (
+                    <div style={{ fontSize: 12, color: '#3D4D3F', marginBottom: 10 }}>
+                      Current lean mass: {leanMassDisplay}
+                    </div>
+                  )}
+                  <p style={{ color: '#2D3A2F', fontSize: 11, lineHeight: 1.65, margin: 0 }}>
+                    Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan and scan data.
+                  </p>
                 </div>
               )}
-
-              {/* Timeline dots */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginTop: 20 }}>
-                <div style={{ flex: 1, height: 2, background: C.green, borderRadius: 99 }} />
-                {[4, 8, 12].map((wk, i) => (
-                  <div key={wk} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '0 6px' }}>
-                    <div style={{
-                      width: 10, height: 10, borderRadius: '50%',
-                      background: i === 0 ? C.green : 'transparent',
-                      border: `2px solid ${i === 0 ? C.green : '#556655'}`,
-                    }} />
-                    <span style={{ color: '#556655', fontSize: 10, whiteSpace: 'nowrap' }}>Wk {wk}</span>
-                  </div>
-                ))}
-                <div style={{ flex: 1, height: 2, background: '#1C2A1C', borderRadius: 99 }} />
-              </div>
-
-              {/* Insight */}
-              <div style={{ marginTop: 16, padding: '12px 14px', background: 'rgba(0,0,0,0.3)', borderRadius: 12 }}>
-                <p style={{ color: '#8A9A8A', fontSize: 13, lineHeight: 1.6, margin: 0 }}>{proj.projCopy}</p>
-              </div>
-
-              {/* Confidence */}
-              {result.confidence && (
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
-                  <span style={{ color: '#556655', fontSize: 12 }}>
-                    Projection confidence: <strong style={{ color: C.white }}>{result.confidence}</strong> — based on scan data
-                  </span>
-                </div>
-              )}
-
-              {/* Disclaimer */}
-              <p style={{ marginTop: 12, color: '#3A4A3A', fontSize: 11, lineHeight: 1.6 }}>
-                Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan and scan data.
-              </p>
             </div>
           );
         })()}
