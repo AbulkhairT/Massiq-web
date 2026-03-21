@@ -2411,34 +2411,93 @@ function NutritionTab({ profile, activePlan, showToast }) {
     <div className="screen">
       <h1 className="screen-title">Nutrition</h1>
 
-      {/* ── Macro rings ── */}
-      <Card className="su glass">
-        <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 20 }}>
-          <MacroRing label="Protein" current={totals.protein} target={macros.protein} color={C.blue} />
-          <MacroRing label="Carbs"   current={totals.carbs}   target={macros.carbs}   color={C.gold} />
-          <MacroRing label="Fat"     current={totals.fat}     target={macros.fat}     color={C.orange} />
-        </div>
-        {/* Calorie summary */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 4px 0', borderTop: `1px solid ${C.border}` }}>
-          {[
-            { label: 'Eaten',     value: totals.calories, color: C.white },
-            { label: 'Target',    value: macros.calories, color: C.muted },
-            { label: 'Remaining', value: remaining,       color: remaining === 0 ? C.red : C.green },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: 'center', flex: 1 }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.label} kcal</div>
+      {/* ── Protein hero card ── */}
+      {(() => {
+        const protPct   = macros.protein > 0 ? Math.min(100, Math.round((totals.protein / macros.protein) * 100)) : 0;
+        const ringColor = protPct >= 80 ? C.green : protPct >= 50 ? C.gold : '#ef4444';
+        const protRem   = Math.max(0, macros.protein - totals.protein);
+        const hour      = new Date().getHours();
+        const lateEnough = hour >= 12; // midday check
+        const tip = protPct >= 80
+          ? `✓ On track with protein. Focus on hitting your calories.`
+          : lateEnough && protPct < 50
+            ? `⚡ You need ${protRem}g more protein today. Add chicken, eggs, or Greek yogurt to your next meal.`
+            : null;
+        const ringDeg = Math.round(protPct * 3.6);
+        return (
+          <Card className="su glass" style={{ background: '#0D1F0D', border: '1px solid rgba(0,200,83,0.2)' }}>
+            {/* Top row: number + ring */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 4 }}>Protein</div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4 }}>
+                  <span style={{ fontSize: 48, fontWeight: 800, color: C.white, lineHeight: 1 }}>{totals.protein}</span>
+                  <span style={{ fontSize: 14, color: C.muted, marginBottom: 6 }}>g</span>
+                </div>
+                <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>/ {macros.protein}g target</div>
+              </div>
+              {/* CSS conic ring */}
+              <div style={{
+                width: 80, height: 80, borderRadius: '50%', flexShrink: 0,
+                background: `conic-gradient(${ringColor} ${ringDeg}deg, rgba(255,255,255,0.07) ${ringDeg}deg)`,
+                position: 'relative',
+              }}>
+                <div style={{
+                  position: 'absolute', top: 8, left: 8, right: 8, bottom: 8,
+                  borderRadius: '50%', background: '#0D1F0D',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: ringColor }}>{protPct}%</span>
+                </div>
+              </div>
             </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 12, fontSize: 12, color: C.muted }}>
-          {profile?.goal === 'Bulk'
-            ? 'Calories are set above maintenance to support lean mass gain while keeping fat gain controlled.'
-            : profile?.goal === 'Cut'
-              ? 'Calories are set below maintenance with high protein to support fat loss while preserving muscle.'
-              : 'Targets are calibrated around maintenance with phase-aware protein and recovery floors.'}
-        </div>
-      </Card>
+            {/* Progress bar */}
+            <div style={{ height: 6, borderRadius: 99, background: 'rgba(255,255,255,0.08)', marginBottom: 6 }}>
+              <div style={{ height: '100%', borderRadius: 99, background: ringColor, width: `${protPct}%`, transition: 'width .4s ease' }} />
+            </div>
+            <div style={{ textAlign: 'right', fontSize: 12, color: protRem === 0 ? C.green : C.muted, marginBottom: tip ? 12 : 0 }}>
+              {protRem > 0 ? `${protRem}g remaining` : '✓ Target hit'}
+            </div>
+            {tip && (
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, paddingTop: 10, borderTop: `1px solid rgba(255,255,255,0.06)` }}>{tip}</div>
+            )}
+          </Card>
+        );
+      })()}
+
+      {/* ── Calories row ── */}
+      <div className="su" style={{ animationDelay: '.02s', display: 'flex', alignItems: 'center', background: C.cardElevated, borderRadius: 16, padding: '12px 16px' }}>
+        {[
+          { label: 'Eaten',     value: `${(totals.calories || 0).toLocaleString()} kcal`, color: C.white },
+          { label: 'Target',    value: `${(macros.calories || 2000).toLocaleString()} kcal`, color: C.muted },
+          { label: 'Remaining', value: `${Math.abs(remaining).toLocaleString()} kcal`, color: remaining > 0 ? C.green : '#ef4444' },
+        ].map((s, i) => (
+          <div key={s.label} style={{ flex: 1, textAlign: 'center', borderLeft: i > 0 ? `1px solid ${C.border}` : 'none' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: s.color }}>{s.value}</div>
+            <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{i === 2 && remaining < 0 ? 'Over target' : s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Carbs & Fat (informational) ── */}
+      <div className="su" style={{ animationDelay: '.03s', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {[
+          { label: 'Carbs', eaten: totals.carbs,  target: macros.carbs,  note: 'Adjust based on energy levels' },
+          { label: 'Fat',   eaten: totals.fat,    target: macros.fat,    note: 'Focus on quality sources' },
+        ].map(m => (
+          <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>{m.label}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{m.eaten}g eaten</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>~{m.target}g suggested</div>
+            <div style={{ fontSize: 11, color: C.dimmed, marginTop: 6, lineHeight: 1.4 }}>{m.note}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Priority reminder ── */}
+      <div className="su" style={{ animationDelay: '.04s', textAlign: 'center', fontSize: 12, color: C.dimmed, padding: '4px 0 2px' }}>
+        Protein is your #1 priority. Calories and protein determine results.
+      </div>
 
       {/* ── Daily Suggestions ── */}
       <div className="su" style={{ animationDelay: '.05s' }}>
@@ -2769,7 +2828,10 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           progressPct={phasePct}
           tone={phaseColor}
           metrics={[
-            { label: 'Body Fat', value: hasScanned ? `${latestScan.bodyFat}% → ${targetBF}%` : `— → ${targetBF}%` },
+            ...(hasScanned
+              ? [{ label: 'Body Fat', value: `${latestScan.bodyFat}% → ${targetBF}%` }]
+              : [{ label: '📷 First Scan', value: 'Required' }]
+            ),
             { label: 'Training', value: `${trainDays} sessions` },
             { label: 'Cardio', value: `${cardioDays} sessions` },
             { label: 'Sleep', value: `${sleepHrs} h` },
