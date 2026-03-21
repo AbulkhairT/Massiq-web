@@ -2147,29 +2147,30 @@ function RecipeModal({ meal, profile, onClose, onLog, onSwap }) {
             </span>
             <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer' }}>×</button>
           </div>
-          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{meal.name}</h2>
-          {(meal.description || meal.whyNow || meal.whyThisMeal) && (
-            <p style={{ fontSize: 14, color: C.muted, marginBottom: 18, lineHeight: 1.6 }}>
-              {meal.description || meal.whyNow || meal.whyThisMeal}
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>{meal.name}</h2>
+          {/* Why this meal */}
+          {(meal.whyThisMeal || meal.whyNow) && (
+            <p style={{ fontSize: 13, color: C.green, fontStyle: 'italic', marginBottom: 12, lineHeight: 1.5 }}>
+              {meal.whyThisMeal || meal.whyNow}
             </p>
           )}
-          {/* 2×2 macro grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+          {/* Compact macro row */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14, padding: '10px 12px', background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}` }}>
             {[
-              { label: 'Calories', value: meal.calories || 0, unit: 'kcal', color: C.orange },
-              { label: 'Protein',  value: meal.protein  || 0, unit: 'g',    color: C.blue },
-              { label: 'Carbs',    value: meal.carbs    || 0, unit: 'g',    color: C.gold },
-              { label: 'Fat',      value: meal.fat      || 0, unit: 'g',    color: C.muted },
-            ].map(t => (
-              <div key={t.label} style={{ background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${C.border}` }}>
-                <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 600 }}>{t.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: t.color, lineHeight: 1.2 }}>{t.value}</div>
-                <div style={{ fontSize: 11, color: C.dimmed }}>{t.unit}</div>
-              </div>
-            ))}
+              { label: `${meal.calories || 0} kcal`, color: C.orange },
+              { label: `P ${meal.protein || 0}g`,    color: C.blue },
+              { label: `C ${meal.carbs || 0}g`,      color: C.gold },
+              { label: `F ${meal.fat || 0}g`,        color: C.muted },
+            ].map((t, i) => (
+              <span key={i} style={{ fontSize: 13, fontWeight: 700, color: t.color }}>{t.label}</span>
+            )).reduce((acc, el, i) => i === 0 ? [el] : [...acc, <span key={`d${i}`} style={{ color: C.border, fontSize: 13 }}>·</span>, el], [])}
           </div>
+          {/* Description if separate from whyThisMeal */}
+          {meal.description && meal.description !== meal.whyThisMeal && meal.description !== meal.whyNow && (
+            <p style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.6 }}>{meal.description}</p>
+          )}
           {meal.prepTime && (
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>⏱ {meal.prepTime}</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>⏱ {meal.prepTime}</div>
           )}
           {loading ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
@@ -2454,15 +2455,20 @@ function TodayWorkoutCard() {
 }
 
 /* Main Nutrition Tab */
-function NutritionTab({ profile, activePlan, showToast }) {
+function NutritionTab({ profile, activePlan, showToast, setTab }) {
   const today = new Date().toISOString().slice(0, 10);
   const [meals,        setMeals]        = useState(() => LS.get(LS_KEYS.meals(today), []));
   const [showModal,    setShowModal]    = useState(false);
   const [selectedMeal, setSelectedMeal] = useState(null);
-  const [swappingId,   setSwappingId]   = useState(null);
-  const { suggestions: rawSuggestions, loading: suggestionsLoading, error: suggestionsError, retry: retrySuggestions } = useAISuggestions(profile, activePlan, meals);
-  const [suggestions, setSuggestions] = useState([]);
-  useEffect(() => { if (rawSuggestions.length > 0) setSuggestions(rawSuggestions); }, [rawSuggestions.length]);
+  const [loggedMeals,  setLoggedMeals]  = useState(() => LS.get(LS_KEYS.logged(today), {}));
+
+  // Pull today's meals from the stored meal plan
+  const todayPlanDay = (() => {
+    const stored = LS.get(LS_KEYS.mealplan, null);
+    if (!stored?.days) return null;
+    const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    return stored.days.find(d => d.day === dayName) || null;
+  })();
 
   const macros = getActiveTargets(activePlan, profile);
 
@@ -2477,13 +2483,6 @@ function NutritionTab({ profile, activePlan, showToast }) {
     LS.set(LS_KEYS.meals(today), updated);
   };
 
-  const logSuggestion = (s) => {
-    const meal = sanitizeMeal({ id: Date.now(), name: s.name, category: s.time, calories: s.calories, protein: s.protein, carbs: s.carbs, fat: s.fat }, macros, profile);
-    const updated = [...meals, meal];
-    setMeals(updated);
-    LS.set(LS_KEYS.meals(today), updated);
-  };
-
   const handleLogMeal = (m) => {
     const meal = sanitizeMeal({ id: Date.now(), name: m.name, category: m.mealType || m.time || m.category || 'Meal', calories: m.calories || 0, protein: m.protein || 0, carbs: m.carbs || 0, fat: m.fat || 0 }, macros, profile);
     const updated = [...meals, meal];
@@ -2493,17 +2492,17 @@ function NutritionTab({ profile, activePlan, showToast }) {
     showToast?.('✓ Meal logged');
   };
 
-  const handleSwapSuggestion = async (s) => {
-    setSwappingId(s.id);
-    try {
-      const newMeal = await swapMealAPI(s, profile, activePlan);
-      const safeMeal = sanitizeMeal(newMeal, macros, profile) || newMeal;
-      setSuggestions(prev => prev.map(sg => sg.id === s.id ? { ...sg, ...safeMeal, id: s.id, icon: safeMeal.icon || sg.icon } : sg));
-      showToast?.('✓ Meal swapped');
-    } catch (err) {
-      console.error('Swap failed:', err);
-    }
-    setSwappingId(null);
+  // Log a plan meal to today's log
+  const logPlanMeal = (key, label, meal, dayName) => {
+    const logKey = `${dayName}-${key}`;
+    const entry = sanitizeMeal({ id: Date.now(), name: meal.name, category: label, calories: meal.calories || 0, protein: meal.protein || 0, carbs: meal.carbs || 0, fat: meal.fat || 0 }, macros, profile);
+    const updatedMeals = [...meals, entry];
+    setMeals(updatedMeals);
+    LS.set(LS_KEYS.meals(today), updatedMeals);
+    const updatedLogged = { ...loggedMeals, [logKey]: true };
+    setLoggedMeals(updatedLogged);
+    LS.set(LS_KEYS.logged(today), updatedLogged);
+    showToast?.('✓ Logged');
   };
 
   const remaining = Math.max(0, macros.calories - totals.calories);
@@ -2595,133 +2594,97 @@ function NutritionTab({ profile, activePlan, showToast }) {
         ))}
       </div>
 
-      {/* ── Priority reminder ── */}
-      <div className="su" style={{ animationDelay: '.04s', textAlign: 'center', fontSize: 12, color: C.dimmed, padding: '4px 0 2px' }}>
-        Protein is your #1 priority. Calories and protein determine results.
-      </div>
+      {/* ── TODAY'S MEALS (from plan) ── */}
+      {(() => {
+        const MEAL_KEYS = [
+          { key: 'breakfast', label: 'Breakfast', icon: '🌅' },
+          { key: 'lunch',     label: 'Lunch',     icon: '☀️'  },
+          { key: 'dinner',    label: 'Dinner',    icon: '🌙'  },
+          { key: 'snack',     label: 'Snack',     icon: '🍎'  },
+        ];
+        const hour = new Date().getHours();
+        const missedBreakfast = hour >= 14 && todayPlanDay?.breakfast?.name && !loggedMeals[`${todayPlanDay.day}-breakfast`];
 
-      {/* ── Daily Suggestions ── */}
-      <div className="su" style={{ animationDelay: '.05s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Today's Suggestions</div>
-        {(() => {
-          const scanHistory = LS.get(LS_KEYS.scanHistory, []);
-          const lastScan    = scanHistory[scanHistory.length - 1];
-          const phase       = activePlan?.phase || profile?.goal || 'your current';
-          const kcal        = macros?.calories;
-          const weakPoints  = lastScan?.focusAreas?.length ? lastScan.focusAreas.slice(0, 3).join(', ') : null;
-          return (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: weakPoints ? 3 : 0 }}>
-                Generated for your <span style={{ color: C.green, fontWeight: 600 }}>{phase} phase</span>{kcal ? ` · ${kcal.toLocaleString()} kcal target` : ''}
-              </div>
-              {weakPoints && (
-                <div style={{ fontSize: 12, color: C.muted }}>
-                  Based on your weak points: <span style={{ color: C.white, fontWeight: 500 }}>{weakPoints}</span>
-                </div>
+        return (
+          <div className="su" style={{ animationDelay: '.05s' }}>
+            {/* Section header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>Today's Meals</div>
+              {todayPlanDay && (
+                <button className="bp" onClick={() => setTab?.('plan')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dimmed, fontSize: 12, padding: 0 }}>
+                  From your plan →
+                </button>
               )}
             </div>
-          );
-        })()}
-        {suggestionsError && (
-          <div style={{ marginBottom: 10, background: `${C.gold}14`, border: `1px solid ${C.gold}44`, borderRadius: 12, padding: '10px 12px' }}>
-            <div style={{ color: C.gold, fontSize: 12, lineHeight: 1.5, marginBottom: 8 }}>{suggestionsError}</div>
-            <button className="bp" onClick={retrySuggestions} style={{ fontSize: 12, color: C.white, background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 9, padding: '6px 10px' }}>
-              Refresh recommendations
-            </button>
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
-          {suggestionsLoading ? (
-            [1,2,3].map(i => (
-              <div key={i} className="skeleton" style={{ flexShrink: 0, width: 180, height: 220, borderRadius: 18 }} />
-            ))
-          ) : suggestions.map(s => {
-            const isSwapping = swappingId === s.id;
-            return (
-              <div key={s.id} style={{
-                background: C.card, borderRadius: 16, padding: 15,
-                border: `1px solid ${isSwapping ? C.greenDim : C.border}`, flexShrink: 0, width: 180,
-                display: 'flex', flexDirection: 'column', gap: 8, position: 'relative',
-                opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
-              }}>
-                {/* swap button */}
-                <button className="bp" onClick={() => !isSwapping && handleSwapSuggestion(s)} style={{
-                  position: 'absolute', top: 10, right: 10, background: C.cardElevated,
-                  border: `1px solid ${C.border}`, color: C.muted, width: 26, height: 26,
-                  borderRadius: '50%', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  zIndex: 1,
-                }}>
-                  {isSwapping ? <span style={{ fontSize: 10, animation: 'spin .8s linear infinite', display: 'inline-block' }}>⟳</span> : '↺'}
-                </button>
-                {/* card body — tap to open recipe */}
-                <div className="bp" onClick={() => setSelectedMeal({ ...s, mealType: s.time })} style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer', flex: 1 }}>
-                  <div style={{ fontSize: 28 }}>{s.icon}</div>
-                  <div>
-                    <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{s.time}</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4, paddingRight: 24 }}>{s.name}</div>
-                    {s.whyNow && <div style={{ fontSize: 11, color: C.green, lineHeight: 1.4, marginBottom: 6, fontStyle: 'italic' }}>{s.whyNow}</div>}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                      {[
-                        { label: `${s.calories} kcal`, color: C.orange },
-                        { label: `P ${s.protein}g`,    color: C.blue },
-                        { label: `C ${s.carbs}g`,      color: C.gold },
-                        { label: `F ${s.fat}g`,        color: C.muted },
-                      ].map(chip => (
-                        <span key={chip.label} style={{ fontSize: 10, fontWeight: 600, color: chip.color, background: `${chip.color}18`, padding: '3px 7px', borderRadius: 99 }}>
-                          {chip.label}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <button className="bp" onClick={() => logSuggestion(s)} style={{
-                  width: '100%', padding: '9px 0', borderRadius: 11, marginTop: 'auto',
-                  background: C.greenBg, color: C.green, border: `1px solid ${C.greenDim}`,
-                  fontSize: 12, fontWeight: 620, cursor: 'pointer',
-                }}>+ Log</button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
-      {/* ── Today's meals ── */}
-      <div className="su" style={{ animationDelay: '.1s' }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Today's Meals</div>
-        {meals.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '36px 0', color: C.muted }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>🍽️</div>
-            <div style={{ fontSize: 14 }}>No meals logged yet</div>
+            {/* No plan yet */}
+            {!todayPlanDay ? (
+              <div style={{ background: C.cardElevated, borderRadius: 16, padding: '20px 18px', border: `1px solid ${C.border}`, textAlign: 'center' }}>
+                <div style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.6 }}>
+                  No meal plan yet. Generate your weekly plan in the Plan tab.
+                </div>
+                <button className="bp" onClick={() => setTab?.('plan')} style={{
+                  background: C.greenBg, border: `1px solid ${C.greenDim}`, color: C.green,
+                  fontSize: 13, fontWeight: 600, padding: '8px 18px', borderRadius: 10, cursor: 'pointer',
+                }}>Go to Plan tab →</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {MEAL_KEYS.map(({ key, label, icon }) => {
+                  const meal = todayPlanDay[key];
+                  if (!meal?.name) return null;
+                  const logKey = `${todayPlanDay.day}-${key}`;
+                  const isLogged = !!loggedMeals[logKey];
+                  return (
+                    <div key={key} className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '11px 4px', borderBottom: `1px solid rgba(255,255,255,0.05)`, cursor: 'pointer',
+                    }}>
+                      <span style={{ fontSize: 18, flexShrink: 0, width: 24, textAlign: 'center' }}>{icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: isLogged ? C.dimmed : C.white, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meal.name}</div>
+                        <div style={{ fontSize: 11, color: C.dimmed, marginTop: 2 }}>P {meal.protein}g · C {meal.carbs}g · F {meal.fat}g</div>
+                      </div>
+                      {isLogged ? (
+                        <span style={{ fontSize: 12, fontWeight: 600, color: C.green, flexShrink: 0 }}>✓ Logged</span>
+                      ) : (
+                        <button className="bp" onClick={e => { e.stopPropagation(); logPlanMeal(key, label, meal, todayPlanDay.day); }} style={{
+                          background: C.cardElevated, border: `1px solid ${C.border}`, color: C.muted,
+                          fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', flexShrink: 0,
+                        }}>Log</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {missedBreakfast && (
+              <div style={{ marginTop: 12, fontSize: 12, color: C.dimmed, fontStyle: 'italic' }}>
+                Missed breakfast? Log it manually using the + button.
+              </div>
+            )}
           </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        );
+      })()}
+
+      {/* ── Manually logged meals ── */}
+      {meals.length > 0 && (
+        <div className="su" style={{ animationDelay: '.1s' }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: C.muted, marginBottom: 10 }}>Also logged today</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {meals.map(m => (
               <div key={m.id} className="bp" onClick={() => setSelectedMeal({ ...m, mealType: m.category || 'Meal' })} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
-                background: C.card, borderRadius: 14, padding: '12px 14px',
+                background: C.card, borderRadius: 14, padding: '11px 14px',
                 border: `1px solid ${C.border}`, cursor: 'pointer',
               }}>
-                {/* Icon / Thumbnail */}
-                <div style={{
-                  width: 40, height: 40, borderRadius: 10,
-                  background: C.greenBg, border: `1px solid ${C.greenDim}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
-                  overflow: 'hidden',
-                }}>
-                  {m.photoThumb
-                    ? <img src={m.photoThumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                    : '🍽️'}
-                </div>
-                {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 600, color: C.white, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-                    P {m.protein}g · C {m.carbs}g · F {m.fat}g
-                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>P {m.protein}g · C {m.carbs}g · F {m.fat}g</div>
                 </div>
-                {/* Right: calories + delete */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                  <span style={{ fontSize: 15, fontWeight: 700, color: C.orange }}>{m.calories}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: C.orange }}>{m.calories}</span>
                   <button className="bp" onClick={e => { e.stopPropagation(); deleteMeal(m.id); }} style={{
                     background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', lineHeight: 1, padding: 2,
                   }}>×</button>
@@ -2729,8 +2692,8 @@ function NutritionTab({ profile, activePlan, showToast }) {
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── Floating + button ── */}
       <button className="bp" onClick={() => setShowModal(true)} style={{
@@ -2757,11 +2720,7 @@ function NutritionTab({ profile, activePlan, showToast }) {
           profile={profile}
           onClose={() => setSelectedMeal(null)}
           onLog={() => handleLogMeal(selectedMeal)}
-          onSwap={() => {
-            const sg = suggestions.find(s => s.name === selectedMeal.name);
-            setSelectedMeal(null);
-            if (sg) handleSwapSuggestion(sg);
-          }}
+          onSwap={() => setSelectedMeal(null)}
         />
       )}
     </div>
@@ -3203,21 +3162,47 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
       {/* 8 ── Weekly Meal Plan ── */}
       {mealPlanDays && (
         <div className="su" style={{ animationDelay: '.28s' }}>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>Weekly Meal Plan</div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>Weekly Meal Plan</div>
 
-          {/* Day tabs */}
-          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, marginBottom: 16 }}>
-            {mealPlanDays.map((d, i) => (
-              <button key={i} className="bp" onClick={() => setActiveDayIdx(i)} style={{
-                flexShrink: 0, padding: '6px 14px', borderRadius: 99, border: `1.5px solid ${activeDayIdx === i ? C.green : C.border}`,
-                background: activeDayIdx === i ? C.greenBg : 'transparent',
-                color: activeDayIdx === i ? C.green : C.muted,
-                fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              }}>
-                {d.day.slice(0, 3)}
-                {d.isTrainingDay && <span style={{ marginLeft: 4, fontSize: 10 }}>💪</span>}
-              </button>
-            ))}
+          {/* Weekly summary */}
+          {(() => {
+            const KEYS = ['breakfast','lunch','dinner','snack'];
+            let totalProt = 0, plannedCount = 0, trainCount = 0;
+            mealPlanDays.forEach(d => {
+              if (d.isTrainingDay) trainCount++;
+              KEYS.forEach(k => { if (d[k]?.protein) { totalProt += d[k].protein; plannedCount++; } });
+            });
+            const avgProt = mealPlanDays.length ? Math.round(totalProt / mealPlanDays.length) : 0;
+            return (
+              <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+                {[
+                  { label: `${avgProt}g avg protein` },
+                  { label: `${trainCount} training days` },
+                  { label: `${plannedCount} meals` },
+                ].map((s, i) => (
+                  <span key={i} style={{ fontSize: 11, color: C.dimmed, background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 99, padding: '3px 10px' }}>{s.label}</span>
+                ))}
+              </div>
+            );
+          })()}
+
+          {/* Day selector */}
+          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 8, marginBottom: 16 }}>
+            {mealPlanDays.map((d, i) => {
+              const isToday = d.day === new Date().toLocaleDateString('en-US', { weekday: 'long' });
+              const isActive = activeDayIdx === i;
+              return (
+                <button key={i} className="bp" onClick={() => setActiveDayIdx(i)} style={{
+                  flexShrink: 0, padding: '7px 13px', borderRadius: 99,
+                  border: `1.5px solid ${isActive ? C.green : isToday ? `${C.green}44` : C.border}`,
+                  background: isActive ? C.greenBg : 'transparent',
+                  color: isActive ? C.green : isToday ? C.white : C.muted,
+                  fontSize: 12, fontWeight: isActive || isToday ? 700 : 500, cursor: 'pointer',
+                }}>
+                  {d.day.slice(0, 3)}{d.isTrainingDay ? ' 💪' : ''}
+                </button>
+              );
+            })}
           </div>
 
           {/* Active day meals */}
@@ -3226,72 +3211,74 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             if (!day) return null;
             const today2 = todayStr();
             const MEAL_KEYS = [
-              { key: 'breakfast', label: 'Breakfast', icon: '🌅' },
-              { key: 'lunch',     label: 'Lunch',     icon: '☀️' },
-              { key: 'dinner',    label: 'Dinner',    icon: '🌙' },
-              { key: 'snack',     label: 'Snack',     icon: '🍎' },
+              { key: 'breakfast', label: 'Breakfast', color: '#6FA7FF' },
+              { key: 'lunch',     label: 'Lunch',     color: '#FFD60A' },
+              { key: 'dinner',    label: 'Dinner',    color: '#34D17B' },
+              { key: 'snack',     label: 'Snack',     color: '#66746B'  },
             ];
+
+            // Daily totals
+            const dayKcal = MEAL_KEYS.reduce((s, { key }) => s + (day[key]?.calories || 0), 0);
+            const dayProt = MEAL_KEYS.reduce((s, { key }) => s + (day[key]?.protein  || 0), 0);
+
             return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {MEAL_KEYS.map(({ key, label, icon }) => {
-                  const meal = day[key];
-                  if (!meal || !meal.name) return null;
-                  const logKey = `${day.day}-${key}`;
-                  const isLogged = loggedMeals[logKey];
-                  const isSwapping = swappingKey === logKey;
-                  // Warning thresholds (scaled to user's calorie target)
-                  const cals       = macros.calories || 2000;
-                  const mealCaps   = { breakfast: cals * 0.32, lunch: cals * 0.37, dinner: cals * 0.37, snack: cals * 0.20 };
-                  const isHighCal  = meal?.calories > mealCaps[key];
-                  return (
-                    <div key={key} style={{
-                      background: C.card, borderRadius: 16, padding: 14,
-                      border: `1px solid ${isLogged ? C.greenDim : C.border}`,
-                      opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                        <div style={{
-                          width: 36, height: 36, borderRadius: 10, background: C.cardElevated,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
-                        }}>{icon}</div>
-                        <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                            <div style={{ fontSize: 10, color: C.green, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
-                            {isHighCal && <span style={{ fontSize: 9, fontWeight: 700, color: C.orange, background: `${C.orange}18`, padding: '1px 6px', borderRadius: 99 }}>⚠ High cal</span>}
-                          </div>
-                          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 4 }}>{meal.name}</div>
-                          <div style={{ display: 'flex', gap: 8, fontSize: 11, color: C.muted }}>
-                            <span style={{ color: C.orange }}>{meal.calories} kcal</span>
-                            <span>P {meal.protein}g</span>
-                            <span>C {meal.carbs}g</span>
-                            <span>F {meal.fat}g</span>
-                          </div>
+              <>
+                {/* Daily summary bar */}
+                <div style={{ display: 'flex', gap: 12, marginBottom: 12, padding: '8px 12px', background: C.cardElevated, borderRadius: 10, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: C.muted }}><span style={{ color: C.orange, fontWeight: 700 }}>{dayKcal}</span> kcal</span>
+                  <span style={{ color: C.border }}>·</span>
+                  <span style={{ fontSize: 12, color: C.muted }}><span style={{ color: C.blue, fontWeight: 700 }}>{dayProt}g</span> protein</span>
+                  <span style={{ color: C.border }}>·</span>
+                  <span style={{ fontSize: 12, color: day.isTrainingDay ? C.green : C.dimmed }}>{day.isTrainingDay ? '💪 Training' : 'Rest day'}</span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {MEAL_KEYS.map(({ key, label, color }) => {
+                    const meal = day[key];
+                    if (!meal?.name) return null;
+                    const logKey = `${day.day}-${key}`;
+                    const isLogged = !!loggedMeals[logKey];
+                    const isSwapping = swappingKey === logKey;
+                    return (
+                      <div key={key} style={{
+                        background: C.card, borderRadius: 14,
+                        border: `1px solid ${isLogged ? C.greenDim : C.border}`,
+                        borderLeft: `3px solid ${isLogged ? C.green : color}`,
+                        opacity: isSwapping ? 0.6 : 1, transition: 'opacity .2s ease',
+                        overflow: 'hidden',
+                      }}>
+                        {/* Top row: label + calories */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px 4px' }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '.08em' }}>{label}</span>
+                          <span style={{ fontSize: 12, color: C.muted }}>{meal.calories} kcal</span>
                         </div>
-                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                          {/* Swap button */}
+                        {/* Meal name — tappable */}
+                        <div className="bp" onClick={() => setSelectedMeal({ ...meal, mealType: label })} style={{ padding: '0 14px 8px', cursor: 'pointer' }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.3, marginBottom: 3 }}>
+                            {isLogged && <span style={{ color: C.green, marginRight: 5 }}>✓</span>}
+                            {meal.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: C.dimmed }}>P {meal.protein}g · C {meal.carbs}g · F {meal.fat}g</div>
+                        </div>
+                        {/* Actions */}
+                        <div style={{ display: 'flex', gap: 0, borderTop: `1px solid rgba(255,255,255,0.04)` }}>
                           <button className="bp" onClick={async () => {
                             if (isSwapping) return;
                             setSwappingKey(logKey);
                             try {
                               const newMeal = await swapMealAPI({ ...meal, mealType: label }, profile, activePlan);
-                              const updated = mealPlanDays.map((d2, i2) => {
-                                if (i2 !== activeDayIdx) return d2;
-                                return { ...d2, [key]: { ...d2[key], ...newMeal } };
-                              });
+                              const updated = mealPlanDays.map((d2, i2) => i2 !== activeDayIdx ? d2 : { ...d2, [key]: { ...d2[key], ...newMeal } });
                               setMealPlanDays(updated);
-                              const stored = LS.get(LS_KEYS.mealplan, {});
-                              LS.set(LS_KEYS.mealplan, { ...stored, days: updated });
+                              LS.set(LS_KEYS.mealplan, { ...LS.get(LS_KEYS.mealplan, {}), days: updated });
                               showToast?.('✓ Meal swapped');
                             } catch { showToast?.('Swap failed'); }
                             setSwappingKey(null);
                           }} style={{
-                            background: C.cardElevated, border: `1px solid ${C.border}`, color: C.muted,
-                            width: 28, height: 28, borderRadius: '50%', fontSize: 13, cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            flex: 1, padding: '8px 0', background: 'none', border: 'none', borderRight: `1px solid rgba(255,255,255,0.04)`,
+                            color: C.dimmed, fontSize: 12, fontWeight: 600, cursor: 'pointer',
                           }}>
-                            {isSwapping ? <span style={{ fontSize: 10, animation: 'spin .8s linear infinite', display: 'inline-block' }}>⟳</span> : '↺'}
+                            {isSwapping ? '⟳ Swapping…' : '↺ Swap'}
                           </button>
-                          {/* Log button */}
                           <button className="bp" onClick={() => {
                             if (isLogged) return;
                             const todayMeals = LS.get(LS_KEYS.meals(today2), []);
@@ -3302,19 +3289,18 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
                             LS.set(LS_KEYS.logged(today2), updated);
                             showToast?.('✓ Logged');
                           }} style={{
-                            background: isLogged ? C.greenBg : C.cardElevated,
-                            border: `1px solid ${isLogged ? C.greenDim : C.border}`,
-                            color: isLogged ? C.green : C.muted,
-                            padding: '4px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: isLogged ? 'default' : 'pointer',
+                            flex: 1, padding: '8px 0', background: 'none', border: 'none',
+                            color: isLogged ? C.green : C.muted, fontSize: 12, fontWeight: 600,
+                            cursor: isLogged ? 'default' : 'pointer',
                           }}>
-                            {isLogged ? '✓' : 'Log'}
+                            {isLogged ? '✓ Logged' : 'Log →'}
                           </button>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              </>
             );
           })()}
         </div>
@@ -4693,111 +4679,100 @@ Return ONLY this JSON (no markdown, no extra text):
             );
           };
 
+          // Shorten stage labels for cleaner display
+          const SHORT = { 'Athletic & Defined': 'Athletic', 'Athletic & Toned': 'Athletic', 'Lean & Active': 'Lean', 'Healthy & Active': 'Active', 'Building Phase': 'Building', 'Heavy Bulk': 'Heavy' };
+          const shortLabel = (l) => SHORT[l] || l;
+
+          // One sharp summary line keyed to goal
+          const goalKey = (profile?.goal || '').toLowerCase();
+          const punchyCopy = goalKey === 'cut'
+            ? 'Stay consistent — you\'re trending toward a visibly leaner physique.'
+            : (goalKey === 'bulk' || goalKey === 'build')
+              ? 'Lean bulk in progress — muscle density builds as body fat stays controlled.'
+              : goalKey === 'recomp'
+                ? 'Slow and sustainable — fat reduces, muscle improves, week by week.'
+                : 'Consistency locks this in. Your stage remains stable by design.';
+
           return (
             <div className="su" style={{
               animationDelay: '.065s',
-              background: 'linear-gradient(160deg, #0B1310 0%, #090E0C 100%)',
-              border: '1px solid rgba(255,255,255,0.05)',
+              background: 'linear-gradient(170deg, #0D1511 0%, #0A0F0C 100%)',
+              border: '1px solid rgba(255,255,255,0.06)',
               borderRadius: 24,
-              padding: '28px 24px 24px',
-              overflow: 'hidden',
-              position: 'relative',
+              padding: '26px 22px 22px',
             }}>
-              {/* Ambient glow — bottom right accent */}
-              <div style={{
-                position: 'absolute', bottom: -60, right: -40, width: 240, height: 240,
-                background: 'radial-gradient(ellipse, rgba(52,209,123,0.07) 0%, transparent 65%)',
-                pointerEvents: 'none',
-              }} />
-
               {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(52,209,123,0.45)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 7 }}>Physique Projection</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: '#F2F5F3', letterSpacing: '-.025em', lineHeight: 1.1 }}>Visual Trajectory</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(52,209,123,0.4)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 6 }}>Physique Projection</div>
+                  <div style={{ fontSize: 21, fontWeight: 700, color: '#ECEEED', letterSpacing: '-.025em', lineHeight: 1.1 }}>Visual Trajectory</div>
                 </div>
-                <div style={{
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: 99, padding: '6px 14px', marginTop: 2,
-                }}>
-                  <span style={{ color: '#5A6B5D', fontSize: 12, fontWeight: 500 }}>{proj.timeline}</span>
+                <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 99, padding: '5px 13px', marginTop: 2 }}>
+                  <span style={{ color: '#4D5C50', fontSize: 11, fontWeight: 500 }}>{proj.timeline}</span>
                 </div>
               </div>
 
-              {/* Silhouette comparison */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+              {/* Silhouettes — projected is taller and more opaque (the hero) */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', alignItems: 'flex-end', gap: 12, marginBottom: 16 }}>
+                {/* Current — muted, smaller */}
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: '#354038', textTransform: 'uppercase', letterSpacing: '.16em', marginBottom: 14 }}>Now</div>
-                  <div style={{ height: 190, opacity: 0.6 }}>
+                  <div style={{ fontSize: 9, fontWeight: 600, color: '#2E3A30', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>Today</div>
+                  <div style={{ height: 160, opacity: 0.38 }}>
                     <BodySilhouette bfPct={bf} isProjected={false} />
                   </div>
                 </div>
+                {/* Projected — dominant, full size */}
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: '#34D17B', textTransform: 'uppercase', letterSpacing: '.16em', marginBottom: 14 }}>Goal</div>
-                  <div style={{ height: 190, filter: 'drop-shadow(0 6px 24px rgba(52,209,123,0.22))' }}>
+                  <div style={{ fontSize: 9, fontWeight: 600, color: 'rgba(52,209,123,0.55)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>In ~{proj.timeline}</div>
+                  <div style={{ height: 200 }}>
                     <BodySilhouette bfPct={proj.projBFMid} isProjected={true} />
                   </div>
                 </div>
               </div>
 
               {/* Stage labels */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 28 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22, paddingTop: 4 }}>
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: '#7A8A7D', letterSpacing: '-.01em', lineHeight: 1.3 }}>{curr.label}</div>
-                  <div style={{ fontSize: 12, color: '#3D4D3F', marginTop: 4 }}>{bf}% body fat</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#505F52', letterSpacing: '-.01em' }}>{shortLabel(curr.label)}</div>
+                  <div style={{ fontSize: 11, color: '#3A4A3C', marginTop: 3 }}>{bf}%</div>
                 </div>
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: '#34D17B', letterSpacing: '-.01em', lineHeight: 1.3 }}>{proj.projLabel}</div>
-                  <div style={{ fontSize: 12, color: 'rgba(52,209,123,0.42)', marginTop: 4 }}>
-                    ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`} body fat
+                  <div style={{ fontSize: 16, fontWeight: 700, color: '#34D17B', letterSpacing: '-.02em' }}>{shortLabel(proj.projLabel)}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(52,209,123,0.38)', marginTop: 3 }}>
+                    ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`}
                   </div>
                 </div>
               </div>
 
-              {/* Hairline divider */}
-              <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent)', marginBottom: 20 }} />
+              {/* Hairline */}
+              <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent)', marginBottom: 18 }} />
 
-              {/* Summary */}
-              <p style={{ color: '#5A6B5D', fontSize: 13, lineHeight: 1.7, margin: '0 0 20px' }}>{proj.projCopy}</p>
+              {/* Punchy summary */}
+              <p style={{ color: '#4D5C50', fontSize: 13, lineHeight: 1.65, margin: '0 0 18px', fontStyle: 'italic' }}>{punchyCopy}</p>
 
               {/* Details toggle */}
-              <button
-                onClick={() => setShowPhysiqueDetails(o => !o)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                  color: '#3D4D3F', fontSize: 12, fontWeight: 500,
-                }}
-              >
+              <button onClick={() => setShowPhysiqueDetails(o => !o)} style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                color: '#2E3A30', fontSize: 12, fontWeight: 500,
+              }}>
                 <span>{showPhysiqueDetails ? 'Less' : 'Details'}</span>
-                <span style={{
-                  display: 'inline-block', fontSize: 9,
-                  transform: showPhysiqueDetails ? 'rotate(180deg)' : 'none',
-                  transition: 'transform .2s',
-                }}>▾</span>
+                <span style={{ display: 'inline-block', fontSize: 9, transform: showPhysiqueDetails ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>▾</span>
               </button>
 
               {showPhysiqueDetails && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)' }}>
                   {result.confidence && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                      <div style={{
-                        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                        background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.red : C.gold,
-                      }} />
-                      <span style={{ color: '#3D4D3F', fontSize: 12 }}>
-                        {result.confidence} projection confidence
-                      </span>
+                      <div style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.red : C.gold }} />
+                      <span style={{ color: '#3A4A3C', fontSize: 12 }}>{result.confidence} confidence</span>
                     </div>
                   )}
                   {leanMassDisplay && (
-                    <div style={{ fontSize: 12, color: '#3D4D3F', marginBottom: 10 }}>
-                      Current lean mass: {leanMassDisplay}
-                    </div>
+                    <div style={{ fontSize: 12, color: '#3A4A3C', marginBottom: 10 }}>Lean mass: {leanMassDisplay}</div>
                   )}
-                  <p style={{ color: '#2D3A2F', fontSize: 11, lineHeight: 1.65, margin: 0 }}>
-                    Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan and scan data.
+                  <p style={{ color: '#252E27', fontSize: 11, lineHeight: 1.65, margin: 0 }}>
+                    Reference projection only — not an exact image of your future physique.
                   </p>
                 </div>
               )}
@@ -5515,7 +5490,7 @@ export default function MassIQ() {
     const content = (() => {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} />;
-        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} />;
+        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
         case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
         case 'profile':   return (
