@@ -1676,168 +1676,293 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
   return (
     <div className="screen" style={{ paddingBottom: 120 }}>
 
-      {/* ══ 1. STATUS ══════════════════════════════════════════════════════ */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{
-          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-          background: statusGood ? C.green : C.gold,
-          opacity: 0.85,
-        }} />
-        <span style={{ fontSize: 13, color: C.muted, fontWeight: 500 }}>{statusText}</span>
-      </div>
+      {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
+      {(() => {
+        const hasScan   = scanHistory.length > 0;
+        const lastScan  = scanHistory.slice(-1)[0] || null;
+        const prevScan  = scanHistory.slice(-2)[0] || null;
+        const currentBF = lastScan?.bodyFat  ?? null;
+        const targetBF  = activePlan?.targetBF ?? null;
+        const startBF   = activePlan?.startBF  ?? currentBF ?? null;
+        const leanMassLbs = lastScan?.leanMass ?? null;
+        const symmetry  = lastScan?.symmetryScore ?? null;
+        const phase     = activePlan?.phase ?? null;
+        const phaseColor = phase === 'Cut' ? C.orange : phase === 'Bulk' ? C.blue : C.green;
 
-      {!activePlan ? (
+        /* progress toward target: 0→1 */
+        const bfProgress = (startBF != null && targetBF != null && startBF !== targetBF && currentBF != null)
+          ? Math.min(1, Math.max(0, (startBF - currentBF) / (startBF - targetBF)))
+          : 0;
 
-        /* ── No plan — first scan prompt ── */
-        <div style={{
-          background: C.card, borderRadius: 20, padding: '36px 24px',
-          border: `1px solid rgba(255,255,255,0.08)`, textAlign: 'center',
-          marginTop: 8,
-        }}>
-          <div style={{ fontSize: 34, marginBottom: 18 }}>📸</div>
-          <div style={{ fontSize: 19, fontWeight: 700, color: C.white, marginBottom: 8 }}>
-            Run your first scan
-          </div>
-          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, maxWidth: 240, margin: '0 auto 28px' }}>
-            Your personalized 12-week plan is one photo away
-          </div>
-          <button className="bp" onClick={() => setTab('scan')} style={{
-            background: C.green, color: '#0A0D0A', border: 'none',
-            padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 700, cursor: 'pointer',
+        /* weeks remaining estimate */
+        const weeksLeft = currentBF != null && targetBF != null && currentBF > targetBF
+          ? Math.max(1, Math.round((currentBF - targetBF) / 0.38))
+          : null;
+
+        /* week number */
+        const todayISO = new Date().toISOString().slice(0, 10);
+        const weekNum  = activePlan?.startDate
+          ? Math.min(12, Math.max(1, Math.floor(daysBetween(activePlan.startDate, todayISO) / 7) + 1))
+          : (activePlan?.week || 1);
+
+        /* scan date label */
+        const scanDateLabel = lastScan?.date
+          ? new Date(lastScan.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase()
+          : null;
+
+        /* next scan */
+        const nextScanDate  = activePlan?.nextScanDate ?? null;
+        const daysToScan    = nextScanDate ? Math.max(0, daysBetween(todayISO, nextScanDate)) : null;
+        const nextScanLabel = nextScanDate
+          ? new Date(nextScanDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          : null;
+
+        /* diagnosis */
+        const diag = activePlan?.engineDiagnosis?.primary;
+        const diagTitle = diag?.primary_issue ?? null;
+        const diagExpl  = diag?.explanation ?? null;
+
+        /* ADJUST NOW rows — show current targets, with before if prev scan available */
+        const dt = activePlan?.dailyTargets || activePlan?.macros || {};
+        const ptPrev = prevScan?.dailyTargets?.protein  ?? null;
+        const calPrev = prevScan?.dailyTargets?.calories ?? null;
+        const slpPrev = prevScan?.dailyTargets?.sleepHours ?? null;
+        const adjustRows = [
+          { label: 'Protein',  dir: ptPrev  != null ? (dt.protein  > ptPrev  ? '↑' : '↓') : '↑', old: ptPrev,  now: dt.protein,   unit: 'g',   color: C.green },
+          { label: 'Calories', dir: calPrev != null ? (dt.calories > calPrev ? '↑' : '↓') : null, old: calPrev, now: dt.calories,  unit: 'kcal', color: C.orange },
+          { label: 'Sleep',    dir: slpPrev != null ? (dt.sleepHours > slpPrev ? '↑' : '↓') : '↑', old: slpPrev, now: dt.sleepHours ?? activePlan?.sleepHrs ?? 8, unit: 'hrs', color: C.blue },
+        ].filter(r => r.now != null);
+
+        return (
+          <div style={{
+            borderRadius: 22,
+            background: '#0D1810',
+            border: `1px solid ${hasScan ? 'rgba(114,184,149,0.25)' : 'rgba(255,255,255,0.07)'}`,
+            overflow: 'hidden',
           }}>
-            Start scan →
-          </button>
-        </div>
 
-      ) : (
-        <>
-
-          {/* ══ 2. SYSTEM INSIGHT ══════════════════════════════════════════ */}
-          {insight && (
+            {/* ── Header row ── */}
             <div style={{
-              background: C.card, borderRadius: 20, padding: '22px 20px',
-              border: `1px solid rgba(255,255,255,0.08)`,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '14px 18px 12px',
+              borderBottom: `1px solid rgba(255,255,255,0.06)`,
             }}>
-              <div style={{ fontSize: 17, fontWeight: 700, color: C.white, lineHeight: 1.35, marginBottom: insight.explanation ? 8 : (insightActions.length ? 16 : 0) }}>
-                {insight.title}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 7, height: 7, borderRadius: '50%', background: hasScan ? C.green : C.dimmed }} />
+                <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '.1em', color: hasScan ? C.green : C.dimmed }}>
+                  BODY SCAN{scanDateLabel ? ` \u00b7 ${scanDateLabel}` : ''}
+                </span>
+              </div>
+              {activePlan ? (
+                <span style={{ fontSize: 12, color: C.dimmed, fontWeight: 500 }}>Week {weekNum} / 12</span>
+              ) : (
+                <span style={{ fontSize: 12, color: C.dimmed }}>No plan yet</span>
+              )}
+            </div>
+
+            {/* ── BF% row ── */}
+            <div style={{ padding: '18px 18px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 4 }}>Current Body Fat</div>
+                  <div style={{ fontSize: 38, fontWeight: 900, color: hasScan ? C.white : 'rgba(255,255,255,0.18)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+                    {currentBF != null ? `${currentBF}%` : '--'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {hasScan && <span style={{ fontSize: 18, color: C.dimmed }}>→</span>}
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 4 }}>Target</div>
+                    <div style={{ fontSize: 38, fontWeight: 900, color: hasScan ? C.green : 'rgba(255,255,255,0.18)', lineHeight: 1 }}>
+                      {targetBF != null ? `${targetBF}%` : '--'}
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {insight.explanation && (
-                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: insightActions.length ? 16 : (insight.projection ? 14 : 0) }}>
-                  {insight.explanation}
-                </div>
-              )}
+              {/* Progress bar */}
+              <div style={{ height: 3, borderRadius: 99, background: 'rgba(255,255,255,0.08)', overflow: 'hidden', marginBottom: 8 }}>
+                <div style={{
+                  height: '100%', borderRadius: 99, background: C.green,
+                  width: hasScan ? `${bfProgress * 100}%` : '0%',
+                  transition: 'width .6s ease',
+                }} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 11, color: C.dimmed }}>{hasScan ? `Week ${weekNum}` : 'Scan to activate'}</span>
+                {weeksLeft != null && <span style={{ fontSize: 11, color: C.dimmed }}>~{weeksLeft} weeks to target</span>}
+              </div>
+            </div>
 
-              {insightActions.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, marginBottom: insight.projection ? 14 : 0 }}>
-                  {insightActions.map(a => (
-                    <button key={a.label} className="bp" onClick={a.fn} style={{
-                      flex: 1, padding: '9px 12px', borderRadius: 10,
-                      background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.09)`,
-                      color: C.white, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                    }}>
-                      {a.label}
-                    </button>
+            {/* ── 3-col stats ── */}
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
+              borderTop: `1px solid rgba(255,255,255,0.06)`,
+              borderBottom: `1px solid rgba(255,255,255,0.06)`,
+            }}>
+              {[
+                { label: 'LEAN MASS',  value: leanMassLbs != null ? `${leanMassLbs} lb` : '--', color: C.blue },
+                { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '--', color: C.purple },
+                { label: 'PHASE',      value: phase ?? '--',                                     color: phaseColor },
+              ].map((s, i) => (
+                <div key={s.label} style={{
+                  padding: '12px 0', textAlign: 'center',
+                  borderRight: i < 2 ? `1px solid rgba(255,255,255,0.06)` : 'none',
+                }}>
+                  <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 5 }}>{s.label}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: hasScan ? s.color : 'rgba(255,255,255,0.18)' }}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Diagnosis ── */}
+            {hasScan && diagTitle ? (
+              <div style={{ padding: '14px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)` }}>
+                <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>⚡</span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 3 }}>{diagTitle}</div>
+                    {diagExpl && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{diagExpl}</div>}
+                  </div>
+                </div>
+              </div>
+            ) : !hasScan ? (
+              <div style={{ padding: '16px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)`, textAlign: 'center' }}>
+                <div style={{ fontSize: 13, color: C.dimmed, marginBottom: 14 }}>Run a body scan to unlock your full analysis</div>
+                <button className="bp" onClick={() => setTab('scan')} style={{
+                  background: C.green, color: '#0A0D0A', border: 'none',
+                  padding: '11px 28px', borderRadius: 99, fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                }}>
+                  Start scan →
+                </button>
+              </div>
+            ) : null}
+
+            {/* ── Adjust Now ── */}
+            {hasScan && adjustRows.length > 0 && (
+              <div style={{ padding: '14px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)` }}>
+                <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 10 }}>Adjust Now</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {adjustRows.map(r => (
+                    <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {r.dir && (
+                          <span style={{ fontSize: 13, color: r.dir === '↑' ? C.green : C.orange, fontWeight: 700, lineHeight: 1 }}>{r.dir}</span>
+                        )}
+                        <span style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{r.label}</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {r.old != null && (
+                          <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{r.old}{r.unit}</span>
+                        )}
+                        <span style={{ fontSize: 15, fontWeight: 800, color: r.color }}>{r.now}{r.unit}</span>
+                      </div>
+                    </div>
                   ))}
                 </div>
-              )}
+              </div>
+            )}
 
-              {insight.projection && (
-                <div style={{ fontSize: 11, color: C.dimmed, letterSpacing: '0.02em' }}>
-                  {insight.projection}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ══ 3. TODAY'S FOCUS ═══════════════════════════════════════════ */}
-          <div>
-            {/* Header + progress */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
-                Today's focus
-              </span>
-              <span style={{ fontSize: 12, color: C.muted }}>
-                {completedCount} of {focusItems.length} completed
-              </span>
-            </div>
-            <div style={{ height: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
+            {/* ── Footer ── */}
+            {activePlan && (
               <div style={{
-                height: '100%', borderRadius: 99, background: C.green, opacity: 0.65,
-                width: `${(completedCount / focusItems.length) * 100}%`,
-                transition: 'width .4s ease',
-              }} />
-            </div>
-
-            {/* Checklist */}
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {focusItems.map((item, idx) => {
-                const isExpanded = expandedItem === item.id;
-                const isLast     = idx === focusItems.length - 1;
-                return (
-                  <div
-                    key={item.id}
-                    className="bp"
-                    onClick={() => setExpandedItem(isExpanded ? null : item.id)}
-                    style={{
-                      padding: '14px 2px',
-                      borderBottom: isLast ? 'none' : `1px solid rgba(255,255,255,0.05)`,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                      {/* Circle check */}
-                      <div style={{
-                        width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: item.met ? C.green : 'transparent',
-                        border: item.met ? 'none' : `1.5px solid rgba(255,255,255,0.2)`,
-                      }}>
-                        {item.met && (
-                          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                            <path d="M1 4l2.5 2.5L9 1" stroke="#0A0D0A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        )}
-                      </div>
-
-                      {/* Label */}
-                      <span style={{
-                        fontSize: 15, fontWeight: 500, flex: 1,
-                        color: item.met ? C.dimmed : C.white,
-                        textDecoration: item.met ? 'line-through' : 'none',
-                      }}>
-                        {item.label}
-                      </span>
-
-                      {/* Chevron */}
-                      <span style={{
-                        fontSize: 10, color: C.dimmed, lineHeight: 1,
-                        transform: isExpanded ? 'rotate(180deg)' : 'none',
-                        transition: 'transform .18s ease',
-                        display: 'inline-block',
-                      }}>▾</span>
-                    </div>
-
-                    {/* Expanded detail */}
-                    {isExpanded && (
-                      <div style={{ paddingLeft: 36, paddingTop: 7, fontSize: 12, color: C.muted }}>
-                        {item.detail}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                padding: '12px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+                <span style={{ fontSize: 12, color: C.dimmed }}>
+                  {nextScanLabel ? `Next scan: ${nextScanLabel}` : 'Next scan: TBD'}
+                </span>
+                {daysToScan != null && (
+                  <button className="bp" onClick={() => setTab('scan')} style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: 13, fontWeight: 700, color: C.green, padding: 0,
+                  }}>
+                    {daysToScan} days →
+                  </button>
+                )}
+              </div>
+            )}
           </div>
+        );
+      })()}
 
-          {/* ══ 5. TODAY'S WORKOUT ══════════════════════════════════════════ */}
-          <TodayWorkoutCard />
-
-          {/* ══ 6. YOUR PATTERNS ════════════════════════════════════════════ */}
-          <AIPatterns profile={profile} activePlan={activePlan} />
-
-        </>
+      {/* ══ TODAY'S FOCUS (only after first scan) ════════════════════════════ */}
+      {activePlan && scanHistory.length > 0 && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
+              Today's focus
+            </span>
+            <span style={{ fontSize: 12, color: C.muted }}>
+              {completedCount} of {focusItems.length} completed
+            </span>
+          </div>
+          <div style={{ height: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', borderRadius: 99, background: C.green, opacity: 0.65,
+              width: `${(completedCount / focusItems.length) * 100}%`,
+              transition: 'width .4s ease',
+            }} />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {focusItems.map((item, idx) => {
+              const isExpanded = expandedItem === item.id;
+              const isLast     = idx === focusItems.length - 1;
+              return (
+                <div
+                  key={item.id}
+                  className="bp"
+                  onClick={() => setExpandedItem(isExpanded ? null : item.id)}
+                  style={{
+                    padding: '14px 2px',
+                    borderBottom: isLast ? 'none' : `1px solid rgba(255,255,255,0.05)`,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{
+                      width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: item.met ? C.green : 'transparent',
+                      border: item.met ? 'none' : `1.5px solid rgba(255,255,255,0.2)`,
+                    }}>
+                      {item.met && (
+                        <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                          <path d="M1 4l2.5 2.5L9 1" stroke="#0A0D0A" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </div>
+                    <span style={{
+                      fontSize: 15, fontWeight: 500, flex: 1,
+                      color: item.met ? C.dimmed : C.white,
+                      textDecoration: item.met ? 'line-through' : 'none',
+                    }}>
+                      {item.label}
+                    </span>
+                    <span style={{
+                      fontSize: 10, color: C.dimmed, lineHeight: 1,
+                      transform: isExpanded ? 'rotate(180deg)' : 'none',
+                      transition: 'transform .18s ease',
+                      display: 'inline-block',
+                    }}>▾</span>
+                  </div>
+                  {isExpanded && (
+                    <div style={{ paddingLeft: 36, paddingTop: 7, fontSize: 12, color: C.muted }}>
+                      {item.detail}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
+
+      {/* ══ TODAY'S WORKOUT ══════════════════════════════════════════════════ */}
+      {activePlan && <TodayWorkoutCard />}
+
+      {/* ══ YOUR PATTERNS ════════════════════════════════════════════════════ */}
+      {activePlan && <AIPatterns profile={profile} activePlan={activePlan} />}
 
       {/* Hidden camera input */}
       <input
