@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef, Component } from "react";
+import { useState, useEffect, useRef, useMemo, Component } from "react";
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
@@ -405,21 +405,22 @@ function getPrimaryLimiters(scan, activePlan) {
    Deterministic stage classification + projection logic for the Physique
    Projection feature. No LLM. No fake images. Reference-stage system only.
 ─────────────────────────────────────────────────────────────────────────── */
+// Updated stage labels — realistic, not aspirational
 const PHYSIQUE_STAGES_M = [
-  { key: 'competition', label: 'Competition Lean', bfMax: 10, tier: 0, desc: 'Extreme definition — striations visible at rest', color: '#00E676' },
-  { key: 'lean',        label: 'Lean & Defined',   bfMax: 14, tier: 1, desc: 'Clear abdominal definition, visible vascularity',   color: '#00C853' },
-  { key: 'athletic',    label: 'Athletic',          bfMax: 18, tier: 2, desc: 'Fit appearance with some visible muscle definition', color: '#FFD600' },
-  { key: 'average',     label: 'Average',           bfMax: 23, tier: 3, desc: 'Healthy weight, limited surface definition',         color: '#FF9800' },
-  { key: 'above',       label: 'Above Average',     bfMax: 28, tier: 4, desc: 'Noticeable excess fat, reduced definition',          color: '#FF5722' },
-  { key: 'high',        label: 'High Body Fat',     bfMax: 100, tier: 5, desc: 'Significant body fat — fat loss is the priority',   color: '#EF4444' },
+  { key: 'stage_lean',    label: 'Stage Lean',       bfMax:  8, tier: 0, desc: 'Near-extreme leanness — competition or end-of-cut',   color: '#00E676', hw: 13 },
+  { key: 'competition',   label: 'Athletic & Defined',bfMax: 13, tier: 1, desc: 'Clear muscle definition — abs visible at rest',        color: '#00C853', hw: 15 },
+  { key: 'lean',          label: 'Lean & Fit',        bfMax: 16, tier: 2, desc: 'Fit and lean — definition visible in good lighting',   color: '#69F0AE', hw: 17 },
+  { key: 'athletic',      label: 'Healthy & Active',  bfMax: 20, tier: 3, desc: 'Healthy body composition — active appearance',         color: '#FFD600', hw: 19 },
+  { key: 'average',       label: 'Building Phase',    bfMax: 25, tier: 4, desc: 'Healthy, working toward more defined composition',      color: '#FF9800', hw: 22 },
+  { key: 'high',          label: 'Heavy Bulk',        bfMax: 100, tier: 5, desc: 'Higher body fat — fat loss will unlock more progress', color: '#FF5722', hw: 25 },
 ];
 const PHYSIQUE_STAGES_F = [
-  { key: 'competition', label: 'Athletic & Lean',   bfMax: 17, tier: 0, desc: 'Athletic competition shape, prominent muscle tone',  color: '#00E676' },
-  { key: 'lean',        label: 'Lean & Toned',      bfMax: 22, tier: 1, desc: 'Visible muscle tone and athletic silhouette',         color: '#00C853' },
-  { key: 'athletic',    label: 'Athletic',           bfMax: 26, tier: 2, desc: 'Fit and healthy appearance',                         color: '#FFD600' },
-  { key: 'average',     label: 'Average',            bfMax: 31, tier: 3, desc: 'Healthy, typical body composition',                  color: '#FF9800' },
-  { key: 'above',       label: 'Above Average',      bfMax: 36, tier: 4, desc: 'Some excess body fat, reduced definition',           color: '#FF5722' },
-  { key: 'high',        label: 'High Body Fat',      bfMax: 100, tier: 5, desc: 'Elevated body fat — health-focused nutrition key',  color: '#EF4444' },
+  { key: 'stage_lean',    label: 'Stage Lean',        bfMax: 16, tier: 0, desc: 'Near-competition leanness — elite athlete range',     color: '#00E676', hw: 13 },
+  { key: 'competition',   label: 'Athletic & Toned',  bfMax: 21, tier: 1, desc: 'Visible muscle tone — athletic silhouette',            color: '#00C853', hw: 15 },
+  { key: 'lean',          label: 'Lean & Active',     bfMax: 25, tier: 2, desc: 'Fit and lean — healthy, active appearance',            color: '#69F0AE', hw: 17 },
+  { key: 'athletic',      label: 'Healthy & Active',  bfMax: 30, tier: 3, desc: 'Healthy body composition',                             color: '#FFD600', hw: 19 },
+  { key: 'average',       label: 'Building Phase',    bfMax: 35, tier: 4, desc: 'Working toward improved composition',                  color: '#FF9800', hw: 22 },
+  { key: 'high',          label: 'Heavy Bulk',        bfMax: 100, tier: 5, desc: 'Higher body fat — focus on fat loss and health',      color: '#FF5722', hw: 25 },
 ];
 
 function getPhysiqueStage(bf, gender = 'Male') {
@@ -429,41 +430,55 @@ function getPhysiqueStage(bf, gender = 'Male') {
 
 function getPhysiqueProjection(currentBF, goal, gender = 'Male', confidence = 'medium') {
   const goalKey = (goal || '').toLowerCase();
-  // Projected BF after 10 weeks (half a 12-week plan) at realistic rates
-  let projectedBF = currentBF;
-  let timeline = '8–10 weeks';
-  let projCopy = '';
+  let projBFLow, projBFHigh, timeline, projCopy, goalLabel;
 
   if (goalKey === 'cut') {
-    const rate = confidence === 'high' ? 0.65 : confidence === 'low' ? 0.4 : 0.55; // % per week
-    projectedBF = Math.max(5, +(currentBF - rate * 10).toFixed(1));
-    timeline = '10 weeks';
-    projCopy = 'With consistent adherence to your deficit and protein target, your plan trends toward a visibly leaner look.';
+    // Realistic: 0.5%/wk sustainable, 10 weeks
+    const rate = confidence === 'high' ? 0.55 : confidence === 'low' ? 0.35 : 0.45;
+    const midLoss = +(rate * 10).toFixed(1);
+    projBFLow  = Math.max(7,  +(currentBF - midLoss - 0.5).toFixed(1));
+    projBFHigh = Math.max(7.5,+(currentBF - midLoss + 0.5).toFixed(1));
+    timeline   = '10 weeks';
+    projCopy   = 'With consistent adherence to your deficit and protein target, your plan trends toward a visibly leaner look.';
+    goalLabel  = null; // use BF-based label
   } else if (goalKey === 'bulk' || goalKey === 'build') {
-    projectedBF = Math.min(35, +(currentBF + 1.5).toFixed(1)); // slight BF increase acceptable
-    timeline = '10–12 weeks';
-    projCopy = 'Lean bulk — muscle density and size should increase while body fat stays controlled.';
+    projBFLow  = Math.min(30, +(currentBF + 1.0).toFixed(1));
+    projBFHigh = Math.min(32, +(currentBF + 2.0).toFixed(1));
+    timeline   = '10–12 weeks';
+    projCopy   = 'Lean bulk — muscle density and size increase while body fat stays controlled.';
+    goalLabel  = 'Built & Strong';
   } else if (goalKey === 'recomp') {
-    projectedBF = Math.max(5, +(currentBF - 0.3 * 10).toFixed(1));
-    timeline = '10–12 weeks';
-    projCopy = 'Recomp is slow but sustainable — expect gradual fat loss alongside muscle improvement.';
+    const loss = +(0.3 * 10).toFixed(1);
+    projBFLow  = Math.max(7,  +(currentBF - loss - 0.5).toFixed(1));
+    projBFHigh = Math.max(7.5,+(currentBF - loss + 0.5).toFixed(1));
+    timeline   = '10–12 weeks';
+    projCopy   = 'Recomp is gradual but sustainable — expect slow fat loss alongside muscle improvement.';
+    goalLabel  = 'Recomposed';
   } else {
-    // Maintain
-    projectedBF = currentBF;
-    timeline = 'Ongoing';
-    projCopy = 'Maintenance phase — the goal is to preserve current composition with lifestyle consistency.';
+    projBFLow  = currentBF;
+    projBFHigh = currentBF;
+    timeline   = 'Ongoing';
+    projCopy   = 'Maintenance — preserve current composition with lifestyle consistency.';
+    goalLabel  = 'Sustained & Lean';
   }
 
-  const currentStage   = getPhysiqueStage(currentBF,   gender);
-  const projectedStage = getPhysiqueStage(projectedBF,  gender);
+  const projBFMid      = +(((projBFLow + projBFHigh) / 2)).toFixed(1);
+  const currentStage   = getPhysiqueStage(currentBF, gender);
+  const projectedStage = getPhysiqueStage(projBFMid,  gender);
   const improving      = projectedStage.tier < currentStage.tier;
-  const stageCopy      = improving
-    ? `If you follow the plan, you are projected to move from the "${currentStage.label}" stage toward "${projectedStage.label}".`
-    : goalKey === 'bulk' || goalKey === 'build'
-    ? `Lean bulk — focus is on muscle density, not body fat reduction. Stage stays similar by design.`
-    : `Maintenance keeps your current stage stable over this period.`;
 
-  return { currentStage, projectedStage, projectedBF, timeline, projCopy, stageCopy, improving };
+  // Override label for non-cut goals
+  const projLabel = goalLabel || projectedStage.label;
+
+  const stageCopy = improving
+    ? `Plan projects you from "${currentStage.label}" toward "${projLabel}" over ${timeline}.`
+    : goalKey === 'bulk' || goalKey === 'build'
+    ? `Lean bulk — focus is muscle density and size, not fat reduction. Stage is stable by design.`
+    : goalKey === 'recomp'
+    ? `Gradual recomposition over ${timeline} — small fat loss with muscle improvement.`
+    : `Maintenance keeps your stage stable. Focus on consistency.`;
+
+  return { currentStage, projectedStage, projBFLow, projBFHigh, projBFMid, projLabel, timeline, projCopy, stageCopy, improving };
 }
 
 function getActiveTargets(activePlan, profile) {
@@ -3461,7 +3476,9 @@ function PhysiqueChart({ scans }) {
 
 /* ─── AI Patterns ─────────────────────────────────────────────────────────── */
 function AIPatterns({ profile, activePlan }) {
-  const cacheKey = 'massiq:patterns';
+  // Cache key includes protein so stale values auto-invalidate when targets change
+  const m        = getActiveTargets(activePlan, profile);
+  const cacheKey = `massiq:patterns:p${m.protein}`;
   const isStale  = (() => { const c = LS.get(cacheKey, null); return !c || (Date.now() - (c.ts||0) > 7*24*3600*1000); })();
   const [insights, setInsights] = useState(() => isStale ? null : LS.get(cacheKey, null)?.insights);
   const [loading,  setLoading]  = useState(isStale);
@@ -3513,6 +3530,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
   const [confirmReset, setConfirmReset] = useState(false);
+  const [selectedScan, setSelectedScan] = useState(null);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
     cardio: { enabled: false, time: '07:30' },
@@ -3634,11 +3652,16 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                 const bfΔ = prev ? Number((s.bodyFat || 0) - (prev.bodyFat || 0)) : null;
                 const lmΔ = prev ? Number((s.leanMass || 0) - (prev.leanMass || 0)) : null;
                 const scoreΔ = prev ? (s.physiqueScore || 0) - (prev.physiqueScore || 0) : null;
+                const isLatestScan = i === scanHistory.length - 1;
                 return (
-                  <div key={i} style={{ flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 136, border: `1px solid ${s.isBaseline ? C.purple + '44' : C.border}` }}>
+                  <div key={i} className="bp" onClick={() => setSelectedScan({ scan: s, isLatest: isLatestScan })} style={{
+                    flexShrink: 0, background: C.cardElevated, borderRadius: 14, padding: '12px 14px', minWidth: 136, cursor: 'pointer',
+                    border: `1px solid ${isLatestScan ? C.green + '44' : s.isBaseline ? C.purple + '44' : C.border}`,
+                  }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
                       <div style={{ fontSize: 10, color: C.muted }}>{s.date ? fmt.date(s.date) : `Scan ${i + 1}`}</div>
                       {s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Base</span>}
+                      {isLatestScan && !s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.green, background: C.greenBg, padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Latest</span>}
                     </div>
                     <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(s.physiqueScore)}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
@@ -3652,6 +3675,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                         {lmΔ !== null && <span style={{ color: lmΔ >= 0 ? C.green : C.red }}> ({lmΔ >= 0 ? '+' : ''}{lmΔ.toFixed(1)})</span>}
                       </div>
                     </div>
+                    <div style={{ fontSize: 9, color: C.green, marginTop: 6, opacity: 0.7 }}>Tap for details →</div>
                   </div>
                 );
               })}
@@ -3855,6 +3879,16 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
           </Card>
         )}
       </div>
+
+      {/* Scan history detail modal */}
+      {selectedScan && (
+        <ScanHistoryModal
+          scan={selectedScan.scan}
+          isLatest={selectedScan.isLatest}
+          profile={profile}
+          onClose={() => setSelectedScan(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3912,6 +3946,137 @@ function validateScanConsistency(newScan, prevScan, daysBetween) {
   return issues;
 }
 
+/* ─── Scan History Detail Modal ─────────────────────────────────────────────
+   Shown when user taps a previous scan card.
+   Shows key results only — keeps it focused and fast to parse.
+─────────────────────────────────────────────────────────────────────────── */
+function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
+  if (!scan) return null;
+  const phaseColor = PHASE_COLORS[scan.phase] || C.green;
+  const dt = scan.dailyTargets || {};
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 900,
+      background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'flex-end',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxHeight: '88dvh', overflowY: 'auto',
+        background: C.surface, borderRadius: '24px 24px 0 0',
+        padding: '0 0 32px',
+      }}>
+        {/* Drag handle */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 36, height: 4, borderRadius: 99, background: C.border }} />
+        </div>
+
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 20px 16px' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 3 }}>
+              {scan.date ? fmt.date(scan.date) : 'Scan'} · SCAN RESULTS
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 17, fontWeight: 700 }}>Physique Summary</span>
+              {scan.phase && (
+                <span style={{ fontSize: 10, fontWeight: 700, color: phaseColor, background: phaseColor + '22', padding: '2px 8px', borderRadius: 99 }}>
+                  {scan.phase}
+                </span>
+              )}
+              {isLatest && (
+                <span style={{ fontSize: 9, fontWeight: 700, color: C.green, background: C.greenBg, padding: '2px 7px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                  Active
+                </span>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="bp" style={{
+            background: C.cardElevated, border: 'none', color: C.muted,
+            width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>×</button>
+        </div>
+
+        <div style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Key metrics 2×2 grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {[
+              { label: 'Body Fat',      value: safeNum(scan.bodyFat, 1) !== '—' ? `${safeNum(scan.bodyFat, 1)}%${scan.bodyFatRange ? ` (${scan.bodyFatRange})` : ''}` : '—', color: C.orange },
+              { label: 'Lean Mass',     value: scan.leanMass > 0 ? fmt.leanMass(scan.leanMass, profile?.unitSystem) : '—',                                                    color: C.blue },
+              { label: 'Physique Score', value: `${safeNum(scan.physiqueScore)}/100`,                                                                                          color: C.green },
+              { label: 'Symmetry',      value: `${safeNum(scan.symmetryScore)}/100`,                                                                                           color: C.purple },
+            ].map(m => (
+              <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '14px 12px', textAlign: 'center', border: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: m.color }}>{m.value}</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 3, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Limiting factor */}
+          {scan.limitingFactor && (
+            <div style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.orange, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Limiting Factor</div>
+              <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: '0 0 6px', fontWeight: 600 }}>{scan.limitingFactor}</p>
+              {scan.limitingFactorExplanation && (
+                <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.55, margin: 0 }}>{scan.limitingFactorExplanation}</p>
+              )}
+            </div>
+          )}
+
+          {/* Plan applied */}
+          {(dt.calories || dt.protein) && (
+            <div style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Plan Applied</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {[
+                  { label: 'Calories',  value: dt.calories ? `${dt.calories} kcal` : '—' },
+                  { label: 'Protein',   value: dt.protein  ? `${dt.protein}g`       : '—' },
+                  { label: 'Training',  value: dt.trainingDaysPerWeek ? `${dt.trainingDaysPerWeek} sessions/wk` : '—' },
+                  { label: 'Phase',     value: scan.phase || '—' },
+                ].map(r => (
+                  <div key={r.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em' }}>{r.label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.white }}>{r.value}</div>
+                  </div>
+                ))}
+              </div>
+              {scan.nutritionKeyChange && (
+                <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+                  Key change: {scan.nutritionKeyChange}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Focus areas */}
+          {(scan.weakestGroups?.length > 0 || scan.focusAreas?.length > 0) && (
+            <div style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.blue, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>Focus Areas</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(scan.weakestGroups || scan.focusAreas || []).slice(0, 3).map((area, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 5, height: 5, borderRadius: '50%', background: C.blue, flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{area}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Assessment fallback */}
+          {!scan.limitingFactor && scan.assessment && (
+            <div style={{ background: C.card, borderRadius: 14, padding: '14px 16px', border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Assessment</div>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: 0 }}>{scan.assessment}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
@@ -3924,6 +4089,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const [showCalcDetails,   setShowCalcDetails]   = useState(false);
   const [consistencyWarnings, setConsistencyWarnings] = useState([]);
   const [warningsAccepted,  setWarningsAccepted]  = useState(false);
+  const [selectedScan,      setSelectedScan]      = useState(null);
 
   const handleFile = (file) => {
     if (!file) return;
@@ -4101,13 +4267,21 @@ Return ONLY this JSON (no markdown, no extra text):
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
     const entry = {
-      date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass,
-      physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore,
+      date: today,
+      savedAt: new Date().toISOString(),
+      bodyFat: result.bodyFatPct,
+      bodyFatRange: result.bodyFatRange || null,
+      leanMass: result.leanMass,
+      physiqueScore: result.physiqueScore,
+      symmetryScore: result.symmetryScore,
       phase: profile.goal,
       confidence: result.confidence || 'medium',
-      muscleGroups: result.muscleGroups || {},
+      // Keep only weak group names — not full muscleGroups object (saves storage)
+      weakestGroups: result.weakestGroups || (result.priorityAreas || []).slice(0, 3),
       assessment: result.bodyFatSummary || result.diagnosis || '',
-      focusAreas: result.priorityAreas || result.weakestGroups || [],
+      limitingFactor: eng?.diagnosis?.primary?.primary_issue || result.diagnosis || '',
+      limitingFactorExplanation: eng?.diagnosis?.primary?.recommended_action || '',
+      nutritionKeyChange: result.nutritionKeyChange || '',
       recommendation: result.recommendation || eng?.diagnosis?.primary?.recommended_action || '',
       ...(isFirstScan && { isBaseline: true, lockedAt: new Date().toISOString() }),
       dailyTargets: {
@@ -4414,30 +4588,30 @@ Return ONLY this JSON (no markdown, no extra text):
         {(() => {
           const bf  = Number(result.bodyFatPct || 0);
           if (!bf) return null;
-          const gen = profile?.gender || 'Male';
+          const gen  = profile?.gender || 'Male';
           const proj = getPhysiqueProjection(bf, profile?.goal, gen, result.confidence);
           const curr = proj.currentStage;
           const prj  = proj.projectedStage;
           const isSameStage = curr.key === prj.key;
+          const confColor = result.confidence === 'high' ? C.green : result.confidence === 'low' ? '#EF4444' : C.gold;
 
-          // SVG body silhouette — width encodes leanness (narrower = leaner)
-          const SilhouetteFig = ({ tier, color, isProjected }) => {
-            // torso half-width: 14 (lean) → 20 (high BF)
-            const hw = Math.round(14 + tier * 1.4);
-            const opacity = isProjected ? 1 : 0.75;
+          // SVG silhouette — hw from stage definition, encodes actual BF-based width
+          const SilhouetteFig = ({ stage, isProjected }) => {
+            const hw  = stage.hw; // pre-computed half-width per tier
+            const col = stage.color;
+            const glow = isProjected && proj.improving
+              ? `0 0 14px ${col}66, 0 0 28px ${col}33`
+              : 'none';
             return (
-              <svg viewBox="0 0 60 110" width={60} height={90} style={{ display: 'block', opacity }}>
-                {/* Head */}
-                <ellipse cx="30" cy="11" rx="8" ry="9" fill={color} />
-                {/* Neck */}
-                <rect x="27" y="19" width="6" height="7" rx="2" fill={color} />
-                {/* Torso */}
-                <path d={`M${30 - hw} 26 Q${30 - hw - 2} 60 ${30 - hw + 4} 72 L${30 + hw - 4} 72 Q${30 + hw + 2} 60 ${30 + hw} 26 Z`} fill={color} />
-                {/* Left leg */}
-                <rect x={30 - hw + 2} y="71" width={hw - 4} height={30} rx="4" fill={color} />
-                {/* Right leg */}
-                <rect x="30" y="71" width={hw - 4} height={30} rx="4" fill={color} />
-              </svg>
+              <div style={{ filter: isProjected && proj.improving ? `drop-shadow(0 0 8px ${col}88)` : 'none' }}>
+                <svg viewBox="0 0 60 102" width={60} height={88} style={{ display: 'block', opacity: isProjected ? 1 : 0.72 }}>
+                  <ellipse cx="30" cy="10" rx="8" ry="9" fill={col} />
+                  <rect x="27" y="18" width="6" height="7" rx="2" fill={col} />
+                  <path d={`M${30 - hw} 25 Q${30 - hw - 3} 58 ${30 - hw + 4} 70 L${30 + hw - 4} 70 Q${30 + hw + 3} 58 ${30 + hw} 25 Z`} fill={col} />
+                  <rect x={30 - hw + 2} y="69" width={hw - 4} height={29} rx="4" fill={col} />
+                  <rect x="30" y="69" width={hw - 4} height={29} rx="4" fill={col} />
+                </svg>
+              </div>
             );
           };
 
@@ -4455,15 +4629,15 @@ Return ONLY this JSON (no markdown, no extra text):
               </div>
 
               {/* Stage comparison */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 24px 1fr', gap: 4, alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 24px 1fr', gap: 4, alignItems: 'center', marginBottom: 14 }}>
                 {/* Current */}
                 <div style={{ background: C.cardElevated, borderRadius: 14, padding: '14px 10px', textAlign: 'center', border: `1px solid ${C.border}` }}>
                   <div style={{ fontSize: 9, fontWeight: 700, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Now</div>
                   <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
-                    <SilhouetteFig tier={curr.tier} color={curr.color} isProjected={false} />
+                    <SilhouetteFig stage={curr} isProjected={false} />
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: curr.color, marginBottom: 3 }}>{curr.label}</div>
-                  <div style={{ fontSize: 10, color: C.dimmed }}>{bf}% body fat</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: curr.color, marginBottom: 3, lineHeight: 1.3 }}>{curr.label}</div>
+                  <div style={{ fontSize: 10, color: C.dimmed }}>{bf}% BF</div>
                 </div>
 
                 {/* Arrow */}
@@ -4471,34 +4645,51 @@ Return ONLY this JSON (no markdown, no extra text):
 
                 {/* Projected */}
                 <div style={{
-                  background: isSameStage ? C.cardElevated : `${prj.color}12`,
+                  background: isSameStage ? C.cardElevated : `${prj.color}0E`,
                   borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                  border: `1px solid ${isSameStage ? C.border : prj.color + '44'}`,
+                  border: `1px solid ${isSameStage ? C.border : prj.color + '55'}`,
                 }}>
                   <div style={{ fontSize: 9, fontWeight: 700, color: proj.improving ? prj.color : C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>Projected</div>
                   <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
-                    <SilhouetteFig tier={prj.tier} color={prj.color} isProjected={true} />
+                    <SilhouetteFig stage={prj} isProjected={true} />
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: prj.color, marginBottom: 3 }}>{prj.label}</div>
-                  <div style={{ fontSize: 10, color: C.dimmed }}>~{proj.projectedBF}% body fat</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: prj.color, marginBottom: 3, lineHeight: 1.3 }}>{proj.projLabel}</div>
+                  {/* BF shown as range, not a precise number */}
+                  <div style={{ fontSize: 10, color: C.dimmed }}>
+                    {proj.projBFLow === proj.projBFHigh ? `~${proj.projBFMid}%` : `~${proj.projBFLow}–${proj.projBFHigh}%`} BF
+                  </div>
                 </div>
               </div>
 
-              {/* Stage description copy */}
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: '0 0 10px' }}>{proj.stageCopy}</p>
+              {/* Week progress dots */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 14 }}>
+                <div style={{ flex: 1, height: 2, background: C.green, borderRadius: 99 }} />
+                {['Wk 4', 'Wk 8', 'Wk 12'].map((w, i) => (
+                  <div key={w} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', padding: '0 8px' }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: i === 0 ? C.green : C.border, border: `1px solid ${i === 0 ? C.green : C.dimmed}` }} />
+                    <div style={{ fontSize: 8, color: C.dimmed, marginTop: 4, whiteSpace: 'nowrap' }}>{w}</div>
+                  </div>
+                ))}
+                <div style={{ flex: 1, height: 2, background: C.border, borderRadius: 99 }} />
+              </div>
+
+              {/* Copy */}
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: '0 0 8px' }}>{proj.stageCopy}</p>
               <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.55, margin: 0 }}>{proj.projCopy}</p>
 
               {/* Confidence indicator */}
               {result.confidence && (
                 <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.orange : C.gold, flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, color: C.dimmed }}>Projection confidence: <span style={{ color: C.muted, fontWeight: 600 }}>{result.confidence}</span> — based on scan reliability</span>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: C.dimmed }}>
+                    Projection confidence: <span style={{ color: confColor, fontWeight: 700 }}>{result.confidence}</span> — based on scan reliability
+                  </span>
                 </div>
               )}
 
               {/* Disclaimer */}
               <p style={{ fontSize: 10, color: C.dimmed, margin: '10px 0 0', lineHeight: 1.5, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
-                Reference projection — not an exact image of your future body. Visuals represent likely physique stage based on your plan, scan data, and expected rate of progress.
+                Reference projection — not an exact image of your future body. Visuals represent likely physique stage, not a generated transformation.
               </p>
             </Card>
           );
@@ -4956,6 +5147,15 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+
+  // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
+  // Sub-components call getActiveTargets() themselves so they stay fresh.
+  // This top-level memo is the authoritative value passed where needed.
+  const targets = useMemo(() => {
+    const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
+    return calcTargets(profile, latestScan);
+  }, [profile, activePlan]);
+  // ──────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     let mounted = true;
