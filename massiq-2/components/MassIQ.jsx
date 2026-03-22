@@ -578,6 +578,28 @@ function getActiveTargets(activePlan, profile) {
     trainingDaysPerWeek: stored.trainingDaysPerWeek ?? fresh.trainingDaysPerWeek,
     cardioDays:          stored.cardioDays          ?? fresh.cardioDays,
   };
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  if (intel) {
+    const phase = activePlan?.phase || profile?.goal || 'Maintain';
+    if (intel.muscleLossRisk) {
+      targets.calories += 120;
+      targets.protein = Math.round(Math.max(targets.protein, (Number(latestScan?.leanMass || 0) * 0.453592 * 2.4) || targets.protein));
+      targets.trainingDaysPerWeek = Math.max(3, targets.trainingDaysPerWeek - 1);
+      targets.cardioDays = Math.max(1, targets.cardioDays - 1);
+      targets.sleepHours = 8.5;
+    } else if (intel.plateau && phase === 'Cut') {
+      targets.calories -= 120;
+      targets.steps += 1200;
+      targets.cardioDays = Math.min(5, targets.cardioDays + 1);
+    }
+    if (intel.nearingTarget) {
+      targets.calories += 100;
+      targets.cardioDays = Math.max(1, targets.cardioDays - 1);
+    }
+    if (intel.recoveryRisk) {
+      targets.sleepHours = 8.5;
+    }
+  }
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
 }
 
