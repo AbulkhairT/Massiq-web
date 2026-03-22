@@ -199,7 +199,7 @@ function deserializeScan(row) {
     bodyFat: toNumber(row?.body_fat, toNumber(raw.bodyFat ?? raw.bodyFatPct, null)),
     bodyFatPct: toNumber(row?.body_fat, toNumber(raw.bodyFatPct ?? raw.bodyFat, null)),
     leanMass: toNumber(row?.lean_mass, toNumber(raw.leanMass, null)),
-    confidence: toNumber(raw.confidence, 0.75),
+    confidence: (typeof raw.confidence === 'string' ? raw.confidence : null) || toNumber(raw.confidence, 0.75),
   };
 }
 
@@ -368,9 +368,17 @@ export async function createScan(token, userId, scan) {
 }
 
 export async function getScans(token, userId, limit = 25) {
-  const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
-    method: 'GET',
-    headers: authHeaders(token),
-  });
-  return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+  try {
+    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,raw_result,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+  } catch (err) {
+    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+  }
 }
