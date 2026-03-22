@@ -299,44 +299,44 @@ export function buildMissions(
 
   const sets: Record<string, Mission[]> = {
     Cut: [
-      { id: 'c_b1', tier: 'Bronze',   emoji: '🥗', title: 'Protein Starter',    description: `Hit ${protein}g protein in one day`,              xp: 100  },
-      { id: 'c_b2', tier: 'Bronze',   emoji: '🚶', title: 'Step Streak',         description: 'Hit your step target 3 days in a row',            xp: 100  },
-      { id: 'c_s1', tier: 'Silver',   emoji: '🔥', title: 'Deficit Week',        description: `Stay under ${calories} kcal for 5 straight days`, xp: 250  },
-      { id: 'c_s2', tier: 'Silver',   emoji: '💪', title: 'Lift Through Cut',    description: `Complete ${trainDays} resistance sessions this week`, xp: 250 },
-      { id: 'c_g1', tier: 'Gold',     emoji: '⚡', title: 'Full Week Perfect',   description: `${protein}g protein AND under ${calories} kcal 7 days straight`, xp: 500 },
-      { id: 'c_g2', tier: 'Gold',     emoji: '📉', title: 'First BF Drop',       description: 'Lose 0.5% body fat at next scan',                  xp: 500  },
-      { id: 'c_p1', tier: 'Platinum', emoji: '🏆', title: 'Lean Mass Defender',  description: 'Lose fat with zero lean mass loss at next scan',   xp: 1000 },
-      { id: 'c_p2', tier: 'Platinum', emoji: '🎯', title: 'Target Reached',      description: 'Hit your goal body fat percentage',               xp: 1000 },
+      { id: 'c_b1', tier: 'Bronze',   emoji: 'Nutrition', title: 'Protein Starter',    description: `Hit ${protein}g protein in one day`,              xp: 100  },
+      { id: 'c_b2', tier: 'Bronze',   emoji: 'Walk', title: 'Step Streak',         description: 'Hit your step target 3 days in a row',            xp: 100  },
+      { id: 'c_s1', tier: 'Silver',   emoji: 'Core', title: 'Deficit Week',        description: `Stay under ${calories} kcal for 5 straight days`, xp: 250  },
+      { id: 'c_s2', tier: 'Silver',   emoji: 'Strength', title: 'Lift Through Cut',    description: `Complete ${trainDays} resistance sessions this week`, xp: 250 },
+      { id: 'c_g1', tier: 'Gold',     emoji: 'Key', title: 'Full Week Perfect',   description: `${protein}g protein AND under ${calories} kcal 7 days straight`, xp: 500 },
+      { id: 'c_g2', tier: 'Gold',     emoji: 'Down', title: 'First BF Drop',       description: 'Lose 0.5% body fat at next scan',                  xp: 500  },
+      { id: 'c_p1', tier: 'Platinum', emoji: 'Elite', title: 'Lean Mass Defender',  description: 'Lose fat with zero lean mass loss at next scan',   xp: 1000 },
+      { id: 'c_p2', tier: 'Platinum', emoji: 'Target', title: 'Target Reached',      description: 'Hit your goal body fat percentage',               xp: 1000 },
     ],
     Bulk: [
-      { id: 'b_b1', tier: 'Bronze',   emoji: '🍗', title: 'Protein Base',        description: `Hit ${protein}g protein in one day`,              xp: 100  },
-      { id: 'b_b2', tier: 'Bronze',   emoji: '💪', title: 'First Session',       description: 'Complete your first resistance session this week', xp: 100  },
-      { id: 'b_s1', tier: 'Silver',   emoji: '📈', title: 'Surplus Maintained',  description: `Hit ${calories} kcal minimum 5 days in a row`,    xp: 250  },
-      { id: 'b_s2', tier: 'Silver',   emoji: '🏋️', title: 'Volume Week',         description: `${trainDays} sessions logged with weights recorded`, xp: 250  },
-      { id: 'b_g1', tier: 'Gold',     emoji: '⚡', title: 'Progressive Overload', description: 'Add weight or reps to 3 lifts in one week',       xp: 500  },
-      { id: 'b_g2', tier: 'Gold',     emoji: '📊', title: 'First Gain',          description: 'Show measurable lean mass increase at next scan', xp: 500  },
-      { id: 'b_p1', tier: 'Platinum', emoji: '🏆', title: 'Clean Bulk',          description: 'Gain lean mass with <0.5% body fat increase at scan', xp: 1000 },
-      { id: 'b_p2', tier: 'Platinum', emoji: '🎯', title: 'Mass Target Hit',     description: 'Reach your target lean mass milestone',           xp: 1000 },
+      { id: 'b_b1', tier: 'Bronze',   emoji: 'Protein', title: 'Protein Base',        description: `Hit ${protein}g protein in one day`,              xp: 100  },
+      { id: 'b_b2', tier: 'Bronze',   emoji: 'Strength', title: 'First Session',       description: 'Complete your first resistance session this week', xp: 100  },
+      { id: 'b_s1', tier: 'Silver',   emoji: 'Up', title: 'Surplus Maintained',  description: `Hit ${calories} kcal minimum 5 days in a row`,    xp: 250  },
+      { id: 'b_s2', tier: 'Silver',   emoji: 'Lift', title: 'Volume Week',         description: `${trainDays} sessions logged with weights recorded`, xp: 250  },
+      { id: 'b_g1', tier: 'Gold',     emoji: 'Key', title: 'Progressive Overload', description: 'Add weight or reps to 3 lifts in one week',       xp: 500  },
+      { id: 'b_g2', tier: 'Gold',     emoji: 'Data', title: 'First Gain',          description: 'Show measurable lean mass increase at next scan', xp: 500  },
+      { id: 'b_p1', tier: 'Platinum', emoji: 'Elite', title: 'Clean Bulk',          description: 'Gain lean mass with <0.5% body fat increase at scan', xp: 1000 },
+      { id: 'b_p2', tier: 'Platinum', emoji: 'Target', title: 'Mass Target Hit',     description: 'Reach your target lean mass milestone',           xp: 1000 },
     ],
     Recomp: [
-      { id: 'r_b1', tier: 'Bronze',   emoji: '🥩', title: 'Protein Priority',    description: `Hit ${protein}g protein in one day`,              xp: 100  },
-      { id: 'r_b2', tier: 'Bronze',   emoji: '😴', title: 'Sleep First',         description: 'Get 8 hours sleep 3 nights in a row',             xp: 100  },
-      { id: 'r_s1', tier: 'Silver',   emoji: '⚖️', title: 'Macro Balance',       description: `Hit ${protein}g protein AND ${calories} kcal 5 days`, xp: 250 },
-      { id: 'r_s2', tier: 'Silver',   emoji: '💪', title: 'Lift + Recover',      description: `${trainDays} sessions with no missed workouts`,    xp: 250  },
-      { id: 'r_g1', tier: 'Gold',     emoji: '📉', title: 'BF Down',             description: 'Reduce body fat by 0.5% at next scan',            xp: 500  },
-      { id: 'r_g2', tier: 'Gold',     emoji: '📈', title: 'Lean Up',             description: 'Maintain or increase lean mass at next scan',     xp: 500  },
-      { id: 'r_p1', tier: 'Platinum', emoji: '🏆', title: 'Recomp Confirmed',    description: 'Gain lean mass AND lose fat in the same scan period', xp: 1000 },
-      { id: 'r_p2', tier: 'Platinum', emoji: '🎯', title: 'Composition Target',  description: 'Reach your target body fat with lean mass intact', xp: 1000 },
+      { id: 'r_b1', tier: 'Bronze',   emoji: 'Protein', title: 'Protein Priority',    description: `Hit ${protein}g protein in one day`,              xp: 100  },
+      { id: 'r_b2', tier: 'Bronze',   emoji: 'Rest', title: 'Sleep First',         description: 'Get 8 hours sleep 3 nights in a row',             xp: 100  },
+      { id: 'r_s1', tier: 'Silver',   emoji: 'Balance', title: 'Macro Balance',       description: `Hit ${protein}g protein AND ${calories} kcal 5 days`, xp: 250 },
+      { id: 'r_s2', tier: 'Silver',   emoji: 'Strength', title: 'Lift + Recover',      description: `${trainDays} sessions with no missed workouts`,    xp: 250  },
+      { id: 'r_g1', tier: 'Gold',     emoji: 'Down', title: 'BF Down',             description: 'Reduce body fat by 0.5% at next scan',            xp: 500  },
+      { id: 'r_g2', tier: 'Gold',     emoji: 'Up', title: 'Lean Up',             description: 'Maintain or increase lean mass at next scan',     xp: 500  },
+      { id: 'r_p1', tier: 'Platinum', emoji: 'Elite', title: 'Recomp Confirmed',    description: 'Gain lean mass AND lose fat in the same scan period', xp: 1000 },
+      { id: 'r_p2', tier: 'Platinum', emoji: 'Target', title: 'Composition Target',  description: 'Reach your target body fat with lean mass intact', xp: 1000 },
     ],
     Maintain: [
-      { id: 'm_b1', tier: 'Bronze',   emoji: '🍽️', title: 'Daily Logger',        description: 'Log every meal for one full day',                  xp: 100  },
-      { id: 'm_b2', tier: 'Bronze',   emoji: '💪', title: 'Show Up',             description: 'Complete 2 resistance sessions this week',         xp: 100  },
-      { id: 'm_s1', tier: 'Silver',   emoji: '⚖️', title: 'Weight Stable',       description: 'Keep weight within ±0.5 kg for 7 days',           xp: 250  },
-      { id: 'm_s2', tier: 'Silver',   emoji: '🏃', title: 'Activity Week',       description: `${trainDays} sessions AND daily step target`,      xp: 250  },
-      { id: 'm_g1', tier: 'Gold',     emoji: '🔒', title: 'Four-Week Hold',      description: 'Maintain body weight across a full 4-week period', xp: 500  },
-      { id: 'm_g2', tier: 'Gold',     emoji: '💯', title: 'Perfect Protein',     description: `${protein}g protein every day for 14 days`,        xp: 500  },
-      { id: 'm_p1', tier: 'Platinum', emoji: '🏆', title: 'Scan Unchanged',      description: 'Show identical body composition at next scan',     xp: 1000 },
-      { id: 'm_p2', tier: 'Platinum', emoji: '🎯', title: 'Long Game',           description: 'Maintain scan results across 3 consecutive scans', xp: 1000 },
+      { id: 'm_b1', tier: 'Bronze',   emoji: 'Meal', title: 'Daily Logger',        description: 'Log every meal for one full day',                  xp: 100  },
+      { id: 'm_b2', tier: 'Bronze',   emoji: 'Strength', title: 'Show Up',             description: 'Complete 2 resistance sessions this week',         xp: 100  },
+      { id: 'm_s1', tier: 'Silver',   emoji: 'Balance', title: 'Weight Stable',       description: 'Keep weight within ±0.5 kg for 7 days',           xp: 250  },
+      { id: 'm_s2', tier: 'Silver',   emoji: 'Cardio', title: 'Activity Week',       description: `${trainDays} sessions AND daily step target`,      xp: 250  },
+      { id: 'm_g1', tier: 'Gold',     emoji: 'Lock', title: 'Four-Week Hold',      description: 'Maintain body weight across a full 4-week period', xp: 500  },
+      { id: 'm_g2', tier: 'Gold',     emoji: 'Perfect', title: 'Perfect Protein',     description: `${protein}g protein every day for 14 days`,        xp: 500  },
+      { id: 'm_p1', tier: 'Platinum', emoji: 'Elite', title: 'Scan Unchanged',      description: 'Show identical body composition at next scan',     xp: 1000 },
+      { id: 'm_p2', tier: 'Platinum', emoji: 'Target', title: 'Long Game',           description: 'Maintain scan results across 3 consecutive scans', xp: 1000 },
     ],
   }
 
@@ -383,7 +383,7 @@ export function buildInsights(
   // Insight 1: nutrition / deficit calibration
   if (diagCode === 'protein_insufficiency') {
     insights.push({
-      icon: '🥩',
+      icon: 'Protein',
       label: 'PROTEIN',
       metric: `${protein}g / day`,
       pattern: `Protein is insufficient — muscle loss risk at current intake during ${goal === 'Bulk' ? 'surplus' : 'deficit'}.`,
@@ -392,7 +392,7 @@ export function buildInsights(
   } else if (diagCode === 'aggressive_deficit' && tdee) {
     const pct = Math.round((1 - calories / tdee) * 100)
     insights.push({
-      icon: '⚠️',
+      icon: 'Alert',
       label: 'DEFICIT',
       metric: `${pct}% of TDEE`,
       pattern: `Deficit is too aggressive — catabolism risk within 2–3 weeks.`,
@@ -400,7 +400,7 @@ export function buildInsights(
     })
   } else if (diagCode === 'phase_mismatch') {
     insights.push({
-      icon: '🎯',
+      icon: 'Target',
       label: 'PHASE',
       metric: goal,
       pattern: `Body fat is outside the optimal range for ${goal} — targets adjusted.`,
@@ -408,7 +408,7 @@ export function buildInsights(
     })
   } else {
     insights.push({
-      icon: '✅',
+      icon: 'Done',
       label: 'NUTRITION',
       metric: `${calories} kcal`,
       pattern: `Calorie target is calibrated for your current ${goal.toLowerCase()} composition.`,
@@ -418,7 +418,7 @@ export function buildInsights(
 
   // Insight 2: protein timing
   insights.push({
-    icon: '⏱️',
+    icon: 'Time',
     label: 'PROTEIN TIMING',
     metric: `${Math.round(protein / 4)}g × 4`,
     pattern: `Spread protein across 4 meals to maximise muscle protein synthesis.`,
@@ -428,7 +428,7 @@ export function buildInsights(
   // Insight 3: training
   if (profile.activity === 'Sedentary') {
     insights.push({
-      icon: '🚶',
+      icon: 'Walk',
       label: 'TRAINING',
       metric: `${trainDays}x / week`,
       pattern: `New training stimulus at sedentary baseline — recomp effect is highest now.`,
@@ -436,7 +436,7 @@ export function buildInsights(
     })
   } else {
     insights.push({
-      icon: '💪',
+      icon: 'Strength',
       label: 'TRAINING',
       metric: `${trainDays}x / week`,
       pattern: `Resistance load is set to preserve lean mass through your ${goal} phase.`,

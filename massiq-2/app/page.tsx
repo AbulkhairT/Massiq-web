@@ -503,7 +503,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.06)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}>📊</div>
+                }}>Data</div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: '#556655',
@@ -550,7 +550,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.05)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}>🧠</div>
+                }}>AI</div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: C.white,
@@ -684,17 +684,17 @@ export default function LandingPage() {
           <div className="diag-grid">
             {[
               {
-                icon: '⚡', tag: 'Fat Loss Phase', delay: 'd1',
+                icon: 'Key', tag: 'Fat Loss Phase', delay: 'd1',
                 title: 'You\'re losing weight too fast',
                 body: 'Your caloric deficit is too aggressive for your lean mass target. At this rate, you\'ll lose muscle. The fix: reduce deficit by 220 kcal, increase protein by 30g.',
               },
               {
-                icon: '⚖️', tag: 'Body Composition', delay: 'd2',
+                icon: 'Balance', tag: 'Body Composition', delay: 'd2',
                 title: 'Your symmetry is imbalanced',
                 body: 'Upper-body development is lagging significantly behind lower body. Training focus should shift to chest, shoulders, and arms for the next 4–6 weeks.',
               },
               {
-                icon: '🔄', tag: 'Phase Shift', delay: 'd3',
+                icon: 'Cycle', tag: 'Phase Shift', delay: 'd3',
                 title: 'Time to stop cutting',
                 body: 'You\'ve reached 13.1% body fat — your target. Continuing the cut risks lean mass loss. MassIQ is shifting you to a recomposition phase.',
               },
@@ -752,9 +752,9 @@ export default function LandingPage() {
                 ].map(([label, a, b, c]) => (
                   <tr key={String(label)}>
                     <td>{label}</td>
-                    <td className="massiq-td"><span className="ck">{a ? '✓' : '—'}</span></td>
-                    <td><span className={b ? 'ck' : 'cx'}>{b ? '✓' : '—'}</span></td>
-                    <td><span className={c ? 'ck' : 'cx'}>{c ? '✓' : '—'}</span></td>
+                    <td className="massiq-td"><span className="ck">{a ? 'Done' : '—'}</span></td>
+                    <td><span className={b ? 'ck' : 'cx'}>{b ? 'Done' : '—'}</span></td>
+                    <td><span className={c ? 'ck' : 'cx'}>{c ? 'Done' : '—'}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -853,7 +853,7 @@ export default function LandingPage() {
             <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap' }}>
               {['No fake transformations', 'No generic plans', 'No guesswork'].map(point => (
                 <div key={point} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                  <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>✓</span>
+                  <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>Done</span>
                   <span style={{ fontSize: 13, color: C.muted }}>{point}</span>
                 </div>
               ))}
