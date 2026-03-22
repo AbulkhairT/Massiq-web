@@ -321,12 +321,9 @@ function IntelPanel() {
       {/* Diagnosis */}
       <div style={{ padding: '13px 16px', background: 'rgba(255,80,50,0.04)', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2px', color: C.dim, textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 13, lineHeight: 1 }}>⚡</span>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
-            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
-          </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
+          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
         </div>
       </div>
 
@@ -339,12 +336,10 @@ function IntelPanel() {
               <span style={{ fontSize: 12, fontWeight: 800, color: a.color, width: 12, textAlign: 'center' }}>{a.arrow}</span>
               <span style={{ fontSize: 11, color: C.muted }}>{a.label}</span>
             </div>
-            <div style={{ fontSize: 11, color: C.white, fontWeight: 600 }}>
-              <span style={{ color: C.dim, textDecoration: 'line-through', marginRight: 5 }}>{a.from}</span>
-              {a.to}
-            </div>
+            <div style={{ fontSize: 11, color: C.white, fontWeight: 600 }}>{a.to}</div>
           </div>
         ))}
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>Updated from last scan.</div>
       </div>
 
       {/* Footer */}
