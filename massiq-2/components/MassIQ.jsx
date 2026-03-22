@@ -5530,6 +5530,7 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
   // Sub-components call getActiveTargets() themselves so they stay fresh.
