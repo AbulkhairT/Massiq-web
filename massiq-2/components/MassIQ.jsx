@@ -5702,17 +5702,22 @@ export default function MassIQ() {
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
       if (!userId) return;
-      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
+      if (nextProfile) {
+        try { await upsertProfile(session.access_token, userId, nextProfile); }
+        catch (err) { console.error('[sync] profile upsert failed', err); }
+      }
       if (nextPlan) {
-        await upsertPlan(session.access_token, userId, nextPlan);
+        try { await upsertPlan(session.access_token, userId, nextPlan); }
+        catch (err) { console.error('[sync] plan upsert failed', err); }
       }
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
-        await createScan(session.access_token, userId, latestScan);
+        try { await createScan(session.access_token, userId, latestScan); }
+        catch (err) { console.error('[sync] scan create failed', err); }
       }
     } catch (err) {
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      showToast("We couldn't finish syncing your account. Please try again.");
+      showToast("Sync is delayed. Your plan is saved locally.");
     } finally {
       setSyncing(false);
     }
