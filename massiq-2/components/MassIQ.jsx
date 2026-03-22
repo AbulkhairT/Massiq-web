@@ -562,19 +562,20 @@ function getScanIntelligence(scanHistory = [], activePlan = null, profile = null
 }
 
 function getActiveTargets(activePlan, profile) {
-  // Always recalculate from calcTargets — never use stale stored plan macros
+  // Single source of truth across Home / Plan / Nutrition:
+  // prefer saved plan targets, fallback to recalculation only when plan targets are missing.
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const latestScan = scanHistory.slice(-1)[0] || null;
-  const fresh = calcTargets(profile, latestScan);
   const stored = activePlan?.dailyTargets || activePlan?.macros || {};
-  // Preserve non-macro plan targets (steps, sleep, water) from plan if set
-  let targets = {
+  const fresh = calcTargets(profile, latestScan);
+  const targets = {
     ...fresh,
-    steps:               stored.steps               || fresh.steps,
-    sleepHours:          stored.sleepHours          || fresh.sleepHours,
-    waterLiters:         stored.waterLiters         || fresh.waterLiters,
-    trainingDaysPerWeek: stored.trainingDaysPerWeek || fresh.trainingDaysPerWeek,
-    cardioDays:          stored.cardioDays          || fresh.cardioDays,
+    ...stored,
+    steps:               stored.steps               ?? fresh.steps,
+    sleepHours:          stored.sleepHours          ?? fresh.sleepHours,
+    waterLiters:         stored.waterLiters         ?? fresh.waterLiters,
+    trainingDaysPerWeek: stored.trainingDaysPerWeek ?? fresh.trainingDaysPerWeek,
+    cardioDays:          stored.cardioDays          ?? fresh.cardioDays,
   };
   const intel = getScanIntelligence(scanHistory, activePlan, profile);
   if (intel) {
@@ -1839,7 +1840,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const diagExpl  = diag?.explanation ?? null;
 
         /* ADJUST NOW rows — show current targets, with before if prev scan available */
-        const dt = activePlan?.dailyTargets || activePlan?.macros || {};
+        const dt = macros || activePlan?.dailyTargets || activePlan?.macros || {};
         const ptPrev = prevScan?.dailyTargets?.protein  ?? null;
         const calPrev = prevScan?.dailyTargets?.calories ?? null;
         const slpPrev = prevScan?.dailyTargets?.sleepHours ?? null;
