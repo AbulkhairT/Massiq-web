@@ -975,7 +975,7 @@ function CountUp({ target, unit }) {
   return <span>{val}<span style={{ fontSize: 14, color: C.muted, marginLeft: 4 }}>{unit}</span></span>;
 }
 
-function Onboarding({ onComplete, currentUserId }) {
+function Onboarding({ onComplete, currentUserId, isEditing }) {
   const [step,     setStep]     = useState(0);
   const [visible,  setVisible]  = useState(true);   // for fade animation
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
@@ -1016,9 +1016,9 @@ function Onboarding({ onComplete, currentUserId }) {
   useEffect(() => {
     const saved = LS.get(LS_KEYS.profile, null);
     if (!saved) return;
-    // Skip pre-fill if the cache belongs to a different user
-    if (saved.id && currentUserId && saved.id !== currentUserId) {
-      console.info('[onboarding] skipping pre-fill — cached profile is for different user', { cached: saved.id, current: currentUserId });
+    // Skip pre-fill if the cache belongs to a different user OR has no user id stamp
+    if (currentUserId && saved.id !== currentUserId) {
+      console.info('[onboarding] skipping pre-fill — cached profile mismatch or unscoped', { cached: saved.id, current: currentUserId });
       return;
     }
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
@@ -1087,8 +1087,8 @@ function Onboarding({ onComplete, currentUserId }) {
     };
     LS.set(LS_KEYS.profile, profile);
 
-    // Editing existing profile — skip plan gen
-    if (LS.get(LS_KEYS.activePlan)) { onComplete(profile, null); return; }
+    // Editing existing profile — skip plan gen (use explicit flag, not stale LS cache)
+    if (isEditing) { onComplete(profile, null); return; }
 
     setGenerating(true);
     try {
@@ -6567,10 +6567,10 @@ export default function MassIQ() {
           // Non-fatal: migration 003 may not be applied yet
         }
 
-        if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
+        if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan && loadedScanHistory.length > 0) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
-            console.info('[sync] createDefaultPlan:start', { userId });
+            console.info('[sync] createDefaultPlan:start', { userId, reason: 'profile complete + scans exist but no plan' });
             await upsertPlan(session.access_token, userId, fallbackPlan);
             console.info('[sync] createDefaultPlan:ok');
           } catch (createPlanErr) {
@@ -6617,12 +6617,12 @@ export default function MassIQ() {
             setScanHistory(hydrated);
             console.info('[sync] hydrate: loaded', hydrated.length, 'scan(s) from DB');
           } else {
-            // DB returned 0 — strip any stale unconfirmed local entries (no dbId).
-            const confirmedLocal = localHistory.filter(s => s.dbId);
-            if (confirmedLocal.length !== localHistory.length) {
-              console.warn('[sync] hydrate: removed', localHistory.length - confirmedLocal.length, 'unconfirmed local scan(s)');
-              LS.set(LS_KEYS.scanHistory, confirmedLocal);
-              setScanHistory(confirmedLocal);
+            // DB returned 0 scans for this user — clear ALL local scan entries.
+            // Any entries with dbId from a previous user should not persist.
+            if (localHistory.length > 0) {
+              console.warn('[sync] hydrate: DB has 0 scans — clearing', localHistory.length, 'local scan entries');
+              LS.set(LS_KEYS.scanHistory, []);
+              setScanHistory([]);
             }
           }
         }
@@ -6636,6 +6636,47 @@ export default function MassIQ() {
     hydrate();
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
+
+  // ── Premium return polling ────────────────────────────────────────────────
+  // When the user returns from /premium/success with ?premium_activated=1,
+  // poll subscription status until it becomes active (webhook may be delayed).
+  useEffect(() => {
+    if (!ready || !session?.access_token) return;
+    let cancelled = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (!params.get('premium_activated')) return;
+      // Clean the URL param to prevent re-polling on re-renders
+      window.history.replaceState({}, '', window.location.pathname);
+
+      if (isPremiumActive(subscription)) return; // already active
+
+      const userId = session.user?.id;
+      if (!userId) return;
+
+      console.info('[premium-poll] detected premium return — polling subscription status');
+      let attempts = 0;
+      const poll = async () => {
+        while (attempts < 10 && !cancelled) {
+          attempts++;
+          try {
+            const sub = await getSubscription(session.access_token, userId);
+            if (sub && isPremiumActive(sub)) {
+              if (!cancelled) {
+                setSubscription(sub);
+                console.info('[premium-poll] subscription activated', { status: sub.status });
+              }
+              return;
+            }
+          } catch {}
+          if (attempts < 10) await new Promise(r => setTimeout(r, 2500));
+        }
+        console.warn('[premium-poll] subscription not confirmed after polling');
+      };
+      poll();
+    } catch {}
+    return () => { cancelled = true; };
+  }, [ready, session?.access_token]);
 
   // criticalProfile: when true the profile write failure is re-thrown instead of
   // swallowed. Used during onboarding so the Paywall can gate checkout on success.
@@ -6813,12 +6854,18 @@ export default function MassIQ() {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
-      // User-switch detection: if a different user was previously active, wipe all
-      // massiq:* localStorage keys so stale data never leaks to the new user.
+      // User-switch detection: clear all massiq:* localStorage keys when
+      // (a) a different user was previously active, or
+      // (b) this is a fresh signup/login with no prior user tracked but stale data exists.
+      // This prevents cross-user data leaks in all scenarios.
       const newUserId = res?.user?.id;
       const prevUserId = localStorage.getItem('massiq:current-user');
-      if (prevUserId && newUserId && prevUserId !== newUserId) {
-        console.info('[auth] user switch detected — clearing stale cache', { from: prevUserId, to: newUserId });
+      const isUserSwitch = prevUserId && newUserId && prevUserId !== newUserId;
+      const isFirstLoginWithStaleData = !prevUserId && newUserId && mode === 'signup';
+      const cachedProfileId = LS.get(LS_KEYS.profile, null)?.id;
+      const isStaleCache = cachedProfileId && newUserId && cachedProfileId !== newUserId;
+      if (isUserSwitch || isFirstLoginWithStaleData || isStaleCache) {
+        console.info('[auth] clearing stale cache', { from: prevUserId || cachedProfileId, to: newUserId, reason: isUserSwitch ? 'user-switch' : isFirstLoginWithStaleData ? 'fresh-signup' : 'stale-cache' });
         Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
         setScanHistory([]);
       }
@@ -6847,6 +6894,7 @@ export default function MassIQ() {
     setEntitlements(null);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+    try { sessionStorage.clear(); } catch {}
   };
 
   const handleDeleteScanHistory = async () => {
@@ -6956,7 +7004,7 @@ export default function MassIQ() {
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
-      <Onboarding onComplete={handleOnboardingComplete} currentUserId={session?.user?.id} />
+      <Onboarding onComplete={handleOnboardingComplete} currentUserId={session?.user?.id} isEditing={editing} />
     </>
   );
 

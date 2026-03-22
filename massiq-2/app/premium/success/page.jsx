@@ -83,7 +83,7 @@ export default function PremiumSuccessPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const goToApp = () => router.push('/app');
+  const goToApp = () => router.push('/app?premium_activated=1');
 
   return (
     <div style={{
