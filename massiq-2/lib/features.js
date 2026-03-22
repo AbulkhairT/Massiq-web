@@ -3,32 +3,34 @@
  *
  * All premium access logic runs through here.
  * Do NOT scatter isPremium checks across the codebase.
+ *
+ * FREE tier = snapshot insight (BF%, basic label, short summary)
+ * PREMIUM tier = evolving intelligence + transformation guidance
  */
 
 export const FEATURES = Object.freeze({
   // ── Free features ─────────────────────────────────────────────────────────
-  BASIC_SCAN_VIEW:    'BASIC_SCAN_VIEW',   // current scan result + core metrics
-  SCAN_HISTORY:       'SCAN_HISTORY',      // history list of past scans
-  CURRENT_PLAN:       'CURRENT_PLAN',      // current macro snapshot
-  BASIC_PROGRESS:     'BASIC_PROGRESS',    // physique chart + basic summary
+  BASIC_SCAN_VIEW:    'BASIC_SCAN_VIEW',   // BF%, basic label, short summary only
+  CURRENT_PLAN:       'CURRENT_PLAN',      // static macro snapshot (no scan-backed updates)
   PROFILE:            'PROFILE',           // profile management
 
   // ── Premium features ──────────────────────────────────────────────────────
+  FULL_SCAN_DETAILS:  'FULL_SCAN_DETAILS', // limiting factor, muscle assessment, detailed explanations
   SCAN_COMPARISON:    'SCAN_COMPARISON',   // scan-to-scan delta analysis
+  SCAN_HISTORY:       'SCAN_HISTORY',      // full history with deltas and trends
   PROJECTIONS:        'PROJECTIONS',       // goal timeline + projected BF
-  ADAPTIVE_PLAN:      'ADAPTIVE_PLAN',     // adaptive macro recalculation
+  ADAPTIVE_PLAN:      'ADAPTIVE_PLAN',     // scan-backed macro recalculation
   TREND_ANALYSIS:     'TREND_ANALYSIS',    // multi-scan trend surface
   CORRECTIONS:        'CORRECTIONS',       // muscle imbalance / weak-point fixes
   DECISION_LOG:       'DECISION_LOG',      // adaptation decision + rationale
   PREMIUM_INSIGHTS:   'PREMIUM_INSIGHTS',  // FFMI, scoring breakdown
   WORKOUT_ADJUSTMENTS:'WORKOUT_ADJUSTMENTS', // adaptive training changes
+  BASIC_PROGRESS:     'BASIC_PROGRESS',    // progress tracking (premium)
 });
 
 const FREE_FEATURES = new Set([
   FEATURES.BASIC_SCAN_VIEW,
-  FEATURES.SCAN_HISTORY,
   FEATURES.CURRENT_PLAN,
-  FEATURES.BASIC_PROGRESS,
   FEATURES.PROFILE,
 ]);
 

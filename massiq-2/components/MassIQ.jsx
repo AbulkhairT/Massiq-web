@@ -1631,7 +1631,9 @@ function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
 ────────────────────────────────────────────────────────────────────────────── */
 
 const FEATURE_COPY = {
+  [FEATURES.FULL_SCAN_DETAILS]:  { title: 'Full Scan Analysis',           desc: 'Unlock detailed limiting factors, muscle group assessments, and actionable recommendations from every scan.' },
   [FEATURES.SCAN_COMPARISON]:    { title: 'See What Actually Changed',    desc: 'Every scan shows precise before/after deltas — body fat lost, lean mass gained, score shift. Know if your effort is working.' },
+  [FEATURES.SCAN_HISTORY]:       { title: 'Track Progress Over Time',     desc: 'See how your body fat, lean mass, and physique score are trending across all your scans with full deltas.' },
   [FEATURES.PROJECTIONS]:        { title: 'Your Timeline to the Goal',    desc: 'Based on your actual scan pace, Premium calculates how many weeks to reach your target body fat. No guessing.' },
   [FEATURES.ADAPTIVE_PLAN]:      { title: 'Macros That Update With You',  desc: 'After each scan, your calorie and protein targets automatically adjust to what your body actually needs right now.' },
   [FEATURES.DECISION_LOG]:       { title: 'Why Your Plan Changed',        desc: 'Every macro update comes with a specific reason — plateau detected, pace off target, lean mass shift. Full transparency.' },
@@ -5438,6 +5440,7 @@ Return ONLY this JSON (no markdown, no extra text):
 
   /* ── Results view ── */
   if (result) {
+    const premium = isPremiumActive(subscription);
     const ph      = result.phase || {};
     const phColor = PHASE_LABEL_COLORS[ph.label] || C.green;
     const dt      = result.dailyTargets || {};
@@ -5486,7 +5489,7 @@ Return ONLY this JSON (no markdown, no extra text):
           </Card>
         )}
 
-        {/* 1 – LIMITING FACTOR (most important, shown first) */}
+        {/* 1 – LIMITING FACTOR — FREE: title only, PREMIUM: full details */}
         {(() => {
           const diag = result.engineOutput?.diagnosis?.primary;
           const lf   = result.limitingFactor;
@@ -5506,6 +5509,33 @@ Return ONLY this JSON (no markdown, no extra text):
           const severity = diag?.severity;
           const signals  = diag && Array.isArray(diag.supporting_signals) ? diag.supporting_signals : [];
           const explanation = result.limitingFactorExplanation || diag?.primary_issue;
+
+          if (!premium) {
+            return (
+              <Card className="su" style={{ borderColor: color + '44' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <Icon name="stethoscope" size={18} color={color} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
+                    <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
+                  </div>
+                  {severity && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color, background: color + '22', padding: '3px 10px', borderRadius: 99, textTransform: 'capitalize', flexShrink: 0 }}>{severity}</span>
+                  )}
+                </div>
+                <div style={{ marginTop: 12, padding: '12px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Unlock Full Analysis</span>
+                  </div>
+                  <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, margin: 0 }}>
+                    Premium reveals the detailed explanation, supporting signals, and actionable fix for this limiting factor.
+                  </p>
+                </div>
+              </Card>
+            );
+          }
+
           return (
             <Card className="su" style={{ borderColor: color + '44' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explanation ? 12 : 0 }}>
@@ -5578,7 +5608,7 @@ Return ONLY this JSON (no markdown, no extra text):
           );
         })()}
 
-        {/* 3 – Phase diagnosis with reasoning */}
+        {/* 3 – Phase diagnosis — FREE: phase label + short summary, PREMIUM: full details */}
         <Card className="su" style={{ animationDelay: '.03s' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
@@ -5586,23 +5616,39 @@ Return ONLY this JSON (no markdown, no extra text):
             </span>
             <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
           </div>
-          {result.bodyFatSummary && (
-            <div style={{ marginBottom: result.muscleSummary ? 12 : 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Body Composition</div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
-            </div>
-          )}
-          {result.muscleSummary && (
-            <div style={{ paddingTop: result.bodyFatSummary ? 10 : 0, borderTop: result.bodyFatSummary ? `1px solid ${C.border}` : 'none' }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Muscle Development</div>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
-            </div>
-          )}
-          {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
-            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
-          )}
-          {predictedTrajectory.note && (
-            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{predictedTrajectory.note}</p>
+          {premium ? (
+            <>
+              {result.bodyFatSummary && (
+                <div style={{ marginBottom: result.muscleSummary ? 12 : 0 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Body Composition</div>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
+                </div>
+              )}
+              {result.muscleSummary && (
+                <div style={{ paddingTop: result.bodyFatSummary ? 10 : 0, borderTop: result.bodyFatSummary ? `1px solid ${C.border}` : 'none' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Muscle Development</div>
+                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
+                </div>
+              )}
+              {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
+                <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
+              )}
+              {predictedTrajectory.note && (
+                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{predictedTrajectory.note}</p>
+              )}
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>
+                {(result.bodyFatSummary || result.diagnosis || '').split('.').slice(0, 2).join('.') + '.'}
+              </p>
+              <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Premium unlocks full body composition + muscle development analysis</span>
+                </div>
+              </div>
+            </>
           )}
         </Card>
 
@@ -5648,7 +5694,12 @@ Return ONLY this JSON (no markdown, no extra text):
           </div>
         </div>
 
-        {/* 5 – Muscle group assessment */}
+        {/* 5 – Muscle group assessment — PREMIUM ONLY */}
+        {!premium ? (
+          <PremiumGate feature={FEATURES.FULL_SCAN_DETAILS} subscription={subscription} onUpgrade={() => {}}>
+            {null}
+          </PremiumGate>
+        ) : (
         <Card className="su" style={{ animationDelay: '.05s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Assessment</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -5678,27 +5729,45 @@ Return ONLY this JSON (no markdown, no extra text):
             </div>
           )}
         </Card>
+        )}
 
-        {/* 6 – Detailed metrics (lean mass, symmetry, score) */}
+        {/* 6 – Detailed metrics — FREE: BF + lean mass only, PREMIUM: full grid */}
         <div className="su" style={{ animationDelay: '.06s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {[
-              { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
-              { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
-              { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
-            ].map(m => (
+            {(premium
+              ? [
+                  { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
+                  { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+                  { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
+                  { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
+                ]
+              : [
+                  { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
+                  { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
+                ]
+            ).map(m => (
               <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
                 <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
               </div>
             ))}
           </div>
+          {!premium && (
+            <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)`, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Unlock Score + Symmetry with Premium</span>
+            </div>
+          )}
         </div>
 
-        {/* 6.5 – Physique Projection */}
+        {/* 6.5 – Physique Projection — PREMIUM ONLY */}
         {(() => {
+          if (!premium) return (
+            <PremiumGate feature={FEATURES.PROJECTIONS} subscription={subscription} onUpgrade={() => {}}>
+              {null}
+            </PremiumGate>
+          );
           const bf  = Number(result.bodyFatPct || 0);
           if (!bf) return null;
           const gen  = profile?.gender || 'Male';
