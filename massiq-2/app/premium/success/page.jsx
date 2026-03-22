@@ -15,6 +15,7 @@ const C = {
 
 const SUPABASE_URL     = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const AUTH_KEY          = 'massiq:auth:session';
 
 async function checkSubscription(token, userId) {
   try {
@@ -38,7 +39,31 @@ async function checkSubscription(token, userId) {
 
 function getStoredSession() {
   try {
-    return JSON.parse(localStorage.getItem('massiq:auth:session') || 'null');
+    return JSON.parse(localStorage.getItem(AUTH_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+async function refreshStoredSession(session) {
+  if (!session?.refresh_token || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.access_token) {
+      try { localStorage.setItem(AUTH_KEY, JSON.stringify(data)); } catch {}
+      return data;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -49,19 +74,33 @@ export default function PremiumSuccessPage() {
   const [state, setState] = useState('checking'); // checking | active | syncing | error
 
   useEffect(() => {
-    // Always set the premium-return flag so the main app can poll after login
     try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
 
     let cancelled = false;
     let attempts  = 0;
 
     const poll = async () => {
-      const session = getStoredSession();
-      const token   = session?.access_token;
-      const userId  = session?.user?.id || session?.user_id;
+      let session = getStoredSession();
+
+      // If the access token might be expired, try refreshing it
+      if (session?.refresh_token) {
+        const expiresAt = Number(session.expires_at || 0);
+        const now = Math.floor(Date.now() / 1000);
+        if (!session.access_token || (expiresAt && expiresAt - now < 120)) {
+          console.info('[premium-success] Token expired or near-expiry — refreshing');
+          const refreshed = await refreshStoredSession(session);
+          if (refreshed) {
+            session = refreshed;
+            console.info('[premium-success] Session refreshed successfully');
+          }
+        }
+      }
+
+      const token  = session?.access_token;
+      const userId = session?.user?.id || session?.user_id;
 
       if (!token || !userId) {
-        console.warn('[premium-success] No session found — user will need to log back in');
+        console.warn('[premium-success] No valid session — user will need to log back in');
         if (!cancelled) setState('syncing');
         return;
       }

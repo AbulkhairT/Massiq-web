@@ -6673,25 +6673,30 @@ export default function MassIQ() {
   // After the user logs in (session becomes available), poll subscription status
   // until it becomes active (webhook may take seconds to process).
   // Uses sessionStorage instead of URL param so it survives login form submission.
+  // Dependencies: only [ready, session?.access_token] — NOT subscription, to avoid
+  // premature flag consumption during hydration.
   useEffect(() => {
     if (!ready || !session?.access_token) return;
-    if (isPremiumActive(subscription)) return;
 
     let cancelled = false;
     try {
-      // Check both sessionStorage flag AND URL param (for backwards compat)
       const hasSsFlag = sessionStorage.getItem('massiq:premium-return');
       const params = new URLSearchParams(window.location.search);
       const hasUrlFlag = params.get('premium_activated');
 
       if (!hasSsFlag && !hasUrlFlag) return;
 
-      // Clear both flags immediately
-      try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+      // Clear URL param but keep sessionStorage flag until polling succeeds
       if (hasUrlFlag) window.history.replaceState({}, '', window.location.pathname);
 
       const userId = session.user?.id;
       if (!userId) return;
+
+      // Skip if already premium (check current state without subscription in deps)
+      if (isPremiumActive(subscription)) {
+        try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+        return;
+      }
 
       console.info('[premium-poll] detected premium return — polling subscription status');
       let attempts = 0;
@@ -6703,11 +6708,11 @@ export default function MassIQ() {
             if (sub && isPremiumActive(sub)) {
               if (!cancelled) {
                 setSubscription(sub);
-                // Also refresh entitlements
                 try {
                   const ent = await getEntitlements(session.access_token, userId);
                   if (!cancelled) setEntitlements(ent);
                 } catch {}
+                try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
                 console.info('[premium-poll] subscription activated', { status: sub.status, attempt: attempts });
               }
               return;
@@ -6715,12 +6720,14 @@ export default function MassIQ() {
           } catch {}
           if (attempts < 12) await new Promise(r => setTimeout(r, 2500));
         }
+        // Polling exhausted — clear flag so we don't loop forever
+        try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
         console.warn('[premium-poll] subscription not confirmed after 12 attempts');
       };
       poll();
     } catch {}
     return () => { cancelled = true; };
-  }, [ready, session?.access_token, subscription]);
+  }, [ready, session?.access_token]);
 
   // criticalProfile: when true the profile write failure is re-thrown instead of
   // swallowed. Used during onboarding so the Paywall can gate checkout on success.
