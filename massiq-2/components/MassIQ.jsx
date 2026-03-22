@@ -1728,7 +1728,7 @@ function Paywall({ userId, onClose }) {
               desc: 'Stop guessing. After each scan, your calorie and protein targets update automatically based on what your body actually shows.',
             },
             {
-              icon: 'chart',
+              icon: 'clock',
               label: 'Know how many weeks to your goal',
               desc: 'Premium calculates your timeline to target body fat based on your actual pace — not generic estimates.',
             },
@@ -6342,6 +6342,18 @@ export default function MassIQ() {
   // ──────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // If the user landed on /app with a Supabase recovery token in the URL hash
+    // (e.g. site URL fallback when redirect_to URL isn't in the Supabase allowlist),
+    // forward them to the dedicated reset-password page so the flow works properly.
+    try {
+      const hash = window.location.hash.replace(/^#/, '');
+      const params = new URLSearchParams(hash);
+      if (params.get('type') === 'recovery' && params.get('access_token')) {
+        window.location.replace(`/reset-password#${hash}`);
+        return;
+      }
+    } catch {}
+
     let mounted = true;
     const boot = async () => {
       try {

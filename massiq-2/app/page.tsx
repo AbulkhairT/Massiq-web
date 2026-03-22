@@ -383,6 +383,18 @@ const STEPS = [
 
 /* ─── Landing page ────────────────────────────────────────────────────────── */
 export default function LandingPage() {
+  // If Supabase redirects a recovery link to the root URL (site-URL fallback when
+  // redirect_to isn't in the allowlist), forward to the dedicated reset-password page.
+  useEffect(() => {
+    try {
+      const hash = window.location.hash.replace(/^#/, '');
+      const params = new URLSearchParams(hash);
+      if (params.get('type') === 'recovery' && params.get('access_token')) {
+        window.location.replace(`/reset-password#${hash}`);
+      }
+    } catch {}
+  }, []);
+
   useFadeUp();
 
   return (
