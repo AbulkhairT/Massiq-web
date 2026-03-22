@@ -585,6 +585,28 @@ function hammingDistance(h1, h2) {
   return dist;
 }
 
+// ─── subscriptions ───────────────────────────────────────────────────────────
+
+/**
+ * Fetch the user's subscription row from public.subscriptions.
+ * Returns null if no subscription exists or if the request fails.
+ * Read-only: no client writes to this table (webhook-only).
+ */
+export async function getSubscription(token, userId) {
+  if (!token || !userId) return null;
+  try {
+    const rows = await supabaseFetch(
+      `/rest/v1/subscriptions?user_id=eq.${userId}&select=id,user_id,status,stripe_customer_id,stripe_subscription_id,price_id,current_period_start,current_period_end,cancel_at_period_end,created_at,updated_at&limit=1`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  } catch (err) {
+    // Non-fatal: subscriptions table may not exist yet in dev
+    console.warn('[subscription] getSubscription failed (non-fatal):', err?.message);
+    return null;
+  }
+}
+
 // ─── physique_projections ───────────────────────────────────────────────────
 
 function serializeProjection(userId, scanId, planId, plan, scan, profile) {

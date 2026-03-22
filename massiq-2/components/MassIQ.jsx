@@ -22,9 +22,11 @@ import {
   findAssetBySha256,
   findSimilarAsset,
   getScanByAssetId,
+  getSubscription,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
+import { hasFeature, isPremiumActive, FEATURES } from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -1601,8 +1603,197 @@ function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
   return null;
 }
 
+/* ─── Premium Gate + Paywall ─────────────────────────────────────────────────
+   Central gating layer. Use <PremiumGate> to wrap any premium-only section.
+   Pass onUpgrade to open the paywall from any locked teaser card.
+────────────────────────────────────────────────────────────────────────────── */
+
+const FEATURE_COPY = {
+  [FEATURES.SCAN_COMPARISON]:    { title: 'Scan-to-Scan Comparison',     desc: 'See exactly what changed in body composition since your last scan — fat lost, muscle gained, score shifts.' },
+  [FEATURES.PROJECTIONS]:        { title: 'Goal Timeline',                desc: 'See how many weeks until you reach your target based on real scan data and current pace.' },
+  [FEATURES.ADAPTIVE_PLAN]:      { title: 'Adaptive Plan Updates',        desc: 'Your macros recalculate after every scan based on actual progress, not assumptions.' },
+  [FEATURES.DECISION_LOG]:       { title: 'Adaptation Insights',          desc: 'Understand why your plan changed — the precise logic behind every macro and recovery adjustment.' },
+  [FEATURES.CORRECTIONS]:        { title: 'Targeted Corrections',         desc: 'Identify muscle imbalances and weak points, with specific protocol adjustments to fix them.' },
+  [FEATURES.PREMIUM_INSIGHTS]:   { title: 'Advanced Metrics',             desc: 'FFMI, scoring breakdown, and body composition analytics that go deeper than body fat percentage.' },
+  [FEATURES.TREND_ANALYSIS]:     { title: 'Trend Analysis',               desc: 'Multi-scan trend surface with weekly progress velocity and direction across all key metrics.' },
+  [FEATURES.WORKOUT_ADJUSTMENTS]:{ title: 'Workout Adjustments',          desc: 'Training protocol updates based on scan results — volume, intensity, and priority muscle groups.' },
+};
+
+function PremiumGate({ feature, subscription, onUpgrade, children }) {
+  if (hasFeature(subscription, feature)) return children;
+
+  const copy = FEATURE_COPY[feature] || { title: 'Premium Feature', desc: 'Upgrade to MassIQ Premium to unlock this.' };
+
+  return (
+    <div style={{
+      borderRadius: 18, border: `1px solid rgba(114,184,149,0.18)`,
+      background: 'rgba(114,184,149,0.04)', padding: '20px 18px',
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          width: 22, height: 22, borderRadius: '50%', background: 'rgba(114,184,149,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <Icon name="lock" size={11} color={C.green} strokeWidth={2.5} />
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.green, textTransform: 'uppercase' }}>Premium</span>
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{copy.title}</div>
+      <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{copy.desc}</div>
+      <button
+        className="bp"
+        onClick={onUpgrade}
+        style={{
+          marginTop: 4, background: C.green, color: '#0A0D0A', border: 'none',
+          padding: '10px 20px', borderRadius: 99, fontSize: 13, fontWeight: 700,
+          cursor: 'pointer', alignSelf: 'flex-start',
+        }}
+      >
+        Unlock Premium →
+      </button>
+    </div>
+  );
+}
+
+function Paywall({ userId, onClose }) {
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  const BENEFITS = [
+    'Dynamic macros recalculated after every scan',
+    'Scan-to-scan comparison with precise deltas',
+    'Goal timeline — weeks to your target',
+    'Adaptation insights: why your plan changed',
+    'Muscle group weak-point correction protocols',
+    'Advanced metrics: FFMI, scoring breakdown',
+    'Trusted progress — no guesswork, no filler',
+  ];
+
+  const handleUpgrade = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ userId }),
+      });
+      const { url, error: apiErr } = await res.json();
+      if (apiErr) throw new Error(apiErr);
+      if (url) window.location.href = url;
+    } catch (err) {
+      setError(err.message || 'Could not start checkout. Try again.');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 400,
+      background: 'rgba(6,10,7,0.92)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+      display: 'flex', alignItems: 'flex-end', padding: 0,
+    }}>
+      <div style={{
+        width: '100%', maxWidth: 520, margin: '0 auto',
+        background: '#111811', borderRadius: '28px 28px 0 0',
+        border: '1px solid rgba(255,255,255,0.1)', borderBottom: 'none',
+        padding: '28px 24px max(28px, env(safe-area-inset-bottom))',
+        maxHeight: '92dvh', overflowY: 'auto',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 6 }}>
+              MassIQ Premium
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 900, color: C.white, lineHeight: 1.15 }}>
+              Unlock MassIQ<br />Premium
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="bp"
+            style={{
+              width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.06)',
+              border: '1px solid rgba(255,255,255,0.1)', color: C.muted, fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            }}
+          >×</button>
+        </div>
+
+        {/* Subheadline */}
+        <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
+          Turn scans into a real body recomposition plan.
+        </div>
+
+        {/* Value blocks */}
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 24,
+        }}>
+          {[
+            { icon: 'rotate',    label: 'Adaptive Plan',       desc: 'Macros that update with you' },
+            { icon: 'chart',     label: 'Progress Forecasts',  desc: 'Real timeline to your goal' },
+            { icon: 'bolt',      label: 'Corrections',         desc: 'Fix weak points precisely' },
+          ].map(b => (
+            <div key={b.label} style={{
+              background: 'rgba(114,184,149,0.06)', border: '1px solid rgba(114,184,149,0.15)',
+              borderRadius: 14, padding: '12px 10px', textAlign: 'center',
+            }}>
+              <Icon name={b.icon} size={18} color={C.green} strokeWidth={1.8} />
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginTop: 7 }}>{b.label}</div>
+              <div style={{ fontSize: 10, color: C.dimmed, marginTop: 3, lineHeight: 1.4 }}>{b.desc}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Benefits list */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+          {BENEFITS.map(b => (
+            <div key={b} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <div style={{ color: C.green, fontSize: 14, flexShrink: 0, marginTop: 1 }}>✓</div>
+              <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.5 }}>{b}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        {error && (
+          <div style={{ fontSize: 12, color: '#FFB4B7', marginBottom: 12, padding: '10px 12px', background: 'rgba(255,90,95,0.08)', borderRadius: 10 }}>
+            {error}
+          </div>
+        )}
+        <button
+          onClick={handleUpgrade}
+          disabled={loading}
+          style={{
+            width: '100%', background: loading ? 'rgba(114,184,149,0.5)' : C.green,
+            color: '#0A0D0A', border: 'none', padding: '16px', borderRadius: 99,
+            fontSize: 16, fontWeight: 800, cursor: loading ? 'default' : 'pointer', marginBottom: 12,
+          }}
+        >
+          {loading ? 'Loading…' : 'Start Premium'}
+        </button>
+        <button
+          onClick={onClose}
+          className="bp"
+          style={{
+            width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 14, color: C.dimmed, padding: '8px', marginBottom: 8,
+          }}
+        >
+          Continue with free
+        </button>
+        <div style={{ textAlign: 'center', fontSize: 11, color: C.dimmed }}>
+          Cancel anytime · No hidden charges
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function HomeTab({ profile, activePlan, setTab, showToast, scanHistory }) {
+function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, onUpgrade }) {
   const today      = new Date().toISOString().slice(0, 10);
   const macros     = getActiveTargets(activePlan, profile);
   const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
@@ -1925,6 +2116,100 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory }) {
           </div>
         );
       })()}
+
+      {/* ══ PREMIUM: Adaptation Insight ══════════════════════════════════════ */}
+      {hasScan && (
+        <PremiumGate feature={FEATURES.DECISION_LOG} subscription={subscription} onUpgrade={onUpgrade}>
+          {(() => {
+            const latestScan = resolvedHistory[resolvedHistory.length - 1];
+            const decision   = latestScan?.adaptationDecision;
+            const rationale  = latestScan?.adaptationRationale;
+            const cmp        = latestScan?.scanComparison;
+            if (!decision) return null;
+
+            const decisionLabel = {
+              keep_plan:            { label: 'On Track',            color: C.green,  icon: 'check' },
+              reduce_calories:      { label: 'Reduce Surplus',      color: C.orange, icon: 'arrow-down' },
+              increase_protein:     { label: 'Protein Needs Boost', color: C.blue,   icon: 'arrow-up' },
+              flag_plateau:         { label: 'Plateau Detected',    color: C.gold || '#FFD600', icon: 'warning' },
+              aggressive_deficit:   { label: 'Too Aggressive',      color: C.red || '#FF5A5F', icon: 'warning' },
+              bulk_pace_too_fast:   { label: 'Slowing Fat Gain',    color: C.orange, icon: 'arrow-down' },
+              low_confidence_rescan:{ label: 'Rescan Needed',       color: C.muted,  icon: 'scan' },
+              duplicate_reused:     { label: 'Duplicate Photo',     color: C.dimmed, icon: 'copy' },
+            }[decision] || { label: decision, color: C.muted, icon: 'bolt' };
+
+            return (
+              <Card style={{ background: '#0E1A12', border: `1px solid rgba(114,184,149,0.18)` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%', background: decisionLabel.color, flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: decisionLabel.color, textTransform: 'uppercase' }}>
+                    Adaptation · {decisionLabel.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 14, color: C.white, lineHeight: 1.6, marginBottom: cmp ? 14 : 0 }}>
+                  {rationale}
+                </div>
+                {cmp && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    {[
+                      { label: 'BF Change',    value: `${cmp.bf_delta > 0 ? '+' : ''}${cmp.bf_delta}%`,    color: cmp.bf_delta <= 0 ? C.green : C.orange },
+                      { label: 'Lean Mass',    value: `${cmp.lm_delta_lbs >= 0 ? '+' : ''}${cmp.lm_delta_lbs} lb`, color: cmp.lm_delta_lbs >= 0 ? C.green : C.orange },
+                      { label: 'Score',        value: `${cmp.score_delta >= 0 ? '+' : ''}${cmp.score_delta}`, color: cmp.score_delta >= 0 ? C.green : C.orange },
+                    ].map(m => (
+                      <div key={m.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '8px 10px', textAlign: 'center' }}>
+                        <div style={{ fontSize: 9, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{m.label}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: m.color }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+        </PremiumGate>
+      )}
+
+      {/* ══ PREMIUM: Goal Timeline ════════════════════════════════════════════ */}
+      {hasScan && activePlan?.engineTrajectory && (
+        <PremiumGate feature={FEATURES.PROJECTIONS} subscription={subscription} onUpgrade={onUpgrade}>
+          {(() => {
+            const traj       = activePlan.engineTrajectory;
+            const weeksLeft  = traj?.timeline_weeks;
+            const targetBF   = activePlan.targetBF ?? activePlan.bodyFat;
+            const currentBF  = currentBF;
+            const weeklyRate = traj?.weekly_change;
+            if (!weeksLeft) return null;
+            return (
+              <Card style={{ background: '#0E1A12', border: `1px solid rgba(114,184,149,0.18)` }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.green, textTransform: 'uppercase', marginBottom: 10 }}>
+                  Goal Timeline
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 36, fontWeight: 900, color: C.white, lineHeight: 1 }}>
+                      {Math.max(1, Math.round(weeksLeft))}
+                    </div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>weeks to target</div>
+                  </div>
+                  {targetBF != null && (
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 3 }}>Target BF</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{targetBF}%</div>
+                    </div>
+                  )}
+                </div>
+                {weeklyRate && (
+                  <div style={{ fontSize: 12, color: C.muted, borderTop: `1px solid rgba(255,255,255,0.06)`, paddingTop: 10 }}>
+                    Expected pace: <span style={{ color: C.white, fontWeight: 600 }}>{Math.abs(weeklyRate).toFixed(2)}% BF / week</span>
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+        </PremiumGate>
+      )}
 
       {/* ══ TODAY'S FOCUS (only after first scan) ════════════════════════════ */}
       {activePlan && resolvedHistory.length > 0 && (
@@ -3133,7 +3418,7 @@ function getWeeklyPriorities(profile, targets, plan) {
   return [p1, p2, p3];
 }
 
-function PlanTab({ profile, activePlan, setTab, showToast }) {
+function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgrade }) {
   const weekKey = getWeekKey();
   const [openSections,  setOpenSections]  = useState(() => new Set(['week', 'focus']));
   const [workoutPage,   setWorkoutPage]   = useState(() => {
@@ -3316,6 +3601,28 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           </div>
         )}
       </div>
+
+      {/* ══ PREMIUM: Why this plan ══════════════════════════════════════ */}
+      <PremiumGate feature={FEATURES.ADAPTIVE_PLAN} subscription={subscription} onUpgrade={onUpgrade}>
+        {latestScan?.adaptationDecision ? (
+          <div style={{ background: '#0E1A12', borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(114,184,149,0.2)` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.green, textTransform: 'uppercase', marginBottom: 10 }}>
+              Why this plan
+            </div>
+            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.65, marginBottom: latestScan.scanComparison ? 14 : 0 }}>
+              {latestScan.adaptationRationale || 'Plan is based on your latest scan results.'}
+            </div>
+            {latestScan.scanComparison?.pace_vs_expected && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(114,184,149,0.1)', borderRadius: 99, padding: '5px 12px', marginTop: 4 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: latestScan.scanComparison.pace_vs_expected === 'on_track' ? C.green : C.orange }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: latestScan.scanComparison.pace_vs_expected === 'on_track' ? C.green : C.orange }}>
+                  {latestScan.scanComparison.pace_vs_expected === 'on_track' ? 'Pace: on track' : latestScan.scanComparison.pace_vs_expected === 'ahead' ? 'Pace: ahead' : 'Pace: behind'}
+                </span>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </PremiumGate>
 
       {/* ══ 3. FOCUS ════════════════════════════════════════════════════ */}
       <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
@@ -3856,7 +4163,7 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast, onUpdateUnits }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast, onUpdateUnits, subscription, onUpgrade }) {
   const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -3949,9 +4256,53 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
     return () => clearInterval(interval);
   }, []);
 
+  const isPremium     = isPremiumActive(subscription);
+  const periodEnd     = subscription?.current_period_end
+    ? new Date(subscription.current_period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
   return (
     <div className="screen">
       <h1 className="screen-title">Profile</h1>
+
+      {/* ── Subscription status ─────────────────────────────────────────── */}
+      <Card className="su" style={{ animationDelay: '.01s', background: isPremium ? '#0E1A12' : C.card, border: isPremium ? `1px solid rgba(114,184,149,0.25)` : `1px solid ${C.border}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: isPremium ? C.green : C.dimmed, textTransform: 'uppercase', marginBottom: 5 }}>
+              {isPremium ? 'Premium · Active' : 'Free Plan'}
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.white }}>
+              {isPremium ? 'MassIQ Premium' : 'MassIQ Free'}
+            </div>
+            {isPremium && periodEnd && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                {subscription?.cancel_at_period_end ? `Cancels ${periodEnd}` : `Renews ${periodEnd}`}
+              </div>
+            )}
+          </div>
+          {!isPremium && (
+            <button
+              className="bp"
+              onClick={onUpgrade}
+              style={{
+                background: C.green, color: '#0A0D0A', border: 'none',
+                padding: '9px 18px', borderRadius: 99, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              }}
+            >
+              Upgrade →
+            </button>
+          )}
+          {isPremium && (
+            <div style={{
+              background: 'rgba(114,184,149,0.12)', borderRadius: 10,
+              padding: '6px 12px', fontSize: 12, color: C.green, fontWeight: 600,
+            }}>
+              Active
+            </div>
+          )}
+        </div>
+      </Card>
 
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
       {!lastScan && (
@@ -5714,7 +6065,9 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
-  const [scanHistory, setScanHistory] = useState(() => LS.get(LS_KEYS.scanHistory, []));
+  const [scanHistory,   setScanHistory]   = useState(() => LS.get(LS_KEYS.scanHistory, []));
+  const [subscription,  setSubscription]  = useState(null);
+  const [paywallOpen,   setPaywallOpen]   = useState(false);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
   // Sub-components call getActiveTargets() themselves so they stay fresh.
@@ -5787,6 +6140,15 @@ export default function MassIQ() {
         } catch (scanErr) {
           console.error('sync:getScans failed (continuing without scans)', scanErr);
           loadedScanHistory = [];
+        }
+
+        // Load subscription status (non-fatal — null means free tier)
+        try {
+          const sub = await getSubscription(session.access_token, userId);
+          if (mounted) setSubscription(sub);
+          console.info('[sync] subscription:ok', { status: sub?.status || 'none' });
+        } catch {
+          // Non-fatal: free tier assumed
         }
 
         if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
@@ -6018,6 +6380,7 @@ export default function MassIQ() {
     setProfile(null);
     setActivePlan(null);
     setEditing(false);
+    setSubscription(null);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
   };
@@ -6082,10 +6445,10 @@ export default function MassIQ() {
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
         case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
-        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
+        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
             profile={profile}
@@ -6095,6 +6458,8 @@ export default function MassIQ() {
             onReset={handleReset}
             onLogout={handleLogout}
             showToast={showToast}
+            subscription={subscription}
+            onUpgrade={() => setPaywallOpen(true)}
             onUpdateUnits={(unit) => {
               const updated = { ...profile, unitSystem: unit };
               setProfile(updated);
@@ -6130,6 +6495,13 @@ export default function MassIQ() {
 
       <TabBar active={tab} setTab={setTab} />
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
+      {paywallOpen && (
+        <Paywall
+          userId={profile?.id}
+          onClose={() => setPaywallOpen(false)}
+          showToast={showToast}
+        />
+      )}
     </>
   );
 }
