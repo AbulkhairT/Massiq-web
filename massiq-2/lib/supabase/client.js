@@ -291,7 +291,7 @@ export async function signInWithPassword(email, password) {
 
 /**
  * Sends a password reset email via Supabase Auth.
- * On success, the user receives a link to reset their password.
+ * The email link redirects to /reset-password which handles the recovery token.
  */
 export async function requestPasswordReset(email) {
   if (!hasConfig()) throw new Error('Supabase env missing');
@@ -299,7 +299,20 @@ export async function requestPasswordReset(email) {
   return supabaseFetch('/auth/v1/recover', {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ email, redirect_to: `${appUrl}/app` }),
+    body: JSON.stringify({ email, redirect_to: `${appUrl}/reset-password` }),
+  });
+}
+
+/**
+ * Updates the authenticated user's password using a recovery access token.
+ * Pass the access_token extracted from the Supabase recovery URL.
+ */
+export async function updatePassword(accessToken, newPassword) {
+  if (!hasConfig()) throw new Error('Supabase env missing');
+  return supabaseFetch('/auth/v1/user', {
+    method: 'PUT',
+    headers: authHeaders(accessToken),
+    body: JSON.stringify({ password: newPassword }),
   });
 }
 
@@ -502,8 +515,13 @@ export async function getScans(token, userId, limit = 25) {
 export async function uploadScanPhoto(token, userId, base64, mediaType) {
   if (!hasConfig()) throw new Error('Supabase env missing');
   const ext      = mediaType === 'image/png' ? 'png' : 'jpg';
-  const filename = `${Date.now()}.${ext}`;
-  const path     = `${userId}/${filename}`;
+  const now      = new Date();
+  const yyyy     = now.getUTCFullYear();
+  const mm       = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const ts       = now.getTime();
+  const rand     = Math.random().toString(36).slice(2, 8);
+  const filename = `${ts}-${rand}.${ext}`;
+  const path     = `${userId}/${yyyy}/${mm}/${filename}`;
   const uploadUrl = `${SUPABASE_URL}/storage/v1/object/scan-photos/${path}`;
 
   console.info('[storage:upload] Starting', { path, mediaType, base64Bytes: base64.length });

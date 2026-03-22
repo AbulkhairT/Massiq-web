@@ -5026,7 +5026,7 @@ Return ONLY this JSON (no markdown, no extra text):
 
       // ── Step 1b: Upload photo to Supabase Storage + create scan_asset row ─
       // sha256Hash is optional — upload proceeds even without it (non-HTTPS fallback).
-      // Failure here is non-blocking but fully logged so it can be debugged.
+      // Upload is REQUIRED for logged-in users — failure surfaces as a scan error.
       let resolvedAssetId = null;
       if (session?.access_token && userId) {
         console.info('[scan:asset] Pipeline start', {
@@ -5036,17 +5036,24 @@ Return ONLY this JSON (no markdown, no extra text):
           mediaType,
           base64Length: base64.length,
         });
-        try {
-          // Step A — storage upload
-          const storagePath = await uploadScanPhoto(session.access_token, userId, base64, mediaType);
-          console.info('[scan:asset] Storage upload OK →', storagePath);
 
-          // Step B — scan_assets row
+        // Step A — storage upload (throws on failure — do not silently continue)
+        let storagePath;
+        try {
+          storagePath = await uploadScanPhoto(session.access_token, userId, base64, mediaType);
+          console.info('[scan:asset] Storage upload OK →', storagePath);
+        } catch (uploadErr) {
+          console.error('[scan:asset] Storage upload FAILED:', uploadErr?.message);
+          throw new Error(`Photo upload failed: ${uploadErr?.message || 'storage error'}. Check your connection and try again.`);
+        }
+
+        // Step B — scan_assets row (throws on failure)
+        try {
           const asset = await createScanAsset(session.access_token, userId, {
             storagePath,
             mimeType:       mediaType,
-            fileSizeBytes:  Math.round(base64.length * 0.75), // approx decoded bytes
-            sha256:         sha256Hash,   // may be null if WebCrypto unavailable
+            fileSizeBytes:  Math.round(base64.length * 0.75),
+            sha256:         sha256Hash,
             perceptualHash: pHash,
             width:          imgDimensions.width,
             height:         imgDimensions.height,
@@ -5055,13 +5062,16 @@ Return ONLY this JSON (no markdown, no extra text):
           if (resolvedAssetId) {
             console.info('[scan:asset] scan_assets row created, assetId:', resolvedAssetId);
           } else {
-            console.error('[scan:asset] scan_assets insert returned no id — RLS or column mismatch?', asset);
+            console.error('[scan:asset] scan_assets insert returned no id — check RLS SELECT policy', asset);
+            throw new Error('Scan record could not be saved (asset id missing). Check Supabase RLS policies on scan_assets.');
           }
         } catch (assetErr) {
-          console.error('[scan:asset] Pipeline failed:', assetErr?.message, assetErr?.stack?.slice(0, 300));
+          if (assetErr.message.includes('asset id missing') || assetErr.message.includes('RLS')) throw assetErr;
+          console.error('[scan:asset] scan_assets insert FAILED:', assetErr?.message);
+          throw new Error(`Scan metadata could not be saved: ${assetErr?.message || 'database error'}.`);
         }
       } else {
-        console.warn('[scan:asset] Skipping upload — missing auth', {
+        console.warn('[scan:asset] Skipping upload — user not logged in', {
           hasToken: !!session?.access_token,
           userId,
         });
