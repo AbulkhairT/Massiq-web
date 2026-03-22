@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, useMemo, Component } from "react";
+import { Icon } from './Icon';
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
@@ -38,13 +39,15 @@ const C = {
 
 /* ─── Global CSS ─────────────────────────────────────────────────────────── */
 const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800;1,14..32,300..800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;background:${C.bg}}
   ::-webkit-scrollbar{display:none}
   body{
-    font-family:'Inter',sans-serif;color:${C.white};-webkit-font-smoothing:antialiased;
-    text-rendering:optimizeLegibility;letter-spacing:-0.01em;
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;
+    color:${C.white};-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;letter-spacing:-0.015em;
+    font-feature-settings:'cv02','cv03','cv04','cv11';
   }
   @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -386,11 +389,11 @@ const getBFDisplay = (scan) => {
 };
 
 const PHASE_META = {
-  Cut:     { label: 'Cut',     emoji: '📉', target: 'Reduce body fat while preserving lean tissue' },
-  Bulk:    { label: 'Bulk',    emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
-  Build:   { label: 'Build',   emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
-  Recomp:  { label: 'Recomp',  emoji: '🔄', target: 'Improve composition while maintaining bodyweight range' },
-  Maintain:{ label: 'Maintain',emoji: '⚖️', target: 'Hold conditioning and improve weak points' },
+  Cut:     { label: 'Cut',     icon: 'arrow-down', target: 'Reduce body fat while preserving lean tissue' },
+  Bulk:    { label: 'Bulk',    icon: 'arrow-up',   target: 'Increase lean mass with controlled fat gain' },
+  Build:   { label: 'Build',   icon: 'arrow-up',   target: 'Increase lean mass with controlled fat gain' },
+  Recomp:  { label: 'Recomp',  icon: 'rotate',     target: 'Improve composition while maintaining bodyweight range' },
+  Maintain:{ label: 'Maintain',icon: 'scale',      target: 'Hold conditioning and improve weak points' },
 };
 
 function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
@@ -580,7 +583,7 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
   return {
     id: meal.id || `sg-${idx + 1}`,
     time: meal.time || meal.mealType || (idx === 1 ? 'Snack' : idx === 0 ? 'Lunch' : 'Dinner'),
-    icon: meal.icon || '🍽️',
+    icon: meal.icon || 'bowl',
     name: invalidVegan ? 'Plant protein bowl' : safeName,
     calories,
     protein,
@@ -737,7 +740,7 @@ class TabErrorBoundary extends Component {
     if (this.state.error) {
       return (
         <div style={{ padding: 32, textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 16 }}>⚠️</div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}><Icon name="warning" size={32} color={C.orange} /></div>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Something went wrong</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
             {String(this.state.error?.message || 'Unexpected error')}
@@ -881,7 +884,7 @@ function PlanGeneratingScreen({ name }) {
       <div style={{ position: 'relative', width: 100, height: 100, marginBottom: 40 }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}`, animation: 'pulse 2s ease-in-out infinite' }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="brain" size={28} color={C.green} strokeWidth={1.25} /></div>
       </div>
       <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 8, textAlign: 'center' }}>Building your plan{name ? `, ${name}` : ''}.</div>
       <div style={{ fontSize: 14, color: C.muted, marginBottom: 32 }}>This takes about 10 seconds</div>
@@ -899,10 +902,10 @@ const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Fre
 const CUISINES    = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
 const AVOID_FOODS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Soy', 'Eggs', 'Red Meat', 'Processed Sugar'];
 const GOALS = [
-  { key: 'Cut',      emoji: '📉', label: 'Cut',      desc: 'Lose fat, preserve muscle' },
-  { key: 'Bulk',     emoji: '📈', label: 'Bulk',     desc: 'Build maximum muscle mass' },
-  { key: 'Recomp',   emoji: '🔄', label: 'Recomp',  desc: 'Lose fat & gain muscle simultaneously' },
-  { key: 'Maintain', emoji: '⚖️', label: 'Maintain', desc: 'Stay lean at current weight' },
+  { key: 'Cut',      icon: 'arrow-down', label: 'Cut',      desc: 'Lose fat, preserve muscle' },
+  { key: 'Bulk',     icon: 'arrow-up',   label: 'Bulk',     desc: 'Build maximum muscle mass' },
+  { key: 'Recomp',   icon: 'rotate',     label: 'Recomp',   desc: 'Lose fat & gain muscle simultaneously' },
+  { key: 'Maintain', icon: 'scale',      label: 'Maintain', desc: 'Stay lean at current weight' },
 ];
 const ACTIVITIES = [
   { key: 'Sedentary', label: 'Sedentary',         desc: 'Mostly sitting, minimal movement',          insight: 'Lower baseline calorie needs.' },
@@ -1177,7 +1180,9 @@ function Onboarding({ onComplete }) {
               <div key={g.key} className={`ob-card${data.goal === g.key ? ' selected' : ''}`}
                 onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
                 style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 48, marginBottom: 10 }}>{g.emoji}</div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+                  <Icon name={g.icon} size={36} color={data.goal === g.key ? C.green : C.muted} strokeWidth={1.5} />
+                </div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 6 }}>{g.label}</div>
                 <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
               </div>
@@ -1331,7 +1336,7 @@ function Onboarding({ onComplete }) {
       case 8: return (
         <div style={{ width: '100%', textAlign: 'center' }}>
           <AILabel />
-          <div style={{ fontSize: 52, marginBottom: 20 }}>🚀</div>
+          <div style={{ marginBottom: 20 }}><Icon name="bolt" size={52} color={C.green} strokeWidth={1} /></div>
           <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
             Your profile is ready,<br />{data.name}.
           </h1>
@@ -1420,7 +1425,7 @@ function CalcScreen() {
       <div style={{ position: 'relative', width: 90, height: 90, margin: '0 auto 32px' }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.greenBg}` }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 10, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+        <div style={{ position: 'absolute', inset: 10, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="brain" size={26} color={C.green} strokeWidth={1.25} /></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center' }}>
         {lines.slice(0, shown).map((l, i) => (
@@ -1468,7 +1473,7 @@ function AIDailyTip({ profile, activePlan, todayMeals }) {
     return () => { ok = false; };
   }, []);
   if (loading) return <div className="skeleton" style={{ height: 14, width: '70%', borderRadius: 6 }} />;
-  return <span>💡 {tip}</span>;
+  return <span>{tip}</span>;
 }
 
 function TargetTile({ icon, label, current, target, unit, color, showProgress = true, sourceLabel }) {
@@ -1820,7 +1825,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
               <div style={{ padding: '14px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)` }}>
                 <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>⚡</span>
+                  <Icon name="bolt" size={16} color={C.orange} strokeWidth={2} style={{ flexShrink: 0, marginTop: 1 }} />
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 3 }}>{diagTitle}</div>
                     {diagExpl && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{diagExpl}</div>}
@@ -1848,16 +1853,11 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
                     <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         {r.dir && (
-                          <span style={{ fontSize: 13, color: r.dir === '↑' ? C.green : C.orange, fontWeight: 700, lineHeight: 1 }}>{r.dir}</span>
+                          <Icon name={r.dir === '↑' ? 'arrow-up' : 'arrow-down'} size={12} color={r.dir === '↑' ? C.green : C.orange} />
                         )}
-                        <span style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{r.label}</span>
+                        <span style={{ fontSize: 14, color: C.muted, fontWeight: 400 }}>{r.label}</span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {r.old != null && (
-                          <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{r.old}{r.unit}</span>
-                        )}
-                        <span style={{ fontSize: 15, fontWeight: 800, color: r.color }}>{r.now}{r.unit}</span>
-                      </div>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: r.color }}>{r.now}{r.unit}</span>
                     </div>
                   ))}
                 </div>
@@ -2086,24 +2086,24 @@ function useAISuggestions(profile, activePlan, meals) {
     const phase = profile?.goal || activePlan?.phase || 'Maintain';
     const mealsByPhase = {
       Cut: [
-        { name: 'Chicken + greens bowl', icon: '🥗', ratio: 0.28 },
-        { name: 'Greek yogurt protein snack', icon: '🥣', ratio: 0.16 },
-        { name: 'Salmon + vegetables plate', icon: '🐟', ratio: 0.33 },
+        { name: 'Chicken + greens bowl', icon: 'leaf', ratio: 0.28 },
+        { name: 'Greek yogurt protein snack', icon: 'bowl', ratio: 0.16 },
+        { name: 'Salmon + vegetables plate', icon: 'utensils', ratio: 0.33 },
       ],
       Bulk: [
-        { name: 'Rice + lean beef bowl', icon: '🍚', ratio: 0.34 },
-        { name: 'Oats + whey + berries', icon: '🥣', ratio: 0.22 },
-        { name: 'Pasta + chicken plate', icon: '🍝', ratio: 0.36 },
+        { name: 'Rice + lean beef bowl', icon: 'bowl', ratio: 0.34 },
+        { name: 'Oats + whey + berries', icon: 'bowl', ratio: 0.22 },
+        { name: 'Pasta + chicken plate', icon: 'bowl', ratio: 0.36 },
       ],
       Recomp: [
-        { name: 'Egg + toast breakfast plate', icon: '🍳', ratio: 0.25 },
-        { name: 'Turkey rice bowl', icon: '🍲', ratio: 0.3 },
-        { name: 'Steak + potato dinner', icon: '🥩', ratio: 0.32 },
+        { name: 'Egg + toast breakfast plate', icon: 'utensils', ratio: 0.25 },
+        { name: 'Turkey rice bowl', icon: 'bowl', ratio: 0.3 },
+        { name: 'Steak + potato dinner', icon: 'bolt', ratio: 0.32 },
       ],
       Maintain: [
-        { name: 'Balanced protein bowl', icon: '🍱', ratio: 0.3 },
-        { name: 'High-protein wrap', icon: '🌯', ratio: 0.24 },
-        { name: 'Fish + grains plate', icon: '🐟', ratio: 0.31 },
+        { name: 'Balanced protein bowl', icon: 'bowl', ratio: 0.3 },
+        { name: 'High-protein wrap', icon: 'utensils', ratio: 0.24 },
+        { name: 'Fish + grains plate', icon: 'utensils', ratio: 0.31 },
       ],
     }[phase] || [];
     return mealsByPhase.map((x, i) => {
@@ -2310,7 +2310,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
             <div style={{ fontSize: 12, fontWeight: 600, color: C.green, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 12 }}>AI Analyze</div>
             {/* Tab toggle */}
             <div style={{ display: 'flex', background: C.card, borderRadius: 10, padding: 3, marginBottom: 14 }}>
-              {[['describe','📝 Describe'],['photo','📷 Photo']].map(([k, lbl]) => (
+              {[['describe','Describe'],['photo','Photo']].map(([k, lbl]) => (
                 <button key={k} className="bp" onClick={() => setAiTab(k)} style={{
                   flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
                   background: aiTab === k ? C.green : 'transparent',
@@ -2337,7 +2337,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
                   width: '100%', padding: '28px 0', borderRadius: 12, border: `1.5px dashed ${C.green}`,
                   background: C.greenBg, color: C.green, fontSize: 14, fontWeight: 600, cursor: 'pointer',
                 }}>
-                  {analyzing ? '⏳ Analyzing…' : '📷 Take or upload a photo'}
+                  {analyzing ? 'Analyzing…' : 'Take or upload a photo'}
                 </button>
               </div>
             )}
@@ -2346,7 +2346,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
 
           {comment && (
             <div style={{ background: C.greenBg, border: `1px solid ${C.greenDim}`, borderRadius: 12, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.green, lineHeight: 1.5 }}>
-              💬 {comment}
+              {comment}
             </div>
           )}
 
@@ -2456,7 +2456,7 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onW
         )}
       </div>
       {ex.weight && (
-        <div style={{ fontSize: 12, color: C.blue, marginBottom: 10 }}>⚖️ {ex.weight}</div>
+        <div style={{ fontSize: 12, color: C.blue, marginBottom: 10 }}>{ex.weight}</div>
       )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: ex.technique ? 10 : 0 }}>
         {Array.from({ length: sets }).map((_, si) => {
@@ -2478,7 +2478,7 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onW
       {/* Weight logger */}
       {onWeightChange && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-          <span style={{ fontSize: 11, color: C.dimmed, whiteSpace: 'nowrap' }}>⚖️ Weight used</span>
+          <span style={{ fontSize: 11, color: C.dimmed, whiteSpace: 'nowrap' }}>Weight used</span>
           <input
             type="text"
             inputMode="decimal"
@@ -2725,7 +2725,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
                 width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, cursor: 'pointer',
               }}>
-                <span style={{ fontSize: 14, fontWeight: 600 }}>🔥 Warmup</span>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>Warmup</span>
                 <span style={{ fontSize: 11, color: C.muted }}>{showWarmup ? '▲' : '▼'}</span>
               </button>
               {showWarmup && (
@@ -2759,7 +2759,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
           </div>
           {workout.cooldown && (
             <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, marginBottom: 18, fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
-              ❄️ <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
+              <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
             </div>
           )}
           <Btn onClick={() => {
@@ -2780,7 +2780,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
             LS.set(`massiq:workout:${dateKey}`, log);
             onFinish?.(); onClose();
           }} style={{ width: '100%' }}>
-            {pct === 100 ? '🏆 Workout Complete!' : `Finish Workout (${pct}% done)`}
+            {pct === 100 ? 'Workout Complete!' : `Finish Workout (${pct}% done)`}
           </Btn>
         </div>
       </div>
@@ -2802,7 +2802,7 @@ function TodayWorkoutCard() {
     return (
       <Card className="su" style={{ animationDelay: '.15s', opacity: 0.75 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontSize: 24 }}>😴</div>
+          <div style={{ display: 'flex', alignItems: 'center' }}><Icon name="moon" size={24} color={C.dimmed} /></div>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Rest Day</div>
             <div style={{ fontSize: 13, color: C.muted }}>Recovery is part of the process.</div>
@@ -2839,7 +2839,7 @@ function TodayWorkoutCard() {
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.muted }}>
             <span style={{ display: 'flex', gap: 16 }}>
-              {exCount > 0 && <span>🏋️ {exCount} exercises</span>}
+              {exCount > 0 && <span>{exCount} exercises</span>}
               {todayWorkout.duration && <span>⏱ {todayWorkout.duration}</span>}
             </span>
             {todayLog && (
@@ -2904,7 +2904,7 @@ function NutritionTab({ profile, activePlan, showToast, setTab }) {
         const tip = protPct >= 80
           ? `✓ On track with protein. Focus on hitting your calories.`
           : lateEnough && protPct < 50
-            ? `⚡ You need ${protRem}g more protein today. Add chicken, eggs, or Greek yogurt to your next meal.`
+            ? `You need ${protRem}g more protein today. Add chicken, eggs, or Greek yogurt to your next meal.`
             : null;
         const ringDeg = Math.round(protPct * 3.6);
         return (
@@ -3173,7 +3173,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           background: C.card, borderRadius: 20, padding: '36px 24px',
           border: `1px solid rgba(255,255,255,0.08)`, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 34, marginBottom: 18 }}>📋</div>
+          <div style={{ marginBottom: 18 }}><Icon name="clipboard" size={36} color={C.dimmed} /></div>
           <div style={{ fontSize: 19, fontWeight: 700, color: C.white, marginBottom: 8 }}>
             Your plan comes from your scan
           </div>
@@ -3610,6 +3610,66 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         );
       })()}
 
+      {/* ── Symmetry & Balance Suggestions ── */}
+      {(() => {
+        const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0];
+        const weakGroups = latestScan?.weakestGroups || [];
+        if (weakGroups.length === 0) return null;
+
+        const SYMMETRY_EXERCISES = {
+          chest: [{ name: 'Single-Arm Cable Fly', sets: '3', reps: '12–15', note: 'Isolates each side independently' }, { name: 'Dumbbell Press', sets: '4', reps: '8–12', note: 'Expose left/right imbalances' }],
+          shoulders: [{ name: 'Single-Arm Lateral Raise', sets: '3', reps: '15', note: 'Correct shoulder height imbalance' }, { name: 'Cable Face Pull', sets: '3', reps: '15–20', note: 'Rear delt and rotator balance' }],
+          back: [{ name: 'Single-Arm Dumbbell Row', sets: '4', reps: '10–12', note: 'Match rep quality both sides' }, { name: 'Lat Pulldown (neutral grip)', sets: '3', reps: '10–12', note: 'Bilateral engagement check' }],
+          arms: [{ name: 'Alternating Dumbbell Curl', sets: '3', reps: '12 each', note: 'Identify strength gap between arms' }, { name: 'Single-Arm Tricep Pushdown', sets: '3', reps: '12–15', note: 'Equalise tricep volume' }],
+          core: [{ name: 'Pallof Press', sets: '3', reps: '12 each side', note: 'Anti-rotation for core symmetry' }, { name: 'Copenhagen Plank', sets: '3', reps: '20s each', note: 'Adductor and hip balance' }],
+          legs: [{ name: 'Bulgarian Split Squat', sets: '4', reps: '8–10 each', note: 'Expose quad/glute imbalance' }, { name: 'Single-Leg Press', sets: '3', reps: '10–12', note: 'Match load both legs' }],
+        };
+
+        const suggestions = weakGroups.slice(0, 3).flatMap(g => {
+          const key = String(g).toLowerCase().replace(/[^a-z]/g, '');
+          return (SYMMETRY_EXERCISES[key] || []).slice(0, 2).map(ex => ({ ...ex, group: g }));
+        });
+
+        if (suggestions.length === 0) return null;
+
+        const symScore = latestScan?.symmetryScore;
+        return (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 600 }}>
+                Symmetry corrections
+              </span>
+              {symScore != null && (
+                <span style={{ fontSize: 12, color: C.purple, fontWeight: 700 }}>{symScore}/100</span>
+              )}
+            </div>
+            <div style={{ borderRadius: 16, background: C.cardElevated, border: `1px solid rgba(255,255,255,0.07)`, overflow: 'hidden' }}>
+              <div style={{ padding: '12px 16px', borderBottom: `1px solid rgba(255,255,255,0.05)`, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {weakGroups.slice(0, 3).map(g => (
+                  <span key={g} style={{ fontSize: 11, color: C.orange, background: 'rgba(255,140,0,0.08)',
+                    padding: '3px 10px', borderRadius: 99, border: '1px solid rgba(255,140,0,0.15)', fontWeight: 600, textTransform: 'capitalize' }}>
+                    {g}
+                  </span>
+                ))}
+              </div>
+              {suggestions.map((ex, i) => (
+                <div key={`${ex.name}-${i}`} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '10px 16px',
+                  borderBottom: i < suggestions.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none',
+                }}>
+                  <div>
+                    <div style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{ex.name}</div>
+                    {ex.note && <div style={{ fontSize: 11, color: C.dimmed, marginTop: 1 }}>{ex.note}</div>}
+                  </div>
+                  <span style={{ fontSize: 13, color: C.muted, fontWeight: 600, flexShrink: 0, marginLeft: 12 }}>{ex.sets}×{ex.reps}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* selectedMeal modal */}
       {selectedMeal && (
         <RecipeModal
@@ -3649,14 +3709,14 @@ function Toast({ msg, onDone }) {
 
 /* Mission definitions */
 const MISSIONS = [
-  { id: 'm_log_meal',    tier: 'Bronze', emoji: '🍽️', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
-  { id: 'm_water',       tier: 'Bronze', emoji: '💧', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
-  { id: 'm_sleep',       tier: 'Bronze', emoji: '🌙', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
-  { id: 'm_steps',       tier: 'Bronze', emoji: '👟', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
-  { id: 'm_protein3',    tier: 'Silver', emoji: '⚡', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_log5',        tier: 'Silver', emoji: '📝', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_fullweek',    tier: 'Gold',   emoji: '🏆', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
-  { id: 'm_alltargets',  tier: 'Gold',   emoji: '🎯', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
+  { id: 'm_log_meal',    tier: 'Bronze', icon: 'bowl',        title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
+  { id: 'm_water',       tier: 'Bronze', icon: 'droplet',     title: 'Hydration Init',        desc: 'Drink 2L of water',                       xp: 100, requires: [] },
+  { id: 'm_sleep',       tier: 'Bronze', icon: 'moon',        title: 'Sleep Starter',         desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
+  { id: 'm_steps',       tier: 'Bronze', icon: 'footsteps',   title: 'First Steps',           desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
+  { id: 'm_protein3',    tier: 'Silver', icon: 'bolt',        title: 'Protein King',          desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_log5',        tier: 'Silver', icon: 'notebook',    title: 'Meal Streak',           desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_fullweek',    tier: 'Gold',   icon: 'trophy',      title: 'Full Week on Plan',     desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
+  { id: 'm_alltargets',  tier: 'Gold',   icon: 'target',      title: 'Perfect Day',           desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
 ];
 const TIER_ORDER  = ['Bronze','Silver','Gold','Platinum','Legendary'];
 const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platinum: C.purple, Legendary: C.green };
@@ -3854,7 +3914,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
       {!lastScan && (
         <Card className="su" style={{ background: '#141A14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 32, textAlign: 'center', animationDelay: '.02s' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>📷</div>
+          <div style={{ marginBottom: 12 }}><Icon name="camera" size={40} color={C.dimmed} strokeWidth={1} /></div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 10 }}>No scan data yet</div>
           <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 24 }}>
             Complete your first body scan to see your physique metrics, health score, and journey timeline.
@@ -4318,6 +4378,35 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
+      // Compute a lightweight hash of the image to detect re-scans of the same photo
+      const imgHash = base64.slice(0, 64) + base64.slice(-64) + base64.length;
+      const cacheKey = `massiq:scan_cache:${imgHash}`;
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { visualData: cachedVisual, ts } = JSON.parse(cached);
+          // Cache valid for 7 days
+          if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
+            console.info('[scan] returning cached result for same photo');
+            const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
+            const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
+            const scanTargets = calcTargets(profile, { leanMass: cachedVisual.leanMass });
+            const engineBase = engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal });
+            setResult({
+              ...cachedVisual,
+              dailyTargets: clampMacros({ ...engineBase, protein: scanTargets.protein }, profile),
+              phase: { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+              whyThisWorks: engineOutput?.diagnosis?.primary?.primary_issue || cachedVisual.diagnosis,
+              weeklyMissions: engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+              nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+              engineOutput,
+            });
+            setScanning(false);
+            return;
+          }
+        }
+      } catch {}
+
       const age    = profile?.age       || 25;
       const gender = profile?.gender    || 'Male';
       const height = profile?.heightIn  || 70;
@@ -4369,6 +4458,7 @@ Return ONLY this JSON (no markdown, no extra text):
             ],
           }],
           max_tokens: 1800,
+          temperature: 0,
         }),
       });
 
@@ -4379,6 +4469,9 @@ Return ONLY this JSON (no markdown, no extra text):
       const match = text.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not parse scan result');
       const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
+
+      // Cache this result keyed by image hash so re-scanning same photo returns same result
+      try { localStorage.setItem(cacheKey, JSON.stringify({ visualData, ts: Date.now() })); } catch {}
 
       // Consistency check: flag suspicious swings before showing results
       if (prevScan) {
@@ -4504,7 +4597,7 @@ Return ONLY this JSON (no markdown, no extra text):
       <div style={{ position: 'relative', width: 100, height: 100 }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}` }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>📸</div>
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="scan" size={28} color={C.green} /></div>
       </div>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Analyzing your physique…</div>
@@ -4540,7 +4633,7 @@ Return ONLY this JSON (no markdown, no extra text):
         {consistencyWarnings.length > 0 && !warningsAccepted && (
           <Card style={{ background: `${C.gold}14`, border: `1px solid ${C.gold}55`, padding: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <span style={{ fontSize: 18 }}>⚠️</span>
+              <Icon name="warning" size={18} color={C.gold} />
               <div style={{ fontSize: 14, fontWeight: 700, color: C.gold }}>Consistency Check</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -4586,7 +4679,7 @@ Return ONLY this JSON (no markdown, no extra text):
           return (
             <Card className="su" style={{ borderColor: color + '44' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explanation ? 12 : 0 }}>
-                <span style={{ fontSize: 18 }}>🔬</span>
+                <Icon name="stethoscope" size={18} color={color} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
@@ -4659,7 +4752,7 @@ Return ONLY this JSON (no markdown, no extra text):
         <Card className="su" style={{ animationDelay: '.03s' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
-              {PHASE_META[ph.label]?.emoji || '🎯'} {ph.label || 'Maintain'}
+              {ph.label || 'Maintain'}
             </span>
             <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
           </div>
@@ -4706,15 +4799,17 @@ Return ONLY this JSON (no markdown, no extra text):
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             {[
-              { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
-              { icon: '⚡', label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
-              { icon: '🚶', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
-              { icon: '🌙', label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
-              { icon: '💧', label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
-              { icon: '🏋️', label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
+              { icon: 'flame',     label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
+              { icon: 'bolt',      label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
+              { icon: 'footsteps', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
+              { icon: 'moon',      label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
+              { icon: 'droplet',   label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
+              { icon: 'dumbbell',  label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
             ].map(t => (
               <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>{t.icon}</div>
+                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon name={t.icon} size={14} color={t.color} strokeWidth={1.75} />
+                </div>
                 <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
                 <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
                 <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
@@ -5001,7 +5096,7 @@ Return ONLY this JSON (no markdown, no extra text):
         {result.photoQuality && (
           <Card className="su" style={{ animationDelay: '.085s' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <span style={{ fontSize: 16 }}>📷</span>
+              <Icon name="camera" size={16} color={C.muted} />
               <span style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.07em' }}>Scan Reliability</span>
               {(() => {
                 const overall = result.photoQuality.overall || 'medium';
@@ -5042,7 +5137,7 @@ Return ONLY this JSON (no markdown, no extra text):
             background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: showCalcDetails ? '14px 14px 0 0' : 14,
             padding: '12px 16px', cursor: 'pointer', color: C.white, fontSize: 14, fontWeight: 600,
           }}>
-            <span>🧮 How we calculate this</span>
+            <span>How we calculate this</span>
             <span style={{ color: C.muted, fontSize: 13, display: 'inline-block', transition: 'transform .2s', transform: showCalcDetails ? 'rotate(180deg)' : 'none' }}>▾</span>
           </button>
           {showCalcDetails && (
@@ -5104,15 +5199,15 @@ Return ONLY this JSON (no markdown, no extra text):
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>What you&apos;ll get</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {[
-            { icon: '📊', label: 'Body Fat Range' },
-            { icon: '💪', label: 'Muscle Assessment' },
-            { icon: '⚖️', label: 'Lean Mass Estimate' },
-            { icon: '🔄', label: 'Symmetry Score' },
-            { icon: '🎯', label: 'Training Focus' },
-            { icon: '🍽', label: 'Nutrition Adjustment' },
+            { icon: 'chart-bar',   label: 'Body Fat Range' },
+            { icon: 'figure-lift', label: 'Muscle Assessment' },
+            { icon: 'scale',       label: 'Lean Mass Estimate' },
+            { icon: 'rotate',      label: 'Symmetry Score' },
+            { icon: 'target',      label: 'Training Focus' },
+            { icon: 'utensils',    label: 'Nutrition Adjustment' },
           ].map(t => (
             <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
-              <span style={{ fontSize: 24 }}>{t.icon}</span>
+              <Icon name={t.icon} size={24} color={C.muted} strokeWidth={1.5} />
               <span style={{ fontSize: 11, color: C.muted, fontWeight: 500, lineHeight: 1.3 }}>{t.label}</span>
             </div>
           ))}
@@ -5122,7 +5217,7 @@ Return ONLY this JSON (no markdown, no extra text):
       {/* Instructions */}
       <Card style={{ background: C.cardElevated }}>
         <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.7 }}>
-          💡 <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
+          <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
         </div>
       </Card>
 
@@ -5137,8 +5232,8 @@ Return ONLY this JSON (no markdown, no extra text):
       <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
       <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%' }}>📸 Take Photo</Btn>
-        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%' }}>🖼 Upload Photo</Btn>
+        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="camera" size={16} color="currentColor" /> Take Photo</Btn>
+        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="arrow-up" size={16} color="currentColor" /> Upload</Btn>
       </div>
 
       {/* Scan History */}
@@ -5315,11 +5410,11 @@ const PlaceholderTab = ({ label, icon }) => (
 
 /* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
-  { key: 'home',      label: 'Home',      icon: '🏠' },
-  { key: 'nutrition', label: 'Nutrition', icon: '🥗' },
-  { key: 'scan',      label: 'Scan',      icon: '📸' },
-  { key: 'plan',      label: 'Plan',      icon: '📋' },
-  { key: 'profile',   label: 'Profile',   icon: '👤' },
+  { key: 'home',      label: 'Home',      icon: 'home' },
+  { key: 'nutrition', label: 'Nutrition', icon: 'utensils' },
+  { key: 'scan',      label: 'Scan',      icon: 'camera' },
+  { key: 'plan',      label: 'Plan',      icon: 'clipboard' },
+  { key: 'profile',   label: 'Profile',   icon: 'person' },
 ];
 
 /* ─── Mobile Tab Bar ─────────────────────────────────────────────────────── */
@@ -5339,9 +5434,12 @@ function TabBar({ active, setTab }) {
             gap: 4, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
           }}>
             <div style={{
-              padding: '4px 12px', borderRadius: 16, fontSize: 20, lineHeight: 1,
+              padding: '4px 12px', borderRadius: 16, lineHeight: 1,
               background: isActive ? C.greenBg : 'transparent',
-            }}>{t.icon}</div>
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name={t.icon} size={22} color={isActive ? C.green : C.dimmed} strokeWidth={isActive ? 2 : 1.5} />
+            </div>
             <span style={{ fontSize: 10, fontWeight: 580, letterSpacing: '.02em', color: isActive ? C.green : C.dimmed }}>
               {t.label}
             </span>
@@ -5354,7 +5452,7 @@ function TabBar({ active, setTab }) {
 
 /* ─── Desktop Sidebar ────────────────────────────────────────────────────── */
 function Sidebar({ active, setTab, profile }) {
-  const goalEmoji = { Cut: '📉', Bulk: '📈', Recomp: '🔄', Maintain: '⚖️' }[profile?.goal] || '🎯';
+  const goalIconName = { Cut: 'arrow-down', Bulk: 'arrow-up', Recomp: 'rotate', Maintain: 'scale' }[profile?.goal] || 'target';
   return (
     <div className="desktop-sidebar" style={{
       width: 220, minHeight: '100dvh', background: '#101711',
@@ -5380,7 +5478,7 @@ function Sidebar({ active, setTab, profile }) {
               fontFamily: 'inherit', fontSize: 14, fontWeight: isActive ? 700 : 500,
               transition: 'all .15s ease',
             }}>
-              <span style={{ fontSize: 18 }}>{t.icon}</span>
+              <Icon name={t.icon} size={18} color={isActive ? C.green : C.muted} strokeWidth={isActive ? 2 : 1.5} />
               {t.label}
               {isActive && <div style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: '50%', background: C.green }} />}
             </button>
@@ -5393,7 +5491,7 @@ function Sidebar({ active, setTab, profile }) {
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Athlete'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-            {goalEmoji} {profile.goal}
+            <Icon name={goalIconName} size={11} color="currentColor" /> {profile.goal}
           </div>
         </div>
       )}
@@ -5516,7 +5614,12 @@ export default function MassIQ() {
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
-          LS.set(LS_KEYS.scanHistory, loadedScanHistory);
+          // Only overwrite local scan history if DB has actual rows.
+          // If DB returns empty (e.g. RLS not yet configured), preserve local scans.
+          if (loadedScanHistory.length > 0) {
+            LS.set(LS_KEYS.scanHistory, loadedScanHistory);
+            setScanHistory(loadedScanHistory);
+          }
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
@@ -5531,22 +5634,64 @@ export default function MassIQ() {
 
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
     if (!session?.access_token) return;
+    setSyncing(true);
+    let anyError = false;
     try {
-      setSyncing(true);
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
-      if (!userId) return;
-      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
-      if (nextPlan) {
-        await upsertPlan(session.access_token, userId, nextPlan);
+      if (!userId) { setSyncing(false); return; }
+
+      // Profile sync — failure doesn't block plan/scan
+      if (nextProfile) {
+        try {
+          await upsertProfile(session.access_token, userId, nextProfile);
+        } catch (profileErr) {
+          console.error('[sync] upsertProfile failed:', profileErr?.message || profileErr);
+          anyError = true;
+        }
       }
+
+      // Plan sync — failure doesn't block scan
+      if (nextPlan) {
+        try {
+          await upsertPlan(session.access_token, userId, nextPlan);
+        } catch (planErr) {
+          console.error('[sync] upsertPlan failed:', planErr?.message || planErr);
+          anyError = true;
+        }
+      }
+
+      // Scan sync — only save scan if it hasn't been persisted to DB yet
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
-        await createScan(session.access_token, userId, latestScan);
+        // Skip if already saved to DB (dbId present means it was already inserted)
+        if (!latestScan.dbId) {
+          try {
+            console.info('[sync] createScan:start', { userId, bodyFat: latestScan.bodyFat, leanMass: latestScan.leanMass });
+            const saved = await createScan(session.access_token, userId, latestScan);
+            console.info('[sync] createScan:ok', { id: saved?.id });
+            // Stamp dbId into local scan history so we don't re-insert on next sync
+            if (saved?.id) {
+              const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+              const updated = currentHistory.map((s, i) =>
+                i === currentHistory.length - 1 ? { ...s, dbId: saved.id } : s
+              );
+              LS.set(LS_KEYS.scanHistory, updated);
+              setScanHistory(updated);
+            }
+          } catch (scanErr) {
+            console.error('[sync] createScan failed:', scanErr?.message || scanErr);
+            anyError = true;
+          }
+        }
+      }
+
+      if (anyError) {
+        showToast("Some data couldn't sync. Your local progress is saved.");
       }
     } catch (err) {
-      console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      showToast("We couldn't finish syncing your account. Please try again.");
+      console.error('[sync] persistUserState outer error:', err?.message || err);
+      showToast("Couldn't connect to server. Your local progress is saved.");
     } finally {
       setSyncing(false);
     }

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect } from "react";
+import { Icon } from '../components/Icon';
 
 /* ─── Design tokens ───────────────────────────────────────────────────────── */
 const C = {
@@ -322,7 +323,7 @@ function IntelPanel() {
       <div style={{ padding: '13px 16px', background: 'rgba(255,80,50,0.04)', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2px', color: C.dim, textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 13, lineHeight: 1 }}>⚡</span>
+          <Icon name="bolt" size={14} color="#D4724A" />
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
             <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
@@ -508,7 +509,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.06)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}>📊</div>
+                }}><Icon name="chart-bar" size={16} color="#556655" /></div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: '#556655',
@@ -555,7 +556,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.05)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}>🧠</div>
+                }}><Icon name="brain" size={16} color="#72B895" /></div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: C.white,
@@ -689,17 +690,17 @@ export default function LandingPage() {
           <div className="diag-grid">
             {[
               {
-                icon: '⚡', tag: 'Fat Loss Phase', delay: 'd1',
+                icon: 'bolt', tag: 'Fat Loss Phase', delay: 'd1',
                 title: 'You\'re losing weight too fast',
                 body: 'Your caloric deficit is too aggressive for your lean mass target. At this rate, you\'ll lose muscle. The fix: reduce deficit by 220 kcal, increase protein by 30g.',
               },
               {
-                icon: '⚖️', tag: 'Body Composition', delay: 'd2',
+                icon: 'scale', tag: 'Body Composition', delay: 'd2',
                 title: 'Your symmetry is imbalanced',
                 body: 'Upper-body development is lagging significantly behind lower body. Training focus should shift to chest, shoulders, and arms for the next 4–6 weeks.',
               },
               {
-                icon: '🔄', tag: 'Phase Shift', delay: 'd3',
+                icon: 'rotate', tag: 'Phase Shift', delay: 'd3',
                 title: 'Time to stop cutting',
                 body: 'You\'ve reached 13.1% body fat — your target. Continuing the cut risks lean mass loss. MassIQ is shifting you to a recomposition phase.',
               },
@@ -713,7 +714,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.08)`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 20, marginBottom: 16,
-                }}>{card.icon}</div>
+                }}><Icon name={card.icon} size={20} color="rgba(255,255,255,0.65)" strokeWidth={1.5} /></div>
                 <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: C.muted, marginBottom: 10 }}>
                   {card.tag}
                 </div>
