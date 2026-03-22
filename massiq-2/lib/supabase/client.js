@@ -183,26 +183,63 @@ function deserializePlan(row) {
 }
 
 function serializeScan(userId, scan) {
-  const bodyFat = toNumber(scan?.bodyFat ?? scan?.bodyFatPct);
+  const bodyFat  = toNumber(scan?.bodyFat ?? scan?.bodyFatPct);
   const leanMass = toNumber(scan?.leanMass);
-  if (bodyFat === null) throw new Error('[scans] Missing body_fat value');
+  if (bodyFat  === null) throw new Error('[scans] Missing body_fat value');
   if (leanMass === null) throw new Error('[scans] Missing lean_mass value');
+
+  // muscle_assessment stores everything that doesn't have a dedicated column:
+  // weakest muscle groups, daily targets, phase, baseline flag, etc.
+  const muscleAssessment = {
+    weakest_groups:               scan?.weakestGroups            || [],
+    phase:                        scan?.phase                    || null,
+    body_fat_range:               scan?.bodyFatRange             || null,
+    limiting_factor:              scan?.limitingFactor           || null,
+    limiting_factor_explanation:  scan?.limitingFactorExplanation || null,
+    nutrition_key_change:         scan?.nutritionKeyChange       || null,
+    recommendation:               scan?.recommendation           || null,
+    is_baseline:                  scan?.isBaseline               || false,
+    daily_targets:                scan?.dailyTargets             || null,
+  };
+
+  const physiqueScore = toNumber(scan?.physiqueScore, null);
+  const symmetryScore = toNumber(scan?.symmetryScore, null);
+
   return {
-    user_id: userId,
-    body_fat: bodyFat,
-    lean_mass: leanMass,
+    user_id:           userId,
+    body_fat:          bodyFat,
+    lean_mass:         leanMass,
+    physique_score:    physiqueScore !== null ? Math.round(physiqueScore) : null,
+    symmetry_score:    symmetryScore !== null ? Math.round(symmetryScore) : null,
+    scan_confidence:   scan?.confidence || 'medium',
+    muscle_assessment: muscleAssessment,
+    scan_notes:        scan?.assessment || scan?.limitingFactor || null,
   };
 }
 
 function deserializeScan(row) {
-  // scans table only has: id, user_id, body_fat, lean_mass, created_at
+  // muscle_assessment holds the JSONB blob of extra fields
+  const ma = row?.muscle_assessment || {};
   return {
-    id:          row?.id,
-    date:        row?.created_at,
-    bodyFat:     toNumber(row?.body_fat, null),
-    bodyFatPct:  toNumber(row?.body_fat, null),
-    leanMass:    toNumber(row?.lean_mass, null),
-    confidence:  'medium',
+    id:                          row?.id,
+    dbId:                        row?.id,
+    date:                        row?.created_at,
+    bodyFat:                     toNumber(row?.body_fat,           null),
+    bodyFatPct:                  toNumber(row?.body_fat,           null),
+    leanMass:                    toNumber(row?.lean_mass,          null),
+    physiqueScore:               toNumber(row?.physique_score,     null),
+    symmetryScore:               toNumber(row?.symmetry_score,     null),
+    confidence:                  row?.scan_confidence              || 'medium',
+    phase:                       ma?.phase                         || null,
+    bodyFatRange:                ma?.body_fat_range                || null,
+    assessment:                  row?.scan_notes                   || ma?.limiting_factor || null,
+    limitingFactor:              ma?.limiting_factor               || null,
+    limitingFactorExplanation:   ma?.limiting_factor_explanation   || null,
+    nutritionKeyChange:          ma?.nutrition_key_change          || null,
+    recommendation:              ma?.recommendation                || null,
+    weakestGroups:               Array.isArray(ma?.weakest_groups) ? ma.weakest_groups : [],
+    isBaseline:                  ma?.is_baseline                   || false,
+    dailyTargets:                ma?.daily_targets                 || null,
   };
 }
 
@@ -388,9 +425,13 @@ export async function createScan(token, userId, scan) {
 }
 
 export async function getScans(token, userId, limit = 25) {
-  // Select only columns that exist in the scans table schema: id, user_id, body_fat, lean_mass, created_at
+  const cols = [
+    'id', 'user_id', 'body_fat', 'lean_mass',
+    'physique_score', 'symmetry_score', 'scan_confidence',
+    'muscle_assessment', 'scan_notes', 'created_at',
+  ].join(',');
   const rows = await supabaseFetch(
-    `/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
+    `/rest/v1/scans?select=${cols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
     { method: 'GET', headers: authHeaders(token) },
   );
   return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];

@@ -5651,25 +5651,31 @@ export default function MassIQ() {
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
-          // DB is ground truth for which scans exist.
-          // Merge with local data to preserve rich fields (physiqueScore, symmetryScore, etc.)
-          // that the DB schema doesn't store.
+          // DB is the authoritative source for scan history.
+          // Each DB row now carries physique_score, symmetry_score, scan_confidence,
+          // muscle_assessment (jsonb), and scan_notes so the history card renders
+          // correctly after re-login with no dependency on local cache.
+          // For older rows that predate full-column storage and have physique_score = null,
+          // we attempt to enrich from local cache as a graceful fallback.
           const localHistory = LS.get(LS_KEYS.scanHistory, []);
           if (loadedScanHistory.length > 0) {
-            const merged = loadedScanHistory.map(dbScan => {
-              const localMatch = localHistory.find(ls => ls.dbId === dbScan.id || ls.dbId === String(dbScan.id));
-              if (localMatch) return { ...localMatch, id: dbScan.id, dbId: dbScan.id };
-              // No local match — use DB data and stamp dbId
-              return { ...dbScan, dbId: dbScan.id };
+            const hydrated = loadedScanHistory.map(dbScan => {
+              // Rows saved after the schema was complete have physiqueScore — use as-is.
+              if (dbScan.physiqueScore != null) return dbScan;
+              // Older row: try to enrich from local cache by matching dbId.
+              const localMatch = localHistory.find(ls =>
+                ls.dbId === dbScan.id || ls.dbId === String(dbScan.id)
+              );
+              return localMatch ? { ...localMatch, id: dbScan.id, dbId: dbScan.id } : dbScan;
             });
-            LS.set(LS_KEYS.scanHistory, merged);
-            setScanHistory(merged);
-            console.info('[sync] hydrate: merged', merged.length, 'scans from DB');
+            LS.set(LS_KEYS.scanHistory, hydrated);
+            setScanHistory(hydrated);
+            console.info('[sync] hydrate: loaded', hydrated.length, 'scan(s) from DB');
           } else {
-            // DB returned 0 — clean up any stale unconfirmed local entries (no dbId)
+            // DB returned 0 — strip any stale unconfirmed local entries (no dbId).
             const confirmedLocal = localHistory.filter(s => s.dbId);
             if (confirmedLocal.length !== localHistory.length) {
-              console.warn('[sync] hydrate: removing', localHistory.length - confirmedLocal.length, 'unconfirmed local scan(s)');
+              console.warn('[sync] hydrate: removed', localHistory.length - confirmedLocal.length, 'unconfirmed local scan(s)');
               LS.set(LS_KEYS.scanHistory, confirmedLocal);
               setScanHistory(confirmedLocal);
             }
