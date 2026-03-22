@@ -187,6 +187,7 @@ function serializeScan(userId, scan) {
     user_id: userId,
     body_fat: toNumber(scan?.bodyFat ?? scan?.bodyFatPct),
     lean_mass: toNumber(scan?.leanMass),
+    raw_result: scan && typeof scan === 'object' ? scan : {},
   };
 }
 
