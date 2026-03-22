@@ -182,14 +182,16 @@ function deserializePlan(row) {
   };
 }
 
+// Current schema version — increment when columns change
+const SCAN_SCHEMA_VERSION = '2';
+
 function serializeScan(userId, scan) {
   const bodyFat  = toNumber(scan?.bodyFat ?? scan?.bodyFatPct);
   const leanMass = toNumber(scan?.leanMass);
   if (bodyFat  === null) throw new Error('[scans] Missing body_fat value');
   if (leanMass === null) throw new Error('[scans] Missing lean_mass value');
 
-  // muscle_assessment stores everything that doesn't have a dedicated column:
-  // weakest muscle groups, daily targets, phase, baseline flag, etc.
+  // muscle_assessment: weakest groups, daily targets, legacy rich data
   const muscleAssessment = {
     weakest_groups:               scan?.weakestGroups            || [],
     phase:                        scan?.phase                    || null,
@@ -202,24 +204,35 @@ function serializeScan(userId, scan) {
     daily_targets:                scan?.dailyTargets             || null,
   };
 
+  // scan_context: adaptation decision, scoring breakdown, image hashes
+  const scanContext = scan?.scanContext
+    ? { ...scan.scanContext, schema_version: SCAN_SCHEMA_VERSION }
+    : { schema_version: SCAN_SCHEMA_VERSION };
+
   const physiqueScore = toNumber(scan?.physiqueScore, null);
   const symmetryScore = toNumber(scan?.symmetryScore, null);
 
   return {
-    user_id:           userId,
-    body_fat:          bodyFat,
-    lean_mass:         leanMass,
-    physique_score:    physiqueScore !== null ? Math.round(physiqueScore) : null,
-    symmetry_score:    symmetryScore !== null ? Math.round(symmetryScore) : null,
-    scan_confidence:   scan?.confidence || 'medium',
-    muscle_assessment: muscleAssessment,
-    scan_notes:        scan?.assessment || scan?.limitingFactor || null,
+    user_id:                userId,
+    body_fat:               bodyFat,
+    lean_mass:              leanMass,
+    physique_score:         physiqueScore !== null ? Math.round(physiqueScore) : null,
+    symmetry_score:         symmetryScore !== null ? Math.round(symmetryScore) : null,
+    scan_confidence:        scan?.confidence || 'medium',
+    muscle_assessment:      muscleAssessment,
+    scan_notes:             scan?.assessment || scan?.limitingFactor || null,
+    // Extended fields (require schema migration — see supabase/migrations/)
+    engine_version:         scan?.engineVersion        || null,
+    scan_status:            scan?.scanStatus            || 'complete',
+    duplicate_of_scan_id:   scan?.duplicateOfScanId    || null,
+    asset_id:               scan?.assetId              || null,
+    scan_context:           scanContext,
   };
 }
 
 function deserializeScan(row) {
-  // muscle_assessment holds the JSONB blob of extra fields
-  const ma = row?.muscle_assessment || {};
+  const ma  = row?.muscle_assessment || {};
+  const ctx = row?.scan_context      || {};
   return {
     id:                          row?.id,
     dbId:                        row?.id,
@@ -240,6 +253,17 @@ function deserializeScan(row) {
     weakestGroups:               Array.isArray(ma?.weakest_groups) ? ma.weakest_groups : [],
     isBaseline:                  ma?.is_baseline                   || false,
     dailyTargets:                ma?.daily_targets                 || null,
+    // Extended fields
+    engineVersion:               row?.engine_version               || null,
+    scanStatus:                  row?.scan_status                  || 'complete',
+    duplicateOfScanId:           row?.duplicate_of_scan_id         || null,
+    assetId:                     row?.asset_id                     || null,
+    adaptationDecision:          ctx?.adaptation?.decision         || null,
+    adaptationRationale:         ctx?.adaptation?.rationale        || null,
+    scanComparison:              ctx?.comparison                   || null,
+    scoringBreakdown:            ctx?.scoring_breakdown            || null,
+    imageHash:                   ctx?.image_hash                   || null,
+    perceptualHash:              ctx?.perceptual_hash              || null,
   };
 }
 
@@ -429,12 +453,136 @@ export async function getScans(token, userId, limit = 25) {
     'id', 'user_id', 'body_fat', 'lean_mass',
     'physique_score', 'symmetry_score', 'scan_confidence',
     'muscle_assessment', 'scan_notes', 'created_at',
+    // Extended fields added in migration 001_extend_scans
+    'engine_version', 'scan_status', 'duplicate_of_scan_id',
+    'asset_id', 'scan_context',
   ].join(',');
+  let rows;
+  try {
+    rows = await supabaseFetch(
+      `/rest/v1/scans?select=${cols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+  } catch (err) {
+    // Fall back to base columns if extended columns don't exist yet (pre-migration)
+    if (String(err?.message).includes('column') || String(err?.message).includes('does not exist')) {
+      console.warn('[scans] Extended columns not found, falling back to base columns. Run supabase migration.');
+      const baseCols = 'id,user_id,body_fat,lean_mass,physique_score,symmetry_score,scan_confidence,muscle_assessment,scan_notes,created_at';
+      rows = await supabaseFetch(
+        `/rest/v1/scans?select=${baseCols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
+        { method: 'GET', headers: authHeaders(token) },
+      );
+    } else {
+      throw err;
+    }
+  }
+  return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+}
+
+// ─── scan_assets ──────────────────────────────────────────────────────────────
+
+/**
+ * Upload a scan photo to Supabase Storage (scan-photos bucket).
+ * Returns the storage path on success.
+ */
+export async function uploadScanPhoto(token, userId, base64, mediaType) {
+  if (!hasConfig()) throw new Error('Supabase env missing');
+  const ext      = mediaType === 'image/png' ? 'png' : 'jpg';
+  const filename = `${Date.now()}.${ext}`;
+  const path     = `${userId}/${filename}`;
+
+  // Decode base64 → Uint8Array
+  const binary = atob(base64);
+  const bytes  = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mediaType });
+
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/scan-photos/${path}`, {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, 'Content-Type': mediaType },
+    body:    blob,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`[storage] Upload failed (${res.status}): ${txt}`);
+  }
+  return path;
+}
+
+/**
+ * Save metadata for an uploaded scan photo in the scan_assets table.
+ */
+export async function createScanAsset(token, userId, { storagePath, mimeType, fileSizeBytes, sha256, perceptualHash, width, height }) {
+  const rows = await supabaseFetch('/rest/v1/scan_assets', {
+    method:  'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body:    JSON.stringify({
+      user_id:         userId,
+      storage_path:    storagePath,
+      mime_type:       mimeType,
+      file_size_bytes: fileSizeBytes || null,
+      sha256,
+      perceptual_hash: perceptualHash || null,
+      width:           width   || null,
+      height:          height  || null,
+    }),
+  });
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+/**
+ * Look up an existing asset by SHA-256 hash for the given user.
+ * Returns the asset row (with id, scan_id if linked) or null.
+ */
+export async function findAssetBySha256(token, userId, sha256) {
   const rows = await supabaseFetch(
-    `/rest/v1/scans?select=${cols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
+    `/rest/v1/scan_assets?sha256=eq.${encodeURIComponent(sha256)}&user_id=eq.${userId}&order=created_at.desc&limit=1`,
     { method: 'GET', headers: authHeaders(token) },
   );
-  return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+/**
+ * Fetch recent assets and return the first one whose perceptual hash is
+ * within the given Hamming-distance threshold.
+ * threshold = 8 bits out of 64 (≈12.5% difference) is "likely same photo"
+ */
+export async function findSimilarAsset(token, userId, perceptualHash, threshold = 8) {
+  const rows = await supabaseFetch(
+    `/rest/v1/scan_assets?user_id=eq.${userId}&order=created_at.desc&limit=15`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  if (!Array.isArray(rows)) return null;
+  for (const asset of rows) {
+    if (asset.perceptual_hash && hammingDistance(asset.perceptual_hash, perceptualHash) <= threshold) {
+      return asset;
+    }
+  }
+  return null;
+}
+
+/**
+ * Given an asset id, find the most recent scan that references it.
+ */
+export async function getScanByAssetId(token, assetId) {
+  const cols = 'id,user_id,body_fat,lean_mass,physique_score,symmetry_score,scan_confidence,muscle_assessment,scan_notes,created_at,engine_version,scan_status,duplicate_of_scan_id,asset_id,scan_context';
+  const rows = await supabaseFetch(
+    `/rest/v1/scans?asset_id=eq.${assetId}&order=created_at.desc&limit=1&select=${cols}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) && rows[0] ? deserializeScan(rows[0]) : null;
+}
+
+/** Hex-encoded Hamming distance between two perceptual hashes */
+function hammingDistance(h1, h2) {
+  if (!h1 || !h2 || h1.length !== h2.length) return 64;
+  let dist = 0;
+  for (let i = 0; i < h1.length; i++) {
+    const xor = parseInt(h1[i], 16) ^ parseInt(h2[i], 16);
+    // popcount nibble
+    dist += [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4][xor];
+  }
+  return dist;
 }
 
 // ─── physique_projections ───────────────────────────────────────────────────

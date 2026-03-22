@@ -17,7 +17,14 @@ import {
   createScan,
   getScans,
   createProjection,
+  uploadScanPhoto,
+  createScanAsset,
+  findAssetBySha256,
+  findSimilarAsset,
+  getScanByAssetId,
 } from '../lib/supabase/client';
+import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
+import { computeAdaptation } from '../lib/engine/adaptation';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -616,6 +623,21 @@ function sanitizeScanData(scan, profile) {
   const confidence = ['low', 'medium', 'high'].includes(scan.bodyFatConfidence || scan.confidence)
     ? (scan.bodyFatConfidence || scan.confidence)
     : 'medium';
+  // Deterministic scoring — replaces raw Claude clamping
+  // Claude's visual estimate is one component (visualAssessment), not the whole score.
+  const heightCm = profile?.heightCm || (profile?.heightIn ? Math.round(Number(profile.heightIn) * 2.54) : 170);
+  const claudeRawScore    = Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60);
+  const claudeRawSymmetry = Number(scan.symmetryScore || 75);
+  const scored = computePhysiqueScore({
+    bodyFatPct,
+    leanMassLbs:    leanMass,
+    heightCm,
+    gender:         profile?.gender || 'Male',
+    claudeScore:    claudeRawScore,
+    claudeSymmetry: claudeRawSymmetry,
+    confidence,
+  });
+
   return {
     ...scan,
     bodyFatPct: Number(bodyFatPct.toFixed(1)),
@@ -624,8 +646,11 @@ function sanitizeScanData(scan, profile) {
     bodyFatReasoning: scan.bodyFatReasoning || '',
     leanMass: Number(leanMass.toFixed(1)),
     leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
-    physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60))),
-    symmetryScore: Math.min(95, Math.max(60, Number(scan.symmetryScore || 75))),
+    physiqueScore:    scored.physiqueScore,
+    symmetryScore:    scored.symmetryScore,
+    ffmi:             scored.ffmi,
+    scoringBreakdown: scored.breakdown,
+    scoringVersion:   SCORING_VERSION,
     symmetryDetails: scan.symmetryDetails || '',
     confidence,
     limitingFactor: scan.limitingFactor || '',
@@ -1821,7 +1846,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory }) {
               borderBottom: `1px solid rgba(255,255,255,0.06)`,
             }}>
               {[
-                { label: 'LEAN MASS',  value: leanMassLbs != null ? `${leanMassLbs} lb` : '--', color: C.blue },
+                { label: 'LEAN MASS',  value: leanMassLbs != null ? fmt.leanMass(leanMassLbs, profile?.unitSystem) : '--', color: C.blue },
                 { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '--', color: C.purple },
                 { label: 'PHASE',      value: phase ?? '--',                                     color: phaseColor },
               ].map((s, i) => (
@@ -4396,16 +4421,99 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
-      // Compute a lightweight hash of the image to detect re-scans of the same photo
-      const imgHash = base64.slice(0, 64) + base64.slice(-64) + base64.length;
-      const cacheKey = `massiq:scan_cache:${imgHash}`;
+      // ── Step 0: Compute image hashes ─────────────────────────────────────
+      // SHA-256 for exact-duplicate detection (DB-backed)
+      // Perceptual hash for near-duplicate detection
+      let sha256Hash   = null;
+      let pHash        = null;
+      let imgDimensions = { width: null, height: null };
+
+      try {
+        // SHA-256 via WebCrypto (browser native, no library needed)
+        const encoder = new TextEncoder();
+        const data    = encoder.encode(base64);
+        const hashBuf = await crypto.subtle.digest('SHA-256', data);
+        sha256Hash    = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      } catch {}
+
+      // Perceptual hash via canvas (dHash — difference hash, 64 bits → 16 hex chars)
+      try {
+        pHash = await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              imgDimensions = { width: img.naturalWidth, height: img.naturalHeight };
+              const SIZE = 9; // 9×8 pixels for dHash
+              const c    = document.createElement('canvas');
+              c.width = SIZE; c.height = SIZE - 1;
+              const ctx = c.getContext('2d');
+              ctx.drawImage(img, 0, 0, SIZE, SIZE - 1);
+              const px   = ctx.getImageData(0, 0, SIZE, SIZE - 1).data;
+              const gray = [];
+              for (let i = 0; i < px.length; i += 4) gray.push(0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2]);
+              let bits = '';
+              for (let row = 0; row < 8; row++)
+                for (let col = 0; col < 8; col++)
+                  bits += gray[row * 9 + col] < gray[row * 9 + col + 1] ? '1' : '0';
+              let hex = '';
+              for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+              resolve(hex);
+            } catch { resolve(null); }
+          };
+          img.onerror = () => resolve(null);
+          img.src = 'data:image/jpeg;base64,' + base64;
+        });
+      } catch {}
+
+      // ── Step 0b: Exact-duplicate check against Supabase scan_assets ──────
+      const session    = getStoredSession();
+      const userId     = session?.user?.id || session?.user_id || null;
+      if (session?.access_token && userId && sha256Hash) {
+        try {
+          const existingAsset = await findAssetBySha256(session.access_token, userId, sha256Hash);
+          if (existingAsset) {
+            console.info('[scan] Exact duplicate detected (SHA-256 match):', existingAsset.id);
+            // Retrieve the scan that was linked to this asset
+            const priorScan = await getScanByAssetId(session.access_token, existingAsset.id).catch(() => null);
+            if (priorScan) {
+              // Re-run engine on the prior scan data so targets are fresh, but reuse visual analysis
+              const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: priorScan.bodyFat, weight: profile?.weightLbs || 170, leanMass: priorScan.leanMass };
+              const engineOutput  = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
+              const scanTargets   = calcTargets(profile, { leanMass: priorScan.leanMass });
+              const engineBase    = engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal });
+              setResult({
+                ...priorScan,
+                dailyTargets:    clampMacros({ ...engineBase, protein: scanTargets.protein }, profile),
+                phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+                whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || priorScan.assessment,
+                weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+                nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+                engineOutput,
+                isDuplicate:         true,
+                duplicateOfScanId:   priorScan.id,
+                assetId:             existingAsset.id,
+                imageHash:           sha256Hash,
+                perceptualHash:      pHash,
+              });
+              showToast('This photo was already scanned — previous result loaded to prevent duplicate history.');
+              setScanning(false);
+              return;
+            }
+          }
+        } catch (dupErr) {
+          // Non-fatal: if dedup check fails, continue with fresh scan
+          console.warn('[scan] Duplicate check failed (non-fatal):', dupErr?.message);
+        }
+      }
+
+      // ── Step 0c: localStorage 7-day cache (lightweight, no DB needed) ─────
+      const cacheKey = `massiq:scan_cache:${sha256Hash || (base64.slice(0, 64) + base64.length)}`;
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
           const { visualData: cachedVisual, ts } = JSON.parse(cached);
-          // Cache valid for 7 days
           if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
-            console.info('[scan] returning cached result for same photo');
+            console.info('[scan] returning localStorage-cached result for same photo');
             const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
             const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
             const scanTargets = calcTargets(profile, { leanMass: cachedVisual.leanMass });
@@ -4418,6 +4526,8 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
               weeklyMissions: engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
               nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
               engineOutput,
+              imageHash:      sha256Hash,
+              perceptualHash: pHash,
             });
             setScanning(false);
             return;
@@ -4488,7 +4598,29 @@ Return ONLY this JSON (no markdown, no extra text):
       if (!match) throw new Error('Could not parse scan result');
       const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
 
-      // Cache this result keyed by image hash so re-scanning same photo returns same result
+      // ── Step 1b: Upload photo to Supabase Storage + create scan_asset row ─
+      // Fire-and-forget (non-blocking) — failure is logged but doesn't abort the scan
+      let resolvedAssetId = null;
+      if (session?.access_token && userId && sha256Hash) {
+        try {
+          const storagePath = await uploadScanPhoto(session.access_token, userId, base64, mediaType);
+          const asset = await createScanAsset(session.access_token, userId, {
+            storagePath,
+            mimeType:      mediaType,
+            fileSizeBytes: Math.round(base64.length * 0.75), // approx decoded bytes
+            sha256:        sha256Hash,
+            perceptualHash: pHash,
+            width:          imgDimensions.width,
+            height:         imgDimensions.height,
+          });
+          resolvedAssetId = asset?.id || null;
+          console.info('[scan] Asset saved:', { assetId: resolvedAssetId, storagePath });
+        } catch (assetErr) {
+          console.warn('[scan] Asset upload failed (non-fatal):', assetErr?.message);
+        }
+      }
+
+      // Cache this result keyed by SHA-256 (or lightweight fallback) so re-scanning same photo returns same result
       try { localStorage.setItem(cacheKey, JSON.stringify({ visualData, ts: Date.now() })); } catch {}
 
       // Consistency check: flag suspicious swings before showing results
@@ -4513,6 +4645,9 @@ Return ONLY this JSON (no markdown, no extra text):
         weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
         nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
         engineOutput,    // attach full engine output for applyPlan to use
+        imageHash:       sha256Hash,
+        perceptualHash:  pHash,
+        assetId:         resolvedAssetId,
       };
       setResult(data);
     } catch (err) {
@@ -4565,6 +4700,26 @@ Return ONLY this JSON (no markdown, no extra text):
     };
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
+    const prevScanForAdaptation = existingHistory[existingHistory.length - 1] || null;
+
+    // Compute dynamic adaptation decision (compare new scan vs prior)
+    const adaptation = computeAdaptation(
+      { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' },
+      prevScanForAdaptation,
+      plan,
+    );
+
+    // Build scan_context: adaptation + scoring breakdown + image hash (for DB dedup audit)
+    const scanContext = {
+      adaptation:       { decision: adaptation.decision, rationale: adaptation.rationale, adjustment: adaptation.adjustment || null },
+      comparison:       adaptation.comparison || null,
+      scoring_breakdown: result.scoringBreakdown || null,
+      scoring_version:  result.scoringVersion   || null,
+      ffmi:             result.ffmi             || null,
+      image_hash:       result.imageHash        || null,       // SHA-256 of original photo
+      perceptual_hash:  result.perceptualHash   || null,
+    };
+
     const entry = {
       date: today,
       savedAt: new Date().toISOString(),
@@ -4591,6 +4746,16 @@ Return ONLY this JSON (no markdown, no extra text):
         steps: m.steps || 9000,
         trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
       },
+      // Extended persistence fields
+      engineVersion:   SCORING_VERSION,
+      scanStatus:      result.isDuplicate ? 'duplicate' : 'complete',
+      duplicateOfScanId: result.duplicateOfScanId || null,
+      assetId:         result.assetId        || null,
+      scanContext,
+      // Expose adaptation for UI display without re-computing
+      adaptationDecision:  adaptation.decision,
+      adaptationRationale: adaptation.rationale,
+      scanComparison:      adaptation.comparison || null,
     };
     // Save plan + stats to LS immediately (safe to be optimistic)
     LS.set(LS_KEYS.activePlan, plan);
