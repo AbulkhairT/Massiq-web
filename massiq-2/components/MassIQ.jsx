@@ -975,7 +975,7 @@ function CountUp({ target, unit }) {
   return <span>{val}<span style={{ fontSize: 14, color: C.muted, marginLeft: 4 }}>{unit}</span></span>;
 }
 
-function Onboarding({ onComplete }) {
+function Onboarding({ onComplete, currentUserId }) {
   const [step,     setStep]     = useState(0);
   const [visible,  setVisible]  = useState(true);   // for fade animation
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
@@ -1016,6 +1016,11 @@ function Onboarding({ onComplete }) {
   useEffect(() => {
     const saved = LS.get(LS_KEYS.profile, null);
     if (!saved) return;
+    // Skip pre-fill if the cache belongs to a different user
+    if (saved.id && currentUserId && saved.id !== currentUserId) {
+      console.info('[onboarding] skipping pre-fill — cached profile is for different user', { cached: saved.id, current: currentUserId });
+      return;
+    }
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
     setData((p) => ({
       ...p,
@@ -6475,6 +6480,22 @@ export default function MassIQ() {
           console.info('[sync] ensureProfile:start', { userId });
           loadedProfile = await ensureProfile(session.access_token, userId);
           console.info('[sync] ensureProfile:ok', { hasProfile: Boolean(loadedProfile) });
+          // Recovery: if DB returned an incomplete profile (fields null — e.g. because
+          // the browser navigated away during onboarding before the upsert finished),
+          // but localStorage has a complete profile that belongs to THIS user, re-sync it.
+          if (loadedProfile && (!loadedProfile.age || !loadedProfile.weightLbs || !loadedProfile.heightCm)) {
+            const cachedProfile = LS.get(LS_KEYS.profile, null);
+            if (cachedProfile?.id === userId && cachedProfile.age && cachedProfile.weightLbs && cachedProfile.heightCm) {
+              console.info('[sync] ensureProfile: incomplete DB profile — recovering from local cache');
+              try {
+                await upsertProfile(session.access_token, userId, cachedProfile);
+                loadedProfile = { ...loadedProfile, ...cachedProfile, id: userId };
+                console.info('[sync] ensureProfile: recovery ok');
+              } catch (recoveryErr) {
+                console.error('[sync] ensureProfile: profile recovery failed', recoveryErr?.message);
+              }
+            }
+          }
         } catch (profileErr) {
           console.error('sync:ensureProfile failed', profileErr);
           throw profileErr;
@@ -6528,6 +6549,8 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          // Stamp the current user so a future sign-in can detect a user switch
+          localStorage.setItem('massiq:current-user', userId);
           // Restore name if DB doesn't have it — check a logout-resilient key first,
           // then fall back to the profile cache (may have been cleared on logout)
           if (loadedProfile && !loadedProfile.name) {
@@ -6755,6 +6778,16 @@ export default function MassIQ() {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
+      // User-switch detection: if a different user was previously active, wipe all
+      // massiq:* localStorage keys so stale data never leaks to the new user.
+      const newUserId = res?.user?.id;
+      const prevUserId = localStorage.getItem('massiq:current-user');
+      if (prevUserId && newUserId && prevUserId !== newUserId) {
+        console.info('[auth] user switch detected — clearing stale cache', { from: prevUserId, to: newUserId });
+        Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+        setScanHistory([]);
+      }
+      if (newUserId) localStorage.setItem('massiq:current-user', newUserId);
       setSession(res);
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
@@ -6815,7 +6848,10 @@ export default function MassIQ() {
 
   const handleOnboardingComplete = (p, plan) => {
     setProfile(p);
-    LS.set(LS_KEYS.profile, p);
+    // Store the user's id in the cache so that:
+    // 1) profile recovery in the hydration effect can verify ownership
+    // 2) Onboarding pre-fill guard can reject mismatched user caches
+    LS.set(LS_KEYS.profile, { ...p, id: session?.user?.id || p.id });
     // Persist name under a non-massiq: key so it survives logout/clear
     if (p?.name && session?.user?.id) {
       localStorage.setItem(`miq:name:${session.user.id}`, p.name);
@@ -6849,10 +6885,19 @@ export default function MassIQ() {
   }
 
   const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  console.info('[route:decision]', {
+    userId:           session?.user?.id ?? null,
+    sessionPresent:   !!session?.access_token,
+    hydrationComplete: ready,
+    profileFound:     !!profile,
+    profileComplete:  !!profileComplete,
+    premium:          subscription?.status ?? 'none',
+    decision:         !session?.access_token ? 'auth' : profileComplete && !editing ? 'app' : 'onboarding',
+  });
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
-      <Onboarding onComplete={handleOnboardingComplete} />
+      <Onboarding onComplete={handleOnboardingComplete} currentUserId={session?.user?.id} />
     </>
   );
 
