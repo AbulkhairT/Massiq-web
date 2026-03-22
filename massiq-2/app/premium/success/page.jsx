@@ -49,6 +49,9 @@ export default function PremiumSuccessPage() {
   const [state, setState] = useState('checking'); // checking | active | syncing | error
 
   useEffect(() => {
+    // Always set the premium-return flag so the main app can poll after login
+    try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
+
     let cancelled = false;
     let attempts  = 0;
 
@@ -58,10 +61,6 @@ export default function PremiumSuccessPage() {
       const userId  = session?.user?.id || session?.user_id;
 
       if (!token || !userId) {
-        // Session was lost during Stripe redirect (common on mobile browsers
-        // or when cross-origin isolation clears localStorage).
-        // Show a friendly message that redirects to the app where they can
-        // log in. The app will detect the subscription on next hydration.
         console.warn('[premium-success] No session found — user will need to log back in');
         if (!cancelled) setState('syncing');
         return;
@@ -84,7 +83,10 @@ export default function PremiumSuccessPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const goToApp = () => router.push('/app?premium_activated=1');
+  const goToApp = () => {
+    try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
+    router.push('/app?premium_activated=1');
+  };
 
   return (
     <div style={{
