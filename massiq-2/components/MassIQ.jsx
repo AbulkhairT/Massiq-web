@@ -1664,7 +1664,12 @@ function PremiumGate({ feature, subscription, onUpgrade, children }) {
   );
 }
 
-function Paywall({ userId, accessToken, onClose }) {
+// persistGate — a React ref whose .current holds the Promise from the initial
+// onboarding profile write. The Paywall awaits it before opening Stripe so that
+// we NEVER navigate away while a DB write is still in flight (which would cause
+// the browser to cancel it, leaving an incomplete profile in the DB and routing
+// the user back into onboarding on return from checkout).
+function Paywall({ userId, accessToken, onClose, persistGate }) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
 
@@ -1676,6 +1681,27 @@ function Paywall({ userId, accessToken, onClose }) {
     }
     setLoading(true);
     setError('');
+
+    // ── Persist gate ─────────────────────────────────────────────────────────
+    // If an onboarding profile write is still in flight, wait for it to finish
+    // before we navigate to Stripe. This is the source-level fix for the bug
+    // where `window.location.href` cancelled the in-flight write.
+    const pendingSync = persistGate?.current;
+    if (pendingSync) {
+      console.info('[paywall] awaiting onboarding profile sync before checkout…');
+      try {
+        await pendingSync;
+        persistGate.current = null;  // consumed — clear for future opens
+        console.info('[paywall] profile sync complete — proceeding to checkout');
+      } catch (syncErr) {
+        console.error('[paywall] profile sync failed — blocking checkout', syncErr);
+        setError('Your profile could not be saved. Check your connection and try again before upgrading.');
+        setLoading(false);
+        return;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     try {
       const res = await fetch('/api/stripe/checkout', {
         method:  'POST',
@@ -1683,7 +1709,7 @@ function Paywall({ userId, accessToken, onClose }) {
           'Content-Type':  'application/json',
           'Authorization': `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ userId }),
+        body: JSON.stringify({}),
       });
       const { url, error: apiErr } = await res.json();
       if (apiErr) throw new Error(apiErr);
@@ -6415,6 +6441,9 @@ export default function MassIQ() {
   const [subscription,  setSubscription]  = useState(null);
   const [entitlements,  setEntitlements]  = useState(null);
   const [paywallOpen,   setPaywallOpen]   = useState(false);
+  // Holds the Promise from the initial onboarding profile+plan write so the
+  // Paywall can gate checkout on it completing. null = no pending onboarding sync.
+  const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
   // Sub-components call getActiveTargets() themselves so they stay fresh.
@@ -6460,6 +6489,9 @@ export default function MassIQ() {
     if (!session?.access_token) {
       setProfile(null);
       setActivePlan(null);
+      setScanHistory([]);
+      setSubscription(null);
+      setEntitlements(null);
       setReady(true);
       return;
     }
@@ -6605,7 +6637,9 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null) => {
+  // criticalProfile: when true the profile write failure is re-thrown instead of
+  // swallowed. Used during onboarding so the Paywall can gate checkout on success.
+  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null, { criticalProfile = false } = {}) => {
     if (!session?.access_token) return;
     setSyncing(true);
 
@@ -6622,6 +6656,7 @@ export default function MassIQ() {
           console.info('[sync] step1:upsertProfile:ok');
         } catch (profileErr) {
           console.error('[sync] step1:upsertProfile:error', profileErr?.message, profileErr);
+          if (criticalProfile) throw profileErr;  // Onboarding: surface so checkout is blocked
           // Non-blocking — continue to plan/scan
         }
       }
@@ -6802,9 +6837,11 @@ export default function MassIQ() {
     } catch (err) {
       console.error('Logout failed:', err);
     }
+    onboardingPersistRef.current = null;  // cancel any pending checkout gate
     setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setScanHistory([]);
     setEditing(false);
     setSubscription(null);
     setEntitlements(null);
@@ -6832,6 +6869,7 @@ export default function MassIQ() {
     });
     // Sign out and clear all local data — account is gone
     try { await signOutSession(session.access_token); } catch {}
+    onboardingPersistRef.current = null;
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
     setSession(null);
     setProfile(null);
@@ -6851,17 +6889,40 @@ export default function MassIQ() {
     // Store the user's id in the cache so that:
     // 1) profile recovery in the hydration effect can verify ownership
     // 2) Onboarding pre-fill guard can reject mismatched user caches
-    LS.set(LS_KEYS.profile, { ...p, id: session?.user?.id || p.id });
+    const profileWithId = { ...p, id: session?.user?.id || p.id };
+    LS.set(LS_KEYS.profile, profileWithId);
     // Persist name under a non-massiq: key so it survives logout/clear
     if (p?.name && session?.user?.id) {
       localStorage.setItem(`miq:name:${session.user.id}`, p.name);
     }
     setEditing(false);
+
+    // ── Critical persistence ─────────────────────────────────────────────────
+    // Start the DB write immediately and hold the Promise in a ref.
+    // The Paywall reads this ref and AWAITS it before navigating to Stripe.
+    // criticalProfile: true means a profile write failure will throw, which the
+    // Paywall will catch and surface as an error, blocking checkout.
+    const persistTask = persistUserState(
+      profileWithId,
+      plan || activePlan,
+      null,
+      { criticalProfile: true },
+    ).then(() => {
+      console.info('[onboarding] profile+plan persisted to DB');
+    }).catch(err => {
+      console.error('[onboarding] profile persistence failed — checkout will be blocked', err);
+      // Null the ref so a retry Paywall open re-runs the gate cleanly (rejected
+      // promises resolve immediately and would always block, so we clear them).
+      onboardingPersistRef.current = null;
+      throw err;  // re-throw so Paywall's await sees the rejection
+    });
+    onboardingPersistRef.current = persistTask;
+    // ────────────────────────────────────────────────────────────────────────
+
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
       setActivePlan(plan);
-      persistUserState(p, plan);
-      // Background: generate meal plan, workout plan, missions
+      // Background content generation — independent of the DB write above
       generateMealPlan(p, plan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
         .catch(console.error);
@@ -6871,8 +6932,6 @@ export default function MassIQ() {
       generateMissions(p, plan)
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
-    } else {
-      persistUserState(p, activePlan);
     }
   };
 
@@ -6960,6 +7019,7 @@ export default function MassIQ() {
           userId={session?.user?.id}
           accessToken={session?.access_token}
           onClose={() => setPaywallOpen(false)}
+          persistGate={onboardingPersistRef}
         />
       )}
     </>
