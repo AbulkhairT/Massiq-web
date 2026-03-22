@@ -145,12 +145,14 @@ function serializePlan(userId, plan) {
   const macros = plan?.dailyTargets || plan?.macros || {};
   if (!userId) throw new Error('[plans] Missing user_id for plan insert');
   return {
-    user_id: userId,
-    phase: toPhaseValue(plan?.phase),
-    calories: toSafeInt(macros.calories, 'calories'),
-    protein: toSafeInt(macros.protein, 'protein'),
-    carbs: toSafeInt(macros.carbs, 'carbs'),
-    fat: toSafeInt(macros.fat, 'fat'),
+    user_id:   userId,
+    phase:     toPhaseValue(plan?.phase),
+    calories:  toSafeInt(macros.calories, 'calories'),
+    protein:   toSafeInt(macros.protein, 'protein'),
+    carbs:     toSafeInt(macros.carbs, 'carbs'),
+    fat:       toSafeInt(macros.fat, 'fat'),
+    target_bf: toNumber(plan?.targetBF, null),
+    start_bf:  toNumber(plan?.startBF,  null),
   };
 }
 
@@ -177,6 +179,8 @@ function deserializePlan(row) {
       cardioDays: 2,
     },
     trainDays: 4,
+    targetBF:    toNumber(row.target_bf, null),
+    startBF:     toNumber(row.start_bf,  null),
     createdAt: row.created_at || null,
     sourceScanId: null,
   };
@@ -442,10 +446,10 @@ export async function upsertPlan(token, userId, plan) {
 }
 
 export async function getPlan(token, userId) {
-  const rows = await supabaseFetch(`/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,created_at&user_id=eq.${userId}&order=created_at.desc&limit=1`, {
-    method: 'GET',
-    headers: authHeaders(token),
-  });
+  const rows = await supabaseFetch(
+    `/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,target_bf,start_bf,created_at&user_id=eq.${userId}&order=created_at.desc&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
   return Array.isArray(rows) && rows[0] ? deserializePlan(rows[0]) : null;
 }
 
@@ -641,14 +645,40 @@ function hammingDistance(h1, h2) {
 export async function getSubscription(token, userId) {
   if (!token || !userId) return null;
   try {
+    // Fetch the 5 most-recently-updated rows and prefer an active/trialing one.
+    // Without ordering, a stale 'incomplete' row created first can shadow a later
+    // 'active' row when limit=1 is applied.
     const rows = await supabaseFetch(
-      `/rest/v1/subscriptions?user_id=eq.${userId}&select=id,user_id,status,stripe_customer_id,stripe_subscription_id,price_id,current_period_start,current_period_end,cancel_at_period_end,created_at,updated_at&limit=1`,
+      `/rest/v1/subscriptions?user_id=eq.${userId}&select=id,user_id,status,stripe_customer_id,stripe_subscription_id,price_id,current_period_start,current_period_end,cancel_at_period_end,created_at,updated_at&order=updated_at.desc&limit=5`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    // Prefer an active or trialing row; fall back to the most-recently-updated row.
+    const best = rows.find(r => r.status === 'active' || r.status === 'trialing') || rows[0];
+    return best;
+  } catch (err) {
+    // Non-fatal: subscriptions table may not exist yet in dev
+    console.warn('[subscription] getSubscription failed (non-fatal):', err?.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch the user's entitlement row (free scan usage counter).
+ * Returns null if the row doesn't exist yet (user has 0 scans, no row created).
+ * The row is created automatically by the DB trigger on first scan insert.
+ */
+export async function getEntitlements(token, userId) {
+  if (!token || !userId) return null;
+  try {
+    const rows = await supabaseFetch(
+      `/rest/v1/user_entitlements?user_id=eq.${userId}&select=user_id,free_scans_used,free_scan_limit,lifetime_scan_count&limit=1`,
       { method: 'GET', headers: authHeaders(token) },
     );
     return Array.isArray(rows) && rows[0] ? rows[0] : null;
   } catch (err) {
-    // Non-fatal: subscriptions table may not exist yet in dev
-    console.warn('[subscription] getSubscription failed (non-fatal):', err?.message);
+    // Non-fatal: table may not exist yet (migration 003 not run)
+    console.warn('[entitlements] getEntitlements failed (non-fatal):', err?.message);
     return null;
   }
 }

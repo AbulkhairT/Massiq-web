@@ -66,17 +66,35 @@ export function getScanCount(scanHistory) {
 
 /**
  * Returns true if the user is allowed to run a new scan.
- * Premium users: always. Free users: up to FREE_SCAN_LIMIT.
+ * Premium users: always. Free users: up to free_scan_limit from entitlements.
+ *
+ * @param {object|null} subscription - subscription row from DB
+ * @param {Array}       scanHistory  - local scan history (fallback only)
+ * @param {object|null} entitlements - user_entitlements row from DB (preferred)
  */
-export function canScan(subscription, scanHistory) {
+export function canScan(subscription, scanHistory, entitlements = null) {
   if (isPremiumActive(subscription)) return true;
+  if (entitlements) {
+    // Persistent DB counter — immune to scan history deletion
+    const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
+    return entitlements.free_scans_used < limit;
+  }
+  // Fallback: count non-duplicate scans in local history
   return getScanCount(scanHistory) < FREE_SCAN_LIMIT;
 }
 
 /**
  * Returns the number of free scans remaining (Infinity for premium users).
+ *
+ * @param {object|null} subscription - subscription row from DB
+ * @param {Array}       scanHistory  - local scan history (fallback only)
+ * @param {object|null} entitlements - user_entitlements row from DB (preferred)
  */
-export function scansRemaining(subscription, scanHistory) {
+export function scansRemaining(subscription, scanHistory, entitlements = null) {
   if (isPremiumActive(subscription)) return Infinity;
+  if (entitlements) {
+    const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
+    return Math.max(0, limit - entitlements.free_scans_used);
+  }
   return Math.max(0, FREE_SCAN_LIMIT - getScanCount(scanHistory));
 }

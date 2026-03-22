@@ -18,8 +18,10 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 async function checkSubscription(token, userId) {
   try {
+    // Order by updated_at desc so the most-recently-written row wins.
+    // Fetch up to 5 rows and prefer an active/trialing one.
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/subscriptions?user_id=eq.${userId}&select=status&limit=1`,
+      `${SUPABASE_URL}/rest/v1/subscriptions?user_id=eq.${userId}&select=status&order=updated_at.desc&limit=5`,
       {
         headers: {
           apikey:        SUPABASE_ANON_KEY,
@@ -28,8 +30,9 @@ async function checkSubscription(token, userId) {
       }
     );
     const rows = await res.json().catch(() => []);
-    const status = Array.isArray(rows) && rows[0]?.status;
-    return ['active', 'trialing'].includes(status);
+    if (!Array.isArray(rows) || rows.length === 0) return false;
+    const best = rows.find(r => r.status === 'active' || r.status === 'trialing') || rows[0];
+    return ['active', 'trialing'].includes(best.status);
   } catch {
     return false;
   }

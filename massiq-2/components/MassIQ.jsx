@@ -25,6 +25,7 @@ import {
   findSimilarAsset,
   getScanByAssetId,
   getSubscription,
+  getEntitlements,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
@@ -4163,11 +4164,14 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast, onUpdateUnits, subscription, onUpgrade }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade }) {
   const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmDeleteHistory, setConfirmDeleteHistory] = useState(false);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
+  const [deleteHistoryBusy, setDeleteHistoryBusy] = useState(false);
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
   const [selectedScan, setSelectedScan] = useState(null);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -4594,22 +4598,54 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         ))}
       </Card>
 
-      {/* 6 ── Reset ── */}
+      {/* 6 ── Destructive actions ── */}
       <div style={{ paddingTop: 8, textAlign: 'center' }}>
         <button className="bp" onClick={onLogout} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '8px 0 14px' }}>
           Log Out
         </button>
-        {!confirmReset ? (
-          <button className="bp" onClick={() => setConfirmReset(true)} style={{ background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '10px 0' }}>
-            Reset All Data
+
+        {/* Delete scan history */}
+        {!confirmDeleteHistory ? (
+          <button className="bp" onClick={() => setConfirmDeleteHistory(true)} style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '8px 0' }}>
+            Delete scan history
+          </button>
+        ) : (
+          <Card style={{ border: `1px solid ${C.red}`, textAlign: 'center', padding: 20, marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Delete all scans?</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
+              Your scan photos and results will be permanently deleted. This does not restore free scan credits — those are tracked separately.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="ghost" onClick={() => setConfirmDeleteHistory(false)} style={{ flex: 1 }}>Cancel</Btn>
+              <Btn disabled={deleteHistoryBusy} onClick={async () => {
+                setDeleteHistoryBusy(true);
+                try { await onDeleteScanHistory(); } finally { setDeleteHistoryBusy(false); setConfirmDeleteHistory(false); }
+              }} style={{ flex: 1, background: C.red, color: C.white }}>
+                {deleteHistoryBusy ? 'Deleting…' : 'Yes, delete'}
+              </Btn>
+            </div>
+          </Card>
+        )}
+
+        {/* Delete account */}
+        {!confirmDeleteAccount ? (
+          <button className="bp" onClick={() => setConfirmDeleteAccount(true)} style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: C.red, fontSize: 13, fontWeight: 500, cursor: 'pointer', padding: '6px 0 14px', opacity: 0.7 }}>
+            Delete account
           </button>
         ) : (
           <Card style={{ border: `1px solid ${C.red}`, textAlign: 'center', padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Are you sure?</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>This will clear all your data and restart onboarding.</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Permanently delete your account?</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
+              Your account, profile, all scans, and all data will be permanently erased. This cannot be undone.
+            </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <Btn variant="ghost" onClick={() => setConfirmReset(false)} style={{ flex: 1 }}>Cancel</Btn>
-              <Btn onClick={onReset} style={{ flex: 1, background: C.red, color: C.white }}>Yes, Reset</Btn>
+              <Btn variant="ghost" onClick={() => setConfirmDeleteAccount(false)} style={{ flex: 1 }}>Cancel</Btn>
+              <Btn disabled={deleteAccountBusy} onClick={async () => {
+                setDeleteAccountBusy(true);
+                try { await onDeleteAccount(); } finally { setDeleteAccountBusy(false); setConfirmDeleteAccount(false); }
+              }} style={{ flex: 1, background: C.red, color: C.white }}>
+                {deleteAccountBusy ? 'Deleting…' : 'Yes, delete account'}
+              </Btn>
             </div>
           </Card>
         )}
@@ -4812,7 +4848,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, parentScanHistory }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, entitlements, parentScanHistory }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5794,8 +5830,8 @@ Return ONLY this JSON (no markdown, no extra text):
   }
 
   /* ── Pre-scan state ── */
-  const remaining  = scansRemaining(subscription, parentScanHistory);
-  const scanLocked = !canScan(subscription, parentScanHistory);
+  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements);
+  const scanLocked = !canScan(subscription, parentScanHistory, entitlements);
 
   return (
     <div className="screen">
@@ -6303,6 +6339,7 @@ export default function MassIQ() {
   const [syncing,    setSyncing]    = useState(false);
   const [scanHistory,   setScanHistory]   = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [subscription,  setSubscription]  = useState(null);
+  const [entitlements,  setEntitlements]  = useState(null);
   const [paywallOpen,   setPaywallOpen]   = useState(false);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
@@ -6397,6 +6434,15 @@ export default function MassIQ() {
           console.info('[sync] subscription:ok', { status: sub?.status || 'none' });
         } catch {
           // Non-fatal: free tier assumed
+        }
+
+        // Load entitlements (non-fatal — null means no scans yet, free limit applies)
+        try {
+          const ent = await getEntitlements(session.access_token, userId);
+          if (mounted) setEntitlements(ent);
+          console.info('[sync] entitlements:ok', { free_scans_used: ent?.free_scans_used ?? 0 });
+        } catch {
+          // Non-fatal: migration 003 may not be applied yet
         }
 
         if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
@@ -6659,18 +6705,39 @@ export default function MassIQ() {
     setActivePlan(null);
     setEditing(false);
     setSubscription(null);
+    setEntitlements(null);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
   };
 
-  const handleReset = () => {
-    // Clear all local data
+  const handleDeleteScanHistory = async () => {
+    if (!session?.access_token) return;
+    await fetch('/api/user/scan-history', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    // Clear local scan state — entitlements are NOT cleared (free credits don't restore)
+    setScanHistory([]);
+    LS.set(LS_KEYS.scanHistory, []);
+    showToast('Scan history deleted.');
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!session?.access_token) return;
+    await fetch('/api/user/account', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    // Sign out and clear all local data — account is gone
+    try { await signOutSession(session.access_token); } catch {}
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
-    // Reset app state — user stays authenticated but re-enters onboarding
+    setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setScanHistory([]);
+    setSubscription(null);
+    setEntitlements(null);
     setTab('home');
-    setEditing(false);
   };
 
   const handleEditProfile = () => {
@@ -6725,7 +6792,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
@@ -6733,7 +6800,8 @@ export default function MassIQ() {
             activePlan={activePlan}
             setTab={setTab}
             onEditProfile={handleEditProfile}
-            onReset={handleReset}
+            onDeleteScanHistory={handleDeleteScanHistory}
+            onDeleteAccount={handleDeleteAccount}
             onLogout={handleLogout}
             showToast={showToast}
             subscription={subscription}
