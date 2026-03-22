@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 
 const C = {
   bg:     '#0A0D0A',
@@ -13,21 +14,15 @@ const C = {
   border: 'rgba(255,255,255,0.08)',
 };
 
-const SUPABASE_URL     = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_URL      = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-async function checkSubscription(token, userId) {
+/** Check subscription using the user's own token (fast path). */
+async function checkWithToken(token, userId) {
   try {
-    // Order by updated_at desc so the most-recently-written row wins.
-    // Fetch up to 5 rows and prefer an active/trialing one.
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/subscriptions?user_id=eq.${userId}&select=status&order=updated_at.desc&limit=5`,
-      {
-        headers: {
-          apikey:        SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${token}`,
-        },
-      }
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` } }
     );
     const rows = await res.json().catch(() => []);
     if (!Array.isArray(rows) || rows.length === 0) return false;
@@ -35,6 +30,17 @@ async function checkSubscription(token, userId) {
     return ['active', 'trialing'].includes(best.status);
   } catch {
     return false;
+  }
+}
+
+/** Check subscription server-side using the Stripe session_id — no user token needed. */
+async function checkWithStripeSession(stripeSessionId) {
+  try {
+    const res = await fetch(`/api/stripe/verify?session_id=${encodeURIComponent(stripeSessionId)}`);
+    if (!res.ok) return { isPremium: false };
+    return await res.json();
+  } catch {
+    return { isPremium: false };
   }
 }
 
@@ -46,58 +52,85 @@ function getStoredSession() {
   }
 }
 
-export default function PremiumSuccessPage() {
-  const router = useRouter();
-  const [state, setState] = useState('checking'); // checking | active | syncing | error
+function CheckIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+      stroke={C.green} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function PremiumSuccessInner() {
+  const router        = useRouter();
+  const searchParams  = useSearchParams();
+  const stripeSession = searchParams.get('session_id');
+  const [state, setState] = useState('checking');
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
-    let cancelled = false;
-    let attempts  = 0;
+    cancelledRef.current = false;
 
     const poll = async () => {
-      const session = getStoredSession();
-      const token   = session?.access_token;
-      const userId  = session?.user?.id || session?.user_id;
+      // ── Fast path: localStorage has a valid session ──────────────────────
+      const stored = getStoredSession();
+      const token  = stored?.access_token;
+      const userId = stored?.user?.id || stored?.user_id;
 
-      if (!token || !userId) {
-        if (!cancelled) setState('error');
+      if (token && userId) {
+        for (let attempt = 0; attempt < 8 && !cancelledRef.current; attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+          const isPremium = await checkWithToken(token, userId);
+          if (isPremium) { if (!cancelledRef.current) setState('active'); return; }
+        }
+        // Timed out — webhook may still be in-flight
+        if (!cancelledRef.current) setState('syncing');
         return;
       }
 
-      while (attempts < 8 && !cancelled) {
-        attempts++;
-        const isPremium = await checkSubscription(token, userId);
-        if (isPremium) {
-          if (!cancelled) setState('active');
-          return;
+      // ── Fallback: no localStorage session (mobile Safari ITP, incognito, etc.) ─
+      // Use the Stripe checkout session_id that Stripe puts in the return URL.
+      if (stripeSession) {
+        for (let attempt = 0; attempt < 8 && !cancelledRef.current; attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+          const { isPremium } = await checkWithStripeSession(stripeSession);
+          if (isPremium) { if (!cancelledRef.current) setState('active'); return; }
         }
-        // Webhook sync may take a few seconds — wait and retry
-        if (attempts < 8) await new Promise(r => setTimeout(r, 2000));
+        // Payment went through but webhook is still syncing — show soft state
+        if (!cancelledRef.current) setState('syncing');
+        return;
       }
 
-      // Timeout — webhook may still be in-flight; show soft message
-      if (!cancelled) setState('syncing');
+      // No session at all and no Stripe session_id in URL — log in required
+      if (!cancelledRef.current) setState('noSession');
     };
 
     poll();
-    return () => { cancelled = true; };
-  }, []);
+    return () => { cancelledRef.current = true; };
+  }, [stripeSession]);
 
   const goToApp = () => router.push('/app');
+
+  const btnStyle = {
+    background: C.green, color: '#0A0D0A', border: 'none',
+    padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 800,
+    cursor: 'pointer', width: '100%',
+  };
 
   return (
     <div style={{
       minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center',
-      justifyContent: 'center', padding: 24, fontFamily: 'system-ui, -apple-system, sans-serif',
+      justifyContent: 'center', padding: 24,
+      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
     }}>
       <div style={{ maxWidth: 400, width: '100%', textAlign: 'center' }}>
 
         {state === 'checking' && (
           <>
             <div style={{
-              width: 56, height: 56, borderRadius: '50%', border: `2px solid ${C.green}`,
-              borderTopColor: 'transparent', animation: 'spin .9s linear infinite',
-              margin: '0 auto 24px',
+              width: 56, height: 56, borderRadius: '50%',
+              border: `2px solid ${C.green}`, borderTopColor: 'transparent',
+              animation: 'spin .9s linear infinite', margin: '0 auto 24px',
             }} />
             <div style={{ fontSize: 18, fontWeight: 700, color: C.white }}>Confirming your subscription…</div>
             <div style={{ fontSize: 14, color: C.muted, marginTop: 8 }}>This only takes a moment.</div>
@@ -107,75 +140,82 @@ export default function PremiumSuccessPage() {
         {state === 'active' && (
           <>
             <div style={{
-              width: 60, height: 60, borderRadius: '50%', background: '#1A2E1F',
+              width: 64, height: 64, borderRadius: '50%', background: '#1A2E1F',
               border: `2px solid ${C.green}`, display: 'flex', alignItems: 'center',
-              justifyContent: 'center', margin: '0 auto 24px', fontSize: 28,
-            }}>✓</div>
+              justifyContent: 'center', margin: '0 auto 24px',
+            }}>
+              <CheckIcon />
+            </div>
             <div style={{ fontSize: 24, fontWeight: 800, color: C.white, marginBottom: 10 }}>
               Premium is active.
             </div>
             <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Your account is now upgraded. Every scan now powers a real body recomposition plan — adaptive macros, trend analysis, and goal projections.
+              Your account is now upgraded. Every scan powers a real body recomposition plan — adaptive macros, trend analysis, and goal projections.
             </div>
-            <button
-              onClick={goToApp}
-              style={{
-                background: C.green, color: '#0A0D0A', border: 'none',
-                padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 800,
-                cursor: 'pointer', width: '100%',
-              }}
-            >
-              Go to MassIQ →
-            </button>
+            <button onClick={goToApp} style={btnStyle}>Go to MassIQ →</button>
           </>
         )}
 
         {state === 'syncing' && (
           <>
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%', background: '#1A2E1F',
+              border: `2px solid ${C.green}`, display: 'flex', alignItems: 'center',
+              justifyContent: 'center', margin: '0 auto 24px',
+            }}>
+              <CheckIcon />
+            </div>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 10 }}>
-              Almost there…
+              Payment received.
             </div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Your payment was successful. Premium access is syncing and will be active within a minute. You can close this and open the app.
+              Premium access is syncing and will be active within a minute. You can open the app now — it will reflect shortly.
             </div>
-            <button
-              onClick={goToApp}
-              style={{
-                background: C.green, color: '#0A0D0A', border: 'none',
-                padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 800,
-                cursor: 'pointer', width: '100%',
-              }}
-            >
-              Open app
-            </button>
+            <button onClick={goToApp} style={btnStyle}>Open app</button>
           </>
         )}
 
-        {state === 'error' && (
+        {state === 'noSession' && (
           <>
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%', background: '#1A2E1F',
+              border: `2px solid ${C.green}`, display: 'flex', alignItems: 'center',
+              justifyContent: 'center', margin: '0 auto 24px',
+            }}>
+              <CheckIcon />
+            </div>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 10 }}>
-              Session not found
+              Payment complete.
             </div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Log back in to confirm your subscription status.
+              Log back in to activate your premium access — your subscription is ready.
             </div>
-            <button
-              onClick={goToApp}
-              style={{
-                background: C.green, color: '#0A0D0A', border: 'none',
-                padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 800,
-                cursor: 'pointer', width: '100%',
-              }}
-            >
-              Log in
-            </button>
+            <button onClick={goToApp} style={btnStyle}>Log in to MassIQ</button>
           </>
         )}
 
-        <style>{`
-          @keyframes spin { to { transform: rotate(360deg); } }
-        `}</style>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     </div>
+  );
+}
+
+export default function PremiumSuccessPage() {
+  return (
+    <Suspense fallback={
+      <div style={{
+        minHeight: '100dvh', background: '#0A0D0A', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{
+          width: 56, height: 56, borderRadius: '50%',
+          border: '2px solid #72B895', borderTopColor: 'transparent',
+          animation: 'spin .9s linear infinite',
+        }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    }>
+      <PremiumSuccessInner />
+    </Suspense>
   );
 }

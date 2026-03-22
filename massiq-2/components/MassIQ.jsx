@@ -1101,6 +1101,43 @@ function PlanGeneratingScreen({ name }) {
 const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Free', 'Dairy-Free', 'Halal', 'Kosher'];
 const CUISINES    = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
 const AVOID_FOODS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Soy', 'Eggs', 'Red Meat', 'Processed Sugar'];
+// SVG icon paths for each goal — rendered as inline SVGs in the goal cards
+const GOAL_ICONS = {
+  Cut: ({ color }) => (
+    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      {/* Flame — represents fat burning */}
+      <path d="M17.657 18.657A8 8 0 0 1 6.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.657 7.343A8 8 0 0 1 17.657 18.657z" />
+      <path d="M9.5 15a3.5 3.5 0 0 0 6 0" />
+    </svg>
+  ),
+  Bulk: ({ color }) => (
+    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      {/* Dumbbell — represents muscle building */}
+      <rect x="2" y="10.5" width="3" height="3" rx="1" />
+      <rect x="19" y="10.5" width="3" height="3" rx="1" />
+      <rect x="5" y="9" width="3" height="6" rx="1" />
+      <rect x="16" y="9" width="3" height="6" rx="1" />
+      <line x1="8" y1="12" x2="16" y2="12" />
+    </svg>
+  ),
+  Recomp: ({ color }) => (
+    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      {/* Cycle arrows — represents body recomposition / transformation */}
+      <path d="M4 4v5h5" />
+      <path d="M20 20v-5h-5" />
+      <path d="M20 9A8 8 0 0 0 6.93 5.07" />
+      <path d="M4 15a8 8 0 0 0 13.07 3.93" />
+    </svg>
+  ),
+  Maintain: ({ color }) => (
+    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      {/* Shield with check — represents protection / maintaining progress */}
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <polyline points="9 12 11 14 15 10" />
+    </svg>
+  ),
+};
+
 const GOALS = [
   { key: 'Cut',      label: 'Cut',      desc: 'Lose fat, preserve muscle' },
   { key: 'Bulk',     label: 'Bulk',     desc: 'Build maximum muscle mass' },
@@ -1381,14 +1418,22 @@ function Onboarding({ onComplete, currentUserId }) {
           <AILabel />
           <AiMsg>Nice to meet you, {data.name}.<br />What are you trying to achieve?</AiMsg>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            {GOALS.map(g => (
-              <div key={g.key} className={`ob-card${data.goal === g.key ? ' selected' : ''}`}
-                onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
-                style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 34, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 10 }}>{g.label}</div>
-                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
-              </div>
-            ))}
+            {GOALS.map(g => {
+              const isSelected = data.goal === g.key;
+              const iconColor  = isSelected ? C.green : 'rgba(242,247,242,0.55)';
+              const GoalIcon   = GOAL_ICONS[g.key];
+              return (
+                <div key={g.key} className={`ob-card${isSelected ? ' selected' : ''}`}
+                  onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
+                  style={{ textAlign: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+                    <GoalIcon color={iconColor} />
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 700, color: isSelected ? C.green : C.white, marginBottom: 8 }}>{g.label}</div>
+                  <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
       );
@@ -4683,7 +4728,16 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
       {!lastScan && (
         <Card className="su" style={{ background: '#141A14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 32, textAlign: 'center', animationDelay: '.02s' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>Photo</div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
+            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              {/* Camera body */}
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              {/* Lens */}
+              <circle cx="12" cy="13" r="4" />
+              {/* Inner lens highlight */}
+              <circle cx="12" cy="13" r="1.5" fill={C.green} stroke="none" opacity="0.5" />
+            </svg>
+          </div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 10 }}>No scan data yet</div>
           <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 24 }}>
             Complete your first body scan to see your physique metrics, health score, and journey timeline.
