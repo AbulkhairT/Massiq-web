@@ -13,7 +13,10 @@ const HANDLED_EVENTS = new Set([
 
 /**
  * Upsert a subscription row into public.subscriptions using the service role key.
- * Matches on stripe_subscription_id (UNIQUE column).
+ *
+ * The subscriptions table has no UNIQUE constraint on stripe_subscription_id,
+ * so we cannot use PostgREST on_conflict. Instead we do an explicit
+ * SELECT → PATCH (if found) or POST (if new).
  */
 async function upsertSubscription(row) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -23,23 +26,43 @@ async function upsertSubscription(row) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL missing');
   }
 
-  const res = await fetch(
-    `${supabaseUrl}/rest/v1/subscriptions?on_conflict=stripe_subscription_id`,
-    {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        apikey:          serviceKey,
-        Authorization:   `Bearer ${serviceKey}`,
-        Prefer:          'resolution=merge-duplicates,return=representation',
-      },
-      body: JSON.stringify(row),
-    }
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey:         serviceKey,
+    Authorization:  `Bearer ${serviceKey}`,
+    Prefer:         'return=representation',
+  };
+
+  // 1. Look up existing row by stripe_subscription_id
+  const lookupRes = await fetch(
+    `${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${encodeURIComponent(row.stripe_subscription_id)}&select=id&limit=1`,
+    { method: 'GET', headers }
   );
+  if (!lookupRes.ok) {
+    const text = await lookupRes.text().catch(() => '');
+    throw new Error(`Supabase lookup failed (${lookupRes.status}): ${text}`);
+  }
+  const existing = await lookupRes.json().catch(() => []);
+  const existingId = Array.isArray(existing) && existing[0]?.id;
+
+  let res;
+  if (existingId) {
+    // 2a. PATCH the existing row
+    res = await fetch(
+      `${supabaseUrl}/rest/v1/subscriptions?id=eq.${existingId}`,
+      { method: 'PATCH', headers, body: JSON.stringify(row) }
+    );
+  } else {
+    // 2b. INSERT a new row
+    res = await fetch(
+      `${supabaseUrl}/rest/v1/subscriptions`,
+      { method: 'POST', headers, body: JSON.stringify(row) }
+    );
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Supabase upsert failed (${res.status}): ${text}`);
+    throw new Error(`Supabase ${existingId ? 'patch' : 'insert'} failed (${res.status}): ${text}`);
   }
 
   return res.json().catch(() => null);
