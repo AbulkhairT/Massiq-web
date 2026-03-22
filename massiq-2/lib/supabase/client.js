@@ -289,6 +289,20 @@ export async function signInWithPassword(email, password) {
   return data;
 }
 
+/**
+ * Sends a password reset email via Supabase Auth.
+ * On success, the user receives a link to reset their password.
+ */
+export async function requestPasswordReset(email) {
+  if (!hasConfig()) throw new Error('Supabase env missing');
+  const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
+  return supabaseFetch('/auth/v1/recover', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ email, redirect_to: `${appUrl}/app` }),
+  });
+}
+
 export async function refreshSession(refreshToken) {
   try {
     const data = await supabaseFetch('/auth/v1/token?grant_type=refresh_token', {

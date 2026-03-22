@@ -9,6 +9,7 @@ import {
   getStoredSession,
   signInWithPassword,
   signUpWithPassword,
+  requestPasswordReset,
   signOut as signOutSession,
   fetchUser,
   upsertProfile,
@@ -6067,64 +6068,150 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   );
 }
 
-function AuthScreen({ onSubmit, loading, error, notice }) {
-  const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
+function AuthScreen({ onSubmit, onForgotPassword, loading, error, notice }) {
+  const [mode,     setMode]     = useState('login'); // 'login' | 'signup' | 'forgot'
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
-  const disabled = loading || !email.trim() || password.length < 6;
+  const [touched,  setTouched]  = useState({ email: false, password: false });
+
+  const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+  const emailOk    = isValidEmail(email);
+  const passwordOk = password.length >= 6;
+
+  const emailErr   = touched.email    && email.trim()    && !emailOk    ? 'Enter a valid email address.' : '';
+  const passwordErr= touched.password && password.length && !passwordOk ? 'Password must be at least 6 characters.' : '';
+
+  const canSubmit  = !loading && emailOk && (mode === 'forgot' || passwordOk);
+
+  const handleSubmit = () => {
+    setTouched({ email: true, password: true });
+    if (!canSubmit) return;
+    if (mode === 'forgot') { onForgotPassword(email.trim()); return; }
+    onSubmit(mode, email.trim(), password);
+  };
+
+  const switchMode = (m) => {
+    setMode(m);
+    setTouched({ email: false, password: false });
+  };
+
+  const inputStyle = (hasErr) => ({
+    padding: '12px 14px', borderRadius: 12, fontSize: 14, width: '100%',
+    border: `1px solid ${hasErr ? C.red + '88' : C.border}`,
+    background: hasErr ? `rgba(201,92,92,0.06)` : C.card,
+    color: C.white, outline: 'none',
+  });
 
   return (
     <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <style>{CSS}</style>
       <Card className="glass su" style={{ width: '100%', maxWidth: 420, padding: 24, background: C.cardElevated }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 14 }}>MASSIQ</div>
-        <h1 style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
-        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
-          {mode === 'login' ? 'Log in to continue your plan, scans, and progress timeline.' : 'Set up your identity once. MassIQ will remember your profile, scans, and active plan.'}
-        </p>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 16 }}>MASSIQ</div>
 
-        <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
-          {['login', 'signup'].map((m) => (
-            <button key={m} className="bp" onClick={() => setMode(m)} style={{
-              flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
-              background: mode === m ? C.greenBg : 'transparent',
-              color: mode === m ? C.green : C.muted,
-              border: 'none',
-            }}>
-              {m === 'login' ? 'Log In' : 'Create Account'}
+        {/* ── Forgot password mode ── */}
+        {mode === 'forgot' ? (
+          <>
+            <h1 style={{ fontSize: 26, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>Reset your password</h1>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+              Enter your email and we'll send you a link to reset your password.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, email: true }))}
+                placeholder="Email address"
+                type="email"
+                autoComplete="email"
+                style={inputStyle(!!emailErr)}
+              />
+              {emailErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{emailErr}</div>}
+              <Btn disabled={!canSubmit || loading} onClick={handleSubmit} style={{ width: '100%', marginTop: 8 }}>
+                {loading ? 'Sending…' : 'Send Reset Link'}
+              </Btn>
+            </div>
+            {(error || notice) && (
+              <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red + '66' : C.greenDim}`, background: error ? 'rgba(201,92,92,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
+                {error || notice}
+              </div>
+            )}
+            <button className="bp" onClick={() => switchMode('login')} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, cursor: 'pointer', marginTop: 16, width: '100%', textAlign: 'center' }}>
+              ← Back to log in
             </button>
-          ))}
-        </div>
+          </>
+        ) : (
+          <>
+            <h1 style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>
+              {mode === 'login' ? 'Welcome back' : 'Create your account'}
+            </h1>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+              {mode === 'login'
+                ? 'Log in to continue your plan, scans, and progress timeline.'
+                : 'Set up your account once. MassIQ will remember your profile, scans, and progress.'}
+            </p>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <Btn disabled={disabled} onClick={() => onSubmit(mode, email.trim(), password)} style={{ width: '100%', marginTop: 6 }}>
-            {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
-          </Btn>
-        </div>
+            {/* Mode toggle */}
+            <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
+              {['login', 'signup'].map(m => (
+                <button key={m} className="bp" onClick={() => switchMode(m)} style={{
+                  flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
+                  background: mode === m ? C.greenBg : 'transparent',
+                  color: mode === m ? C.green : C.muted, border: 'none',
+                }}>
+                  {m === 'login' ? 'Log In' : 'Create Account'}
+                </button>
+              ))}
+            </div>
 
-        {(error || notice) && (
-          <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red : C.greenDim}`, background: error ? 'rgba(255,90,95,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
-            {error || notice}
-          </div>
+            {/* Fields */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, email: true }))}
+                placeholder="Email address"
+                type="email"
+                autoComplete={mode === 'login' ? 'email' : 'email'}
+                style={inputStyle(!!emailErr)}
+              />
+              {emailErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{emailErr}</div>}
+
+              <input
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, password: true }))}
+                placeholder={mode === 'signup' ? 'Password (min 6 characters)' : 'Password'}
+                type="password"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                style={{ ...inputStyle(!!passwordErr), marginTop: 4 }}
+                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              />
+              {passwordErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{passwordErr}</div>}
+
+              <Btn disabled={!canSubmit} onClick={handleSubmit} style={{ width: '100%', marginTop: 8 }}>
+                {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
+              </Btn>
+            </div>
+
+            {/* Error / notice */}
+            {(error || notice) && (
+              <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red + '66' : C.greenDim}`, background: error ? 'rgba(201,92,92,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
+                {error || notice}
+              </div>
+            )}
+
+            {/* Forgot password link — login only */}
+            {mode === 'login' && (
+              <button className="bp" onClick={() => switchMode('forgot')} style={{ background: 'none', border: 'none', color: C.dimmed, fontSize: 12, cursor: 'pointer', marginTop: 14, width: '100%', textAlign: 'center' }}>
+                Forgot your password?
+              </button>
+            )}
+          </>
         )}
       </Card>
     </div>
   );
 }
-
-/* ─── Placeholder tabs ───────────────────────────────────────────────────── */
-const PlaceholderTab = ({ label, icon }) => (
-  <div style={{
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
-    justifyContent: 'center', height: '60vh', gap: 14,
-  }}>
-    <div style={{ fontSize: 48 }}>{icon}</div>
-    <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{label}</div>
-    <div style={{ fontSize: 14, color: C.muted }}>Coming in the next commit</div>
-  </div>
-);
 
 /* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
@@ -6493,28 +6580,58 @@ export default function MassIQ() {
     }
   };
 
+  const handlePasswordReset = async (email) => {
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthNotice('');
+    try {
+      await requestPasswordReset(email);
+      setAuthNotice(`Check your inbox — we sent a reset link to ${email}.`);
+    } catch (err) {
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('rate limit') || msg.includes('too many')) {
+        setAuthError('Too many reset requests. Please wait a minute and try again.');
+      } else {
+        setAuthError('Could not send reset email. Check the address and try again.');
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const handleAuthSubmit = async (mode, email, password) => {
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const userPassword = String(password || '');
 
     const mapAuthError = (err, m) => {
       const raw = String(err?.message || '').toLowerCase();
-      if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
-      if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
+      if (raw.includes('invalid login') || raw.includes('invalid credentials') || raw.includes('invalid email or password') || raw.includes('email not confirmed')) {
+        return 'Incorrect email or password.';
+      }
+      if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered') || raw.includes('email address is already')) {
         return 'An account already exists for this email. Log in instead.';
       }
-      if (raw.includes('password') && (raw.includes('weak') || raw.includes('6'))) {
-        return 'Use a stronger password with at least 6 characters.';
+      if (raw.includes('email') && raw.includes('invalid')) {
+        return 'Enter a valid email address.';
       }
-      if (raw.includes('rate limit') || raw.includes('too many requests')) {
-        return 'Too many attempts right now. Please wait and try again.';
+      if (raw.includes('password') && (raw.includes('weak') || raw.includes('6') || raw.includes('short'))) {
+        return 'Password must be at least 6 characters.';
       }
-      if (raw.includes('failed to fetch') || raw.includes('network') || raw.includes('request failed (5')) {
-        return 'Connection issue. Please try again.';
+      if (raw.includes('email not found') || raw.includes('no user found') || raw.includes('not found')) {
+        return m === 'login' ? 'Incorrect email or password.' : 'Could not create account. Try again.';
+      }
+      if (raw.includes('rate limit') || raw.includes('too many requests') || raw.includes('too many')) {
+        return 'Too many attempts. Please wait a minute and try again.';
+      }
+      if (raw.includes('failed to fetch') || raw.includes('network') || raw.includes('request failed (5') || raw.includes('connection')) {
+        return 'Connection issue. Check your internet and try again.';
+      }
+      if (raw.includes('signup') && raw.includes('disabled')) {
+        return 'Sign-ups are temporarily disabled. Try again later.';
       }
       return m === 'signup'
-        ? 'Could not create account right now.'
-        : 'Could not log in right now.';
+        ? 'Could not create account. Please try again.'
+        : 'Could not log in. Please try again.';
     };
 
     setAuthBusy(true);
@@ -6597,7 +6714,7 @@ export default function MassIQ() {
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   if (!session?.access_token) {
-    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
+    return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
   const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
