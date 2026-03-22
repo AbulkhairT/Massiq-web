@@ -27,7 +27,7 @@ import {
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
-import { hasFeature, isPremiumActive, FEATURES } from '../lib/features';
+import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT } from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -1610,14 +1610,14 @@ function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
 ────────────────────────────────────────────────────────────────────────────── */
 
 const FEATURE_COPY = {
-  [FEATURES.SCAN_COMPARISON]:    { title: 'Scan-to-Scan Comparison',     desc: 'See exactly what changed in body composition since your last scan — fat lost, muscle gained, score shifts.' },
-  [FEATURES.PROJECTIONS]:        { title: 'Goal Timeline',                desc: 'See how many weeks until you reach your target based on real scan data and current pace.' },
-  [FEATURES.ADAPTIVE_PLAN]:      { title: 'Adaptive Plan Updates',        desc: 'Your macros recalculate after every scan based on actual progress, not assumptions.' },
-  [FEATURES.DECISION_LOG]:       { title: 'Adaptation Insights',          desc: 'Understand why your plan changed — the precise logic behind every macro and recovery adjustment.' },
-  [FEATURES.CORRECTIONS]:        { title: 'Targeted Corrections',         desc: 'Identify muscle imbalances and weak points, with specific protocol adjustments to fix them.' },
-  [FEATURES.PREMIUM_INSIGHTS]:   { title: 'Advanced Metrics',             desc: 'FFMI, scoring breakdown, and body composition analytics that go deeper than body fat percentage.' },
-  [FEATURES.TREND_ANALYSIS]:     { title: 'Trend Analysis',               desc: 'Multi-scan trend surface with weekly progress velocity and direction across all key metrics.' },
-  [FEATURES.WORKOUT_ADJUSTMENTS]:{ title: 'Workout Adjustments',          desc: 'Training protocol updates based on scan results — volume, intensity, and priority muscle groups.' },
+  [FEATURES.SCAN_COMPARISON]:    { title: 'See What Actually Changed',    desc: 'Every scan shows precise before/after deltas — body fat lost, lean mass gained, score shift. Know if your effort is working.' },
+  [FEATURES.PROJECTIONS]:        { title: 'Your Timeline to the Goal',    desc: 'Based on your actual scan pace, Premium calculates how many weeks to reach your target body fat. No guessing.' },
+  [FEATURES.ADAPTIVE_PLAN]:      { title: 'Macros That Update With You',  desc: 'After each scan, your calorie and protein targets automatically adjust to what your body actually needs right now.' },
+  [FEATURES.DECISION_LOG]:       { title: 'Why Your Plan Changed',        desc: 'Every macro update comes with a specific reason — plateau detected, pace off target, lean mass shift. Full transparency.' },
+  [FEATURES.CORRECTIONS]:        { title: 'Fix the Weakest Links',        desc: 'Premium identifies muscle imbalances from your scan and gives you specific protocol adjustments to correct them.' },
+  [FEATURES.PREMIUM_INSIGHTS]:   { title: 'Deeper Body Composition Data', desc: 'FFMI, scoring breakdown, and composition analytics beyond body fat — for users who want the full picture.' },
+  [FEATURES.TREND_ANALYSIS]:     { title: 'Track Progress Over Time',     desc: 'See how your body fat, lean mass, and physique score are trending week over week across all your scans.' },
+  [FEATURES.WORKOUT_ADJUSTMENTS]:{ title: 'Training Adjusts to Your Scan',desc: 'When scan results show a plateau or imbalance, your training volume and priority areas update automatically.' },
 };
 
 function PremiumGate({ feature, subscription, onUpgrade, children }) {
@@ -1661,16 +1661,6 @@ function Paywall({ userId, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
 
-  const BENEFITS = [
-    'Dynamic macros recalculated after every scan',
-    'Scan-to-scan comparison with precise deltas',
-    'Goal timeline — weeks to your target',
-    'Adaptation insights: why your plan changed',
-    'Muscle group weak-point correction protocols',
-    'Advanced metrics: FFMI, scoring breakdown',
-    'Trusted progress — no guesswork, no filler',
-  ];
-
   const handleUpgrade = async () => {
     setLoading(true);
     setError('');
@@ -1703,13 +1693,13 @@ function Paywall({ userId, onClose }) {
         maxHeight: '92dvh', overflowY: 'auto',
       }}>
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 6 }}>
               MassIQ Premium
             </div>
             <div style={{ fontSize: 26, fontWeight: 900, color: C.white, lineHeight: 1.15 }}>
-              Unlock MassIQ<br />Premium
+              Your scan data<br />should drive decisions.
             </div>
           </div>
           <button
@@ -1725,35 +1715,43 @@ function Paywall({ userId, onClose }) {
 
         {/* Subheadline */}
         <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
-          Turn scans into a real body recomposition plan.
+          Free shows you where you are. Premium tells you exactly what to do next — and updates your plan as you progress.
         </div>
 
-        {/* Value blocks */}
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 24,
-        }}>
+        {/* 3 core outcome blocks */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 28 }}>
           {[
-            { icon: 'rotate',    label: 'Adaptive Plan',       desc: 'Macros that update with you' },
-            { icon: 'chart',     label: 'Progress Forecasts',  desc: 'Real timeline to your goal' },
-            { icon: 'bolt',      label: 'Corrections',         desc: 'Fix weak points precisely' },
+            {
+              icon: 'rotate',
+              label: 'Macros that adapt after every scan',
+              desc: 'Stop guessing. After each scan, your calorie and protein targets update automatically based on what your body actually shows.',
+            },
+            {
+              icon: 'chart',
+              label: 'Know how many weeks to your goal',
+              desc: 'Premium calculates your timeline to target body fat based on your actual pace — not generic estimates.',
+            },
+            {
+              icon: 'bolt',
+              label: 'See exactly what changed and why',
+              desc: 'Scan-to-scan comparison with precise deltas. Understand whether you\'re progressing, plateauing, or need a correction.',
+            },
           ].map(b => (
             <div key={b.label} style={{
-              background: 'rgba(114,184,149,0.06)', border: '1px solid rgba(114,184,149,0.15)',
-              borderRadius: 14, padding: '12px 10px', textAlign: 'center',
+              display: 'flex', alignItems: 'flex-start', gap: 14,
+              background: 'rgba(114,184,149,0.05)', border: '1px solid rgba(114,184,149,0.12)',
+              borderRadius: 16, padding: '14px 16px',
             }}>
-              <Icon name={b.icon} size={18} color={C.green} strokeWidth={1.8} />
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginTop: 7 }}>{b.label}</div>
-              <div style={{ fontSize: 10, color: C.dimmed, marginTop: 3, lineHeight: 1.4 }}>{b.desc}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Benefits list */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
-          {BENEFITS.map(b => (
-            <div key={b} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-              <div style={{ color: C.green, fontSize: 14, flexShrink: 0, marginTop: 1 }}>✓</div>
-              <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.5 }}>{b}</div>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon name={b.icon} size={17} color={C.green} strokeWidth={1.8} />
+              </div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 4, lineHeight: 1.3 }}>{b.label}</div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{b.desc}</div>
+              </div>
             </div>
           ))}
         </div>
@@ -1773,7 +1771,7 @@ function Paywall({ userId, onClose }) {
             fontSize: 16, fontWeight: 800, cursor: loading ? 'default' : 'pointer', marginBottom: 12,
           }}
         >
-          {loading ? 'Loading…' : 'Start Premium'}
+          {loading ? 'Loading…' : 'Upgrade to Premium'}
         </button>
         <button
           onClick={onClose}
@@ -4258,27 +4256,65 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
   }, []);
 
   const isPremium     = isPremiumActive(subscription);
+  const isCanceling   = subscription?.cancel_at_period_end === true;
+  const isPastDue     = subscription?.status === 'past_due';
   const periodEnd     = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     : null;
+
+  const [portalLoading, setPortalLoading] = useState(false);
+  const openBillingPortal = async () => {
+    const customerId = subscription?.stripe_customer_id;
+    if (!customerId) return;
+    setPortalLoading(true);
+    try {
+      const res = await fetch('/api/stripe/portal', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ customerId }),
+      });
+      const { url, error: apiErr } = await res.json();
+      if (apiErr) throw new Error(apiErr);
+      if (url) window.location.href = url;
+    } catch (err) {
+      showToast('Could not open billing portal. Try again.');
+    }
+    setPortalLoading(false);
+  };
 
   return (
     <div className="screen">
       <h1 className="screen-title">Profile</h1>
 
       {/* ── Subscription status ─────────────────────────────────────────── */}
-      <Card className="su" style={{ animationDelay: '.01s', background: isPremium ? '#0E1A12' : C.card, border: isPremium ? `1px solid rgba(114,184,149,0.25)` : `1px solid ${C.border}` }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Card className="su" style={{
+        animationDelay: '.01s',
+        background: isPremium ? '#0E1A12' : C.card,
+        border: isPremium
+          ? `1px solid ${isPastDue ? 'rgba(212,114,74,0.4)' : isCanceling ? 'rgba(196,168,50,0.3)' : 'rgba(114,184,149,0.25)'}`
+          : `1px solid ${C.border}`,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: isPremium ? C.green : C.dimmed, textTransform: 'uppercase', marginBottom: 5 }}>
-              {isPremium ? 'Premium · Active' : 'Free Plan'}
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 5,
+              color: isPastDue ? C.orange : isCanceling ? C.gold : isPremium ? C.green : C.dimmed }}>
+              {isPastDue ? 'Payment Failed' : isCanceling ? 'Premium · Canceling' : isPremium ? 'Premium · Active' : 'Free Plan'}
             </div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.white }}>
               {isPremium ? 'MassIQ Premium' : 'MassIQ Free'}
             </div>
             {isPremium && periodEnd && (
               <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-                {subscription?.cancel_at_period_end ? `Cancels ${periodEnd}` : `Renews ${periodEnd}`}
+                {isCanceling
+                  ? `Access until ${periodEnd} — won't renew`
+                  : isPastDue
+                    ? `Payment issue — update billing to keep access`
+                    : `Renews ${periodEnd}`}
+              </div>
+            )}
+            {!isPremium && (
+              <div style={{ fontSize: 12, color: C.dimmed, marginTop: 3 }}>
+                {FREE_SCAN_LIMIT} free scans included
               </div>
             )}
           </div>
@@ -4288,21 +4324,54 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
               onClick={onUpgrade}
               style={{
                 background: C.green, color: '#0A0D0A', border: 'none',
-                padding: '9px 18px', borderRadius: 99, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                padding: '9px 18px', borderRadius: 99, fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
               }}
             >
               Upgrade →
             </button>
           )}
-          {isPremium && (
+          {isPremium && !isPastDue && !isCanceling && (
             <div style={{
               background: 'rgba(114,184,149,0.12)', borderRadius: 10,
-              padding: '6px 12px', fontSize: 12, color: C.green, fontWeight: 600,
+              padding: '6px 12px', fontSize: 12, color: C.green, fontWeight: 600, flexShrink: 0,
             }}>
               Active
             </div>
           )}
+          {isPastDue && (
+            <div style={{
+              background: 'rgba(212,114,74,0.12)', borderRadius: 10,
+              padding: '6px 12px', fontSize: 12, color: C.orange, fontWeight: 600, flexShrink: 0,
+            }}>
+              Past Due
+            </div>
+          )}
         </div>
+
+        {/* Manage Billing — shown for all premium users */}
+        {isPremium && subscription?.stripe_customer_id && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid rgba(255,255,255,0.07)` }}>
+            <button
+              onClick={openBillingPortal}
+              disabled={portalLoading}
+              className="bp"
+              style={{
+                background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.1)`,
+                color: C.muted, borderRadius: 10, padding: '9px 16px', fontSize: 13,
+                fontWeight: 600, cursor: portalLoading ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 7,
+              }}
+            >
+              <Icon name="settings" size={13} color={C.muted} strokeWidth={2} />
+              {portalLoading ? 'Opening…' : isCanceling ? 'Renew or Manage Billing' : 'Manage Billing'}
+            </button>
+            {isCanceling && (
+              <div style={{ fontSize: 11, color: C.dimmed, marginTop: 8, lineHeight: 1.5 }}>
+                You can reactivate anytime before {periodEnd} to keep your scan history and premium access.
+              </div>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
@@ -4718,7 +4787,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, parentScanHistory }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5765,6 +5834,9 @@ Return ONLY this JSON (no markdown, no extra text):
   }
 
   /* ── Pre-scan state ── */
+  const remaining  = scansRemaining(subscription, parentScanHistory);
+  const scanLocked = !canScan(subscription, parentScanHistory);
+
   return (
     <div className="screen">
       <div>
@@ -5799,6 +5871,70 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       </Card>
 
+      {/* ── Free scan remaining notice ── */}
+      {!scanLocked && remaining < Infinity && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: remaining === 1 ? 'rgba(212,114,74,0.08)' : 'rgba(114,184,149,0.06)',
+          border: `1px solid ${remaining === 1 ? 'rgba(212,114,74,0.3)' : 'rgba(114,184,149,0.2)'}`,
+          borderRadius: 12, padding: '10px 14px',
+        }}>
+          <Icon name="camera" size={14} color={remaining === 1 ? C.orange : C.green} strokeWidth={2} />
+          <span style={{ fontSize: 13, color: remaining === 1 ? C.orange : C.muted, flex: 1 }}>
+            {remaining === 1
+              ? 'Last free scan. Upgrade before your next check-in to keep tracking.'
+              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining.`}
+          </span>
+        </div>
+      )}
+
+      {/* ── Scan limit reached — upgrade gate ── */}
+      {scanLocked && (
+        <div style={{
+          background: 'rgba(114,184,149,0.04)', border: '1px solid rgba(114,184,149,0.2)',
+          borderRadius: 20, padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 14,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name="lock" size={16} color={C.green} strokeWidth={2} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.green, textTransform: 'uppercase' }}>Free Limit Reached</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.white, marginTop: 2 }}>Upgrade to keep scanning</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>
+            You&apos;ve used your {FREE_SCAN_LIMIT} free scans. Premium gives you unlimited scans — plus adaptive macros, progress tracking, and a timeline to your goal.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {[
+              'Unlimited scans — scan weekly or monthly',
+              'Macros that update after every scan',
+              'Precise scan-to-scan progress comparison',
+              'Goal timeline: weeks to your target body fat',
+            ].map(item => (
+              <div key={item} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ color: C.green, fontSize: 13, marginTop: 1, flexShrink: 0 }}>✓</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>{item}</div>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => setTab('profile')}
+            style={{
+              background: C.green, color: '#0A0D0A', border: 'none',
+              padding: '14px', borderRadius: 99, fontSize: 15, fontWeight: 800,
+              cursor: 'pointer', width: '100%',
+            }}
+          >
+            Upgrade to Premium →
+          </button>
+        </div>
+      )}
+
       {error && (
         <div style={{ background: `${C.red}18`, border: `1px solid ${C.red}44`, borderRadius: 14, padding: '12px 16px', fontSize: 13, color: C.red, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
           <span style={{ flex: 1 }}>{error}</span>
@@ -5806,13 +5942,17 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       )}
 
-      {/* Buttons */}
-      <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
-      <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="camera" size={16} color="currentColor" /> Take Photo</Btn>
-        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="arrow-up" size={16} color="currentColor" /> Upload</Btn>
-      </div>
+      {/* Buttons — hidden when at limit */}
+      {!scanLocked && (
+        <>
+          <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
+          <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="camera" size={16} color="currentColor" /> Take Photo</Btn>
+            <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="arrow-up" size={16} color="currentColor" /> Upload</Btn>
+          </div>
+        </>
+      )}
 
       {/* Scan History */}
       {scanHistory.length > 0 && (
@@ -6473,7 +6613,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab

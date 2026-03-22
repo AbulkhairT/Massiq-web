@@ -33,6 +33,12 @@ const FREE_FEATURES = new Set([
 ]);
 
 /**
+ * Free users get this many completed (non-duplicate) scans.
+ * Premium users have no limit.
+ */
+export const FREE_SCAN_LIMIT = 2;
+
+/**
  * Returns true when the subscription is in an active or trialing state.
  * This is the canonical premium check — use everywhere instead of raw status checks.
  */
@@ -48,4 +54,29 @@ export function isPremiumActive(subscription) {
 export function hasFeature(subscription, feature) {
   if (FREE_FEATURES.has(feature)) return true;
   return isPremiumActive(subscription);
+}
+
+/**
+ * Count completed (non-duplicate) scans in scan history.
+ */
+export function getScanCount(scanHistory) {
+  if (!Array.isArray(scanHistory)) return 0;
+  return scanHistory.filter(s => s.scanStatus !== 'duplicate').length;
+}
+
+/**
+ * Returns true if the user is allowed to run a new scan.
+ * Premium users: always. Free users: up to FREE_SCAN_LIMIT.
+ */
+export function canScan(subscription, scanHistory) {
+  if (isPremiumActive(subscription)) return true;
+  return getScanCount(scanHistory) < FREE_SCAN_LIMIT;
+}
+
+/**
+ * Returns the number of free scans remaining (Infinity for premium users).
+ */
+export function scansRemaining(subscription, scanHistory) {
+  if (isPremiumActive(subscription)) return Infinity;
+  return Math.max(0, FREE_SCAN_LIMIT - getScanCount(scanHistory));
 }
