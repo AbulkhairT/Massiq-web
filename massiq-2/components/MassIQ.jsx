@@ -5689,7 +5689,7 @@ export default function MassIQ() {
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError('Cloud sync is unavailable right now. Continuing with local data.');
+        if (mounted) setAuthError(null);
       } finally {
         if (mounted) setReady(true);
       }
@@ -5720,7 +5720,7 @@ export default function MassIQ() {
       }
     } catch (err) {
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      showToast("Sync is delayed. Your plan is saved locally.");
+      // Non-blocking: keep local experience uninterrupted even if cloud sync fails.
     } finally {
       setSyncing(false);
     }
