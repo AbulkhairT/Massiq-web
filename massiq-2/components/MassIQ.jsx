@@ -4781,11 +4781,15 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
 
       try {
         // SHA-256 via WebCrypto (browser native, no library needed)
+        // NOTE: only available in secure contexts (HTTPS / localhost)
         const encoder = new TextEncoder();
         const data    = encoder.encode(base64);
         const hashBuf = await crypto.subtle.digest('SHA-256', data);
         sha256Hash    = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-      } catch {}
+        console.info('[scan:hash] SHA-256 computed:', sha256Hash.slice(0, 16) + '…');
+      } catch (hashErr) {
+        console.warn('[scan:hash] SHA-256 unavailable (non-HTTPS context?):', hashErr?.message);
+      }
 
       // Perceptual hash via canvas (dHash — difference hash, 64 bits → 16 hex chars)
       try {
@@ -4950,25 +4954,46 @@ Return ONLY this JSON (no markdown, no extra text):
       const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
 
       // ── Step 1b: Upload photo to Supabase Storage + create scan_asset row ─
-      // Fire-and-forget (non-blocking) — failure is logged but doesn't abort the scan
+      // sha256Hash is optional — upload proceeds even without it (non-HTTPS fallback).
+      // Failure here is non-blocking but fully logged so it can be debugged.
       let resolvedAssetId = null;
-      if (session?.access_token && userId && sha256Hash) {
+      if (session?.access_token && userId) {
+        console.info('[scan:asset] Pipeline start', {
+          userId,
+          hasSha256: !!sha256Hash,
+          hasPHash:  !!pHash,
+          mediaType,
+          base64Length: base64.length,
+        });
         try {
+          // Step A — storage upload
           const storagePath = await uploadScanPhoto(session.access_token, userId, base64, mediaType);
+          console.info('[scan:asset] Storage upload OK →', storagePath);
+
+          // Step B — scan_assets row
           const asset = await createScanAsset(session.access_token, userId, {
             storagePath,
-            mimeType:      mediaType,
-            fileSizeBytes: Math.round(base64.length * 0.75), // approx decoded bytes
-            sha256:        sha256Hash,
+            mimeType:       mediaType,
+            fileSizeBytes:  Math.round(base64.length * 0.75), // approx decoded bytes
+            sha256:         sha256Hash,   // may be null if WebCrypto unavailable
             perceptualHash: pHash,
             width:          imgDimensions.width,
             height:         imgDimensions.height,
           });
           resolvedAssetId = asset?.id || null;
-          console.info('[scan] Asset saved:', { assetId: resolvedAssetId, storagePath });
+          if (resolvedAssetId) {
+            console.info('[scan:asset] scan_assets row created, assetId:', resolvedAssetId);
+          } else {
+            console.error('[scan:asset] scan_assets insert returned no id — RLS or column mismatch?', asset);
+          }
         } catch (assetErr) {
-          console.warn('[scan] Asset upload failed (non-fatal):', assetErr?.message);
+          console.error('[scan:asset] Pipeline failed:', assetErr?.message, assetErr?.stack?.slice(0, 300));
         }
+      } else {
+        console.warn('[scan:asset] Skipping upload — missing auth', {
+          hasToken: !!session?.access_token,
+          userId,
+        });
       }
 
       // Cache this result keyed by SHA-256 (or lightweight fallback) so re-scanning same photo returns same result

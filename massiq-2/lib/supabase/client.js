@@ -424,7 +424,7 @@ export async function getPlan(token, userId) {
 
 export async function createScan(token, userId, scan) {
   const row = serializeScan(userId, scan);
-  console.info('[sync] createScan:payload', { userId, body_fat: row.body_fat, lean_mass: row.lean_mass });
+  console.info('[sync] createScan:payload', { userId, body_fat: row.body_fat, lean_mass: row.lean_mass, asset_id: row.asset_id, scan_status: row.scan_status });
   const rows = await supabaseFetch('/rest/v1/scans', {
     method: 'POST',
     headers: {
@@ -490,21 +490,29 @@ export async function uploadScanPhoto(token, userId, base64, mediaType) {
   const ext      = mediaType === 'image/png' ? 'png' : 'jpg';
   const filename = `${Date.now()}.${ext}`;
   const path     = `${userId}/${filename}`;
+  const uploadUrl = `${SUPABASE_URL}/storage/v1/object/scan-photos/${path}`;
 
-  // Decode base64 → Uint8Array
+  console.info('[storage:upload] Starting', { path, mediaType, base64Bytes: base64.length });
+
+  // Decode base64 → binary blob
   const binary = atob(base64);
   const bytes  = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const blob = new Blob([bytes], { type: mediaType });
 
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/scan-photos/${path}`, {
+  console.info('[storage:upload] Sending POST', uploadUrl, 'blobSize:', blob.size);
+
+  const res = await fetch(uploadUrl, {
     method:  'POST',
     headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, 'Content-Type': mediaType },
     body:    blob,
   });
+
+  const resText = await res.text().catch(() => '');
+  console.info('[storage:upload] Response', { status: res.status, body: resText.slice(0, 300) });
+
   if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`[storage] Upload failed (${res.status}): ${txt}`);
+    throw new Error(`[storage] Upload failed (${res.status}): ${resText}`);
   }
   return path;
 }
@@ -513,20 +521,26 @@ export async function uploadScanPhoto(token, userId, base64, mediaType) {
  * Save metadata for an uploaded scan photo in the scan_assets table.
  */
 export async function createScanAsset(token, userId, { storagePath, mimeType, fileSizeBytes, sha256, perceptualHash, width, height }) {
+  const payload = {
+    user_id:         userId,
+    storage_path:    storagePath,
+    mime_type:       mimeType,
+    file_size_bytes: fileSizeBytes || null,
+    sha256:          sha256 || null,
+    perceptual_hash: perceptualHash || null,
+    width:           width   || null,
+    height:          height  || null,
+  };
+  console.info('[db:scan_assets] Inserting row', {
+    ...payload,
+    sha256: sha256 ? sha256.slice(0, 12) + '…' : null,
+  });
   const rows = await supabaseFetch('/rest/v1/scan_assets', {
     method:  'POST',
     headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body:    JSON.stringify({
-      user_id:         userId,
-      storage_path:    storagePath,
-      mime_type:       mimeType,
-      file_size_bytes: fileSizeBytes || null,
-      sha256,
-      perceptual_hash: perceptualHash || null,
-      width:           width   || null,
-      height:          height  || null,
-    }),
+    body:    JSON.stringify(payload),
   });
+  console.info('[db:scan_assets] Insert response', rows);
   return Array.isArray(rows) ? rows[0] : rows;
 }
 
