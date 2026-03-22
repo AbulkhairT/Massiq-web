@@ -147,6 +147,7 @@ const LS_KEYS = {
   stats:       'massiq:stats',
   mealplan:    'massiq:mealplan',
   scanHistory: 'massiq:scanHistory',
+  scanHistoryUser: 'massiq:scanHistoryUser',
   completed:   'massiq:completed',
   xp:          'massiq:xp',
   streak:      'massiq:streak',
@@ -387,11 +388,11 @@ const getBFDisplay = (scan) => {
 };
 
 const PHASE_META = {
-  Cut:     { label: 'Cut',     emoji: 'Down', target: 'Reduce body fat while preserving lean tissue' },
-  Bulk:    { label: 'Bulk',    emoji: 'Up', target: 'Increase lean mass with controlled fat gain' },
-  Build:   { label: 'Build',   emoji: 'Up', target: 'Increase lean mass with controlled fat gain' },
-  Recomp:  { label: 'Recomp',  emoji: 'Cycle', target: 'Improve composition while maintaining bodyweight range' },
-  Maintain:{ label: 'Maintain',emoji: 'Balance', target: 'Hold conditioning and improve weak points' },
+  Cut:     { label: 'Cut', target: 'Reduce body fat while preserving lean tissue' },
+  Bulk:    { label: 'Bulk', target: 'Increase lean mass with controlled fat gain' },
+  Build:   { label: 'Build', target: 'Increase lean mass with controlled fat gain' },
+  Recomp:  { label: 'Recomp', target: 'Improve composition while maintaining bodyweight range' },
+  Maintain:{ label: 'Maintain', target: 'Hold conditioning and improve weak points' },
 };
 
 function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
@@ -1016,10 +1017,10 @@ const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Fre
 const CUISINES    = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
 const AVOID_FOODS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Soy', 'Eggs', 'Red Meat', 'Processed Sugar'];
 const GOALS = [
-  { key: 'Cut',      emoji: 'Down', label: 'Cut',      desc: 'Lose fat, preserve muscle' },
-  { key: 'Bulk',     emoji: 'Up', label: 'Bulk',     desc: 'Build maximum muscle mass' },
-  { key: 'Recomp',   emoji: 'Cycle', label: 'Recomp',  desc: 'Lose fat & gain muscle simultaneously' },
-  { key: 'Maintain', emoji: 'Balance', label: 'Maintain', desc: 'Stay lean at current weight' },
+  { key: 'Cut',      label: 'Cut',      desc: 'Lose fat, preserve muscle' },
+  { key: 'Bulk',     label: 'Bulk',     desc: 'Build maximum muscle mass' },
+  { key: 'Recomp',   label: 'Recomp',   desc: 'Lose fat & gain muscle simultaneously' },
+  { key: 'Maintain', label: 'Maintain', desc: 'Stay lean at current weight' },
 ];
 const ACTIVITIES = [
   { key: 'Sedentary', label: 'Sedentary',         desc: 'Mostly sitting, minimal movement',          insight: 'Lower baseline calorie needs.' },
@@ -1294,8 +1295,7 @@ function Onboarding({ onComplete }) {
               <div key={g.key} className={`ob-card${data.goal === g.key ? ' selected' : ''}`}
                 onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
                 style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 48, marginBottom: 10 }}>{g.emoji}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 6 }}>{g.label}</div>
+                <div style={{ fontSize: 34, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 10 }}>{g.label}</div>
                 <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
               </div>
             ))}
@@ -1799,11 +1799,13 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const lastScan  = scanHistory.slice(-1)[0] || null;
         const prevScan  = scanHistory.slice(-2)[0] || null;
         const currentBF = lastScan?.bodyFat  ?? null;
-        const targetBF  = activePlan?.targetBF ?? null;
+        const phase     = activePlan?.phase ?? null;
+        const targetBF  = phase === 'Maintain'
+          ? currentBF
+          : activePlan?.targetBF ?? null;
         const startBF   = activePlan?.startBF  ?? currentBF ?? null;
         const leanMassLbs = lastScan?.leanMass ?? null;
         const symmetry  = lastScan?.symmetryScore ?? null;
-        const phase     = activePlan?.phase ?? null;
         const phaseColor = phase === 'Cut' ? C.orange : phase === 'Bulk' ? C.blue : C.green;
 
         /* progress toward target: 0→1 */
@@ -5268,16 +5270,15 @@ Return ONLY this JSON (no markdown, no extra text):
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>What you&apos;ll get</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {[
-            { icon: 'Data', label: 'Body Fat Range' },
-            { icon: 'Strength', label: 'Muscle Assessment' },
-            { icon: 'Balance', label: 'Lean Mass Estimate' },
-            { icon: 'Cycle', label: 'Symmetry Score' },
-            { icon: 'Target', label: 'Training Focus' },
-            { icon: 'Meal', label: 'Nutrition Adjustment' },
+            { label: 'Body Fat Range' },
+            { label: 'Muscle Assessment' },
+            { label: 'Lean Mass Estimate' },
+            { label: 'Symmetry Score' },
+            { label: 'Training Focus' },
+            { label: 'Nutrition Adjustment' },
           ].map(t => (
-            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
-              <span style={{ fontSize: 24 }}>{t.icon}</span>
-              <span style={{ fontSize: 11, color: C.muted, fontWeight: 500, lineHeight: 1.3 }}>{t.label}</span>
+            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+              <span style={{ fontSize: 12, color: C.muted, fontWeight: 600, lineHeight: 1.4 }}>{t.label}</span>
             </div>
           ))}
         </div>
@@ -5479,11 +5480,11 @@ const PlaceholderTab = ({ label, icon }) => (
 
 /* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
-  { key: 'home',      label: 'Home',      icon: 'Home' },
-  { key: 'nutrition', label: 'Nutrition', icon: 'Nutrition' },
-  { key: 'scan',      label: 'Scan',      icon: 'Scan' },
-  { key: 'plan',      label: 'Plan',      icon: 'Plan' },
-  { key: 'profile',   label: 'Profile',   icon: 'Profile' },
+  { key: 'home',      label: 'Home',      icon: 'H' },
+  { key: 'nutrition', label: 'Nutrition', icon: 'N' },
+  { key: 'scan',      label: 'Scan',      icon: 'S' },
+  { key: 'plan',      label: 'Plan',      icon: 'P' },
+  { key: 'profile',   label: 'Profile',   icon: 'U' },
 ];
 
 /* ─── Mobile Tab Bar ─────────────────────────────────────────────────────── */
@@ -5518,7 +5519,7 @@ function TabBar({ active, setTab }) {
 
 /* ─── Desktop Sidebar ────────────────────────────────────────────────────── */
 function Sidebar({ active, setTab, profile }) {
-  const goalEmoji = { Cut: 'Down', Bulk: 'Up', Recomp: 'Cycle', Maintain: 'Balance' }[profile?.goal] || 'Target';
+  const goalLabel = profile?.goal || 'Maintain';
   return (
     <div className="desktop-sidebar" style={{
       width: 220, minHeight: '100dvh', background: '#101711',
@@ -5557,7 +5558,7 @@ function Sidebar({ active, setTab, profile }) {
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Athlete'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-            {goalEmoji} {profile.goal}
+            {goalLabel}
           </div>
         </div>
       )}
@@ -5675,7 +5676,8 @@ export default function MassIQ() {
             const fallbackName = persistedName || cached?.name || null;
             if (fallbackName) loadedProfile = { ...loadedProfile, name: fallbackName };
           }
-          const cachedHistory = LS.get(LS_KEYS.scanHistory, []);
+          const cachedUserId = localStorage.getItem(LS_KEYS.scanHistoryUser);
+          const cachedHistory = cachedUserId === userId ? LS.get(LS_KEYS.scanHistory, []) : [];
           const mergedHistory = mergeScanHistories(cachedHistory, loadedScanHistory);
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
@@ -5683,10 +5685,11 @@ export default function MassIQ() {
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
           LS.set(LS_KEYS.scanHistory, mergedHistory);
+          localStorage.setItem(LS_KEYS.scanHistoryUser, userId);
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError("We couldn't finish syncing your account. Please try again.");
+        if (mounted) setAuthError('Cloud sync is unavailable right now. Continuing with local data.');
       } finally {
         if (mounted) setReady(true);
       }
