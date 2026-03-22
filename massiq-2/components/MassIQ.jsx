@@ -1021,17 +1021,31 @@ function Onboarding({ onComplete, currentUserId, isEditing }) {
       console.info('[onboarding] skipping pre-fill — cached profile mismatch or unscoped', { cached: saved.id, current: currentUserId });
       return;
     }
+    // Skip pre-fill if the cached profile is a skeleton (all core fields null).
+    // This happens when ensureProfile creates an empty row and hydration caches it.
+    // Spreading null values into data breaks controlled inputs (value={null} → React warning
+    // → Next.js error overlay blocks clicks).
+    if (!saved.age && !saved.weightLbs && !saved.heightCm && !saved.weightKg) {
+      console.info('[onboarding] skipping pre-fill — skeleton profile (no data to restore)');
+      return;
+    }
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
     setData((p) => ({
       ...p,
-      ...saved,
       name: saved.name || p.name || '',
-      unitSystem: saved.unitSystem || 'imperial',
-      weightLbs: saved.weightLbs ? String(saved.weightLbs) : '',
-      weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : '',
-      heightCm: saved.heightCm ? String(saved.heightCm) : '',
-      heightFt: inches ? String(Math.floor(inches / 12)) : '',
-      heightInch: inches ? String(Math.round(inches % 12)) : '',
+      age: saved.age ? String(saved.age) : p.age || '',
+      gender: saved.gender || p.gender || 'Male',
+      goal: saved.goal || p.goal || '',
+      activity: saved.activity || p.activity || '',
+      unitSystem: saved.unitSystem || p.unitSystem || 'imperial',
+      dietPrefs: Array.isArray(saved.dietPrefs) ? saved.dietPrefs : p.dietPrefs || [],
+      cuisines: Array.isArray(saved.cuisines) ? saved.cuisines : p.cuisines || [],
+      avoid: Array.isArray(saved.avoid) ? saved.avoid : p.avoid || [],
+      weightLbs: saved.weightLbs ? String(saved.weightLbs) : p.weightLbs || '',
+      weightKg: saved.weightLbs ? (saved.weightLbs * 0.453592).toFixed(1) : (saved.weightKg ? String(saved.weightKg) : p.weightKg || ''),
+      heightCm: saved.heightCm ? String(saved.heightCm) : p.heightCm || '',
+      heightFt: inches ? String(Math.floor(inches / 12)) : p.heightFt || '',
+      heightInch: inches ? String(Math.round(inches % 12)) : p.heightInch || '',
     }));
   }, []);
 
