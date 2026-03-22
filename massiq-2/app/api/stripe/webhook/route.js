@@ -13,7 +13,9 @@ const HANDLED_EVENTS = new Set([
 
 /**
  * Upsert a subscription row into public.subscriptions using the service role key.
- * Matches on stripe_subscription_id (UNIQUE column).
+ * Uses a two-step SELECT→PATCH/INSERT approach instead of on_conflict to avoid
+ * requiring a UNIQUE constraint on stripe_subscription_id (which may not exist
+ * if the table was created outside the migration).
  */
 async function upsertSubscription(row) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -23,23 +25,48 @@ async function upsertSubscription(row) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL missing');
   }
 
-  const res = await fetch(
-    `${supabaseUrl}/rest/v1/subscriptions?on_conflict=stripe_subscription_id`,
-    {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        apikey:          serviceKey,
-        Authorization:   `Bearer ${serviceKey}`,
-        Prefer:          'resolution=merge-duplicates,return=representation',
-      },
-      body: JSON.stringify(row),
+  const headers = {
+    'Content-Type':  'application/json',
+    apikey:          serviceKey,
+    Authorization:   `Bearer ${serviceKey}`,
+    Prefer:          'return=representation',
+  };
+
+  // Step 1: Check if a row already exists for this stripe_subscription_id
+  let existingId = null;
+  if (row.stripe_subscription_id) {
+    try {
+      const checkRes = await fetch(
+        `${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${row.stripe_subscription_id}&select=id&limit=1`,
+        { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+      );
+      const rows = await checkRes.json().catch(() => []);
+      existingId = Array.isArray(rows) && rows[0]?.id ? rows[0].id : null;
+    } catch {
+      // Fall through to INSERT
     }
-  );
+  }
+
+  let res;
+  if (existingId) {
+    // Step 2a: PATCH existing row
+    console.info('[stripe:webhook] Updating existing subscription row:', existingId);
+    res = await fetch(
+      `${supabaseUrl}/rest/v1/subscriptions?id=eq.${existingId}`,
+      { method: 'PATCH', headers, body: JSON.stringify(row) }
+    );
+  } else {
+    // Step 2b: INSERT new row
+    console.info('[stripe:webhook] Inserting new subscription row for user:', row.user_id);
+    res = await fetch(
+      `${supabaseUrl}/rest/v1/subscriptions`,
+      { method: 'POST', headers, body: JSON.stringify(row) }
+    );
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Supabase upsert failed (${res.status}): ${text}`);
+    throw new Error(`Supabase ${existingId ? 'PATCH' : 'INSERT'} failed (${res.status}): ${text}`);
   }
 
   return res.json().catch(() => null);

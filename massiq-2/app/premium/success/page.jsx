@@ -18,8 +18,6 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 async function checkSubscription(token, userId) {
   try {
-    // Order by updated_at desc so the most-recently-written row wins.
-    // Fetch up to 5 rows and prefer an active/trialing one.
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/subscriptions?user_id=eq.${userId}&select=status&order=updated_at.desc&limit=5`,
       {
@@ -60,22 +58,25 @@ export default function PremiumSuccessPage() {
       const userId  = session?.user?.id || session?.user_id;
 
       if (!token || !userId) {
-        if (!cancelled) setState('error');
+        // Session was lost during Stripe redirect (common on mobile browsers
+        // or when cross-origin isolation clears localStorage).
+        // Show a friendly message that redirects to the app where they can
+        // log in. The app will detect the subscription on next hydration.
+        console.warn('[premium-success] No session found — user will need to log back in');
+        if (!cancelled) setState('syncing');
         return;
       }
 
-      while (attempts < 8 && !cancelled) {
+      while (attempts < 12 && !cancelled) {
         attempts++;
         const isPremium = await checkSubscription(token, userId);
         if (isPremium) {
           if (!cancelled) setState('active');
           return;
         }
-        // Webhook sync may take a few seconds — wait and retry
-        if (attempts < 8) await new Promise(r => setTimeout(r, 2000));
+        if (attempts < 12) await new Promise(r => setTimeout(r, 2500));
       }
 
-      // Timeout — webhook may still be in-flight; show soft message
       if (!cancelled) setState('syncing');
     };
 
@@ -132,11 +133,16 @@ export default function PremiumSuccessPage() {
 
         {state === 'syncing' && (
           <>
+            <div style={{
+              width: 60, height: 60, borderRadius: '50%', background: '#1A2E1F',
+              border: `2px solid ${C.green}`, display: 'flex', alignItems: 'center',
+              justifyContent: 'center', margin: '0 auto 24px', fontSize: 28,
+            }}>✓</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 10 }}>
-              Almost there…
+              Payment successful
             </div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Your payment was successful. Premium access is syncing and will be active within a minute. You can close this and open the app.
+              Your premium access is activating. Open the app to continue — it may take up to a minute for your subscription to sync.
             </div>
             <button
               onClick={goToApp}
@@ -146,7 +152,7 @@ export default function PremiumSuccessPage() {
                 cursor: 'pointer', width: '100%',
               }}
             >
-              Open app
+              Open MassIQ →
             </button>
           </>
         )}
@@ -154,10 +160,10 @@ export default function PremiumSuccessPage() {
         {state === 'error' && (
           <>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 10 }}>
-              Session not found
+              Payment received
             </div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Log back in to confirm your subscription status.
+              Your payment was successful. Log back in and your premium access will be ready.
             </div>
             <button
               onClick={goToApp}
@@ -167,7 +173,7 @@ export default function PremiumSuccessPage() {
                 cursor: 'pointer', width: '100%',
               }}
             >
-              Log in
+              Open MassIQ →
             </button>
           </>
         )}
