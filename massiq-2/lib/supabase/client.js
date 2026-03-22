@@ -195,15 +195,14 @@ function serializeScan(userId, scan) {
 }
 
 function deserializeScan(row) {
-  const raw = row?.raw_result || {};
+  // scans table only has: id, user_id, body_fat, lean_mass, created_at
   return {
-    ...raw,
-    id: row?.id || raw.id,
-    date: raw.date || row?.created_at,
-    bodyFat: toNumber(row?.body_fat, toNumber(raw.bodyFat ?? raw.bodyFatPct, null)),
-    bodyFatPct: toNumber(row?.body_fat, toNumber(raw.bodyFatPct ?? raw.bodyFat, null)),
-    leanMass: toNumber(row?.lean_mass, toNumber(raw.leanMass, null)),
-    confidence: (typeof raw.confidence === 'string' ? raw.confidence : null) || toNumber(raw.confidence, 0.75),
+    id:          row?.id,
+    date:        row?.created_at,
+    bodyFat:     toNumber(row?.body_fat, null),
+    bodyFatPct:  toNumber(row?.body_fat, null),
+    leanMass:    toNumber(row?.lean_mass, null),
+    confidence:  'medium',
   };
 }
 
@@ -374,25 +373,28 @@ export async function createScan(token, userId, scan) {
     body: JSON.stringify(row),
   });
   console.info('[sync] createScan:response', rows);
-  const result = Array.isArray(rows) && rows[0] ? deserializeScan(rows[0]) : null;
-  if (!result?.id) throw new Error('[scans] Insert succeeded but no id returned');
+  const raw = Array.isArray(rows) ? rows[0] : rows;
+  if (!raw) {
+    console.warn('[sync] createScan: Supabase returned empty body — insert may have succeeded');
+    return null;
+  }
+  const result = deserializeScan(raw);
+  if (!result?.id) {
+    // Insert succeeded (HTTP 201) but id not parseable — log and return null so
+    // the caller continues without throwing (projection will be skipped).
+    console.warn('[sync] createScan: insert ok but id not returned', raw);
+    return null;
+  }
   return result;
 }
 
 export async function getScans(token, userId, limit = 25) {
-  try {
-    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,raw_result,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
-  } catch (err) {
-    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
-  }
+  // Select only columns that exist in the scans table schema: id, user_id, body_fat, lean_mass, created_at
+  const rows = await supabaseFetch(
+    `/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
 }
 
 // ─── physique_projections ───────────────────────────────────────────────────

@@ -692,11 +692,25 @@ async function generateDailyTip(profile, activePlan, todayMeals) {
   return getDailyTip(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, eaten, new Date().getDay());
 }
 
-async function generatePatterns(profile, activePlan) {
+async function generatePatterns(profile, activePlan, latestScan = null) {
   // Synchronous — no LLM call. Returns same shape as previous Claude version.
   const m         = getActiveTargets(activePlan, profile);
   const trainDays = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  const insights  = buildInsights(profile, { calories: m.calories||2000, protein: m.protein||150 }, trainDays, null);
+
+  // Reconstruct engineOutput shape from data saved on the activePlan at scan time.
+  // This ensures insights reflect the actual diagnosis from the user's latest scan.
+  const engineOutput = activePlan?.engineDiagnosis ? {
+    diagnosis:  activePlan.engineDiagnosis,
+    physio:     { tdee: activePlan.tdee ?? null },
+    trajectory: activePlan.engineTrajectory ?? null,
+  } : null;
+
+  const insights = buildInsights(
+    { goal: profile.goal, activity: profile.activity || 'Moderate' },
+    { calories: m.calories || 2000, protein: m.protein || 150 },
+    trainDays,
+    engineOutput,
+  );
   return { insights };
 }
 
@@ -1563,7 +1577,7 @@ function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
 }
 
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function HomeTab({ profile, activePlan, setTab, showToast }) {
+function HomeTab({ profile, activePlan, setTab, showToast, scanHistory }) {
   const today      = new Date().toISOString().slice(0, 10);
   const macros     = getActiveTargets(activePlan, profile);
   const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
@@ -1603,19 +1617,19 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
     },
   ];
 
-  const completedCount = focusItems.filter(i => i.met).length;
-  const scanHistory    = LS.get(LS_KEYS.scanHistory, []);
-  const insight        = getHomeInsight(activePlan, scanHistory, macros, todayStats);
+  const completedCount  = focusItems.filter(i => i.met).length;
+  const resolvedHistory = Array.isArray(scanHistory) && scanHistory.length ? scanHistory : LS.get(LS_KEYS.scanHistory, []);
+  const insight         = getHomeInsight(activePlan, resolvedHistory, macros, todayStats);
 
   /* Status line */
   const statusText = !activePlan
     ? 'Start your first scan'
     : completedCount === focusItems.length ? 'All goals hit today'
     : completedCount >= 2               ? "You're on track"
-    : getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'warn'
+    : getTrajectoryStatus(resolvedHistory, activePlan?.phase).tone === 'warn'
                                         ? 'Needs attention today'
     : "Let's get going";
-  const statusGood = activePlan && (completedCount >= 2 || getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'good');
+  const statusGood = activePlan && (completedCount >= 2 || getTrajectoryStatus(resolvedHistory, activePlan?.phase).tone === 'good');
 
   /* Insight action pills — context-aware navigation */
   const insightActions = (() => {
@@ -1684,9 +1698,9 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
 
       {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
       {(() => {
-        const hasScan   = scanHistory.length > 0;
-        const lastScan  = scanHistory.slice(-1)[0] || null;
-        const prevScan  = scanHistory.slice(-2)[0] || null;
+        const hasScan   = resolvedHistory.length > 0;
+        const lastScan  = resolvedHistory.slice(-1)[0] || null;
+        const prevScan  = resolvedHistory.slice(-2)[0] || null;
         const currentBF = lastScan?.bodyFat  ?? null;
         const targetBF  = activePlan?.targetBF ?? null;
         const startBF   = activePlan?.startBF  ?? currentBF ?? null;
@@ -1888,7 +1902,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
       })()}
 
       {/* ══ TODAY'S FOCUS (only after first scan) ════════════════════════════ */}
-      {activePlan && scanHistory.length > 0 && (
+      {activePlan && resolvedHistory.length > 0 && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
@@ -1961,7 +1975,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
 
 
       {/* ══ YOUR PATTERNS ════════════════════════════════════════════════════ */}
-      {activePlan && <AIPatterns profile={profile} activePlan={activePlan} />}
+      {activePlan && <AIPatterns profile={profile} activePlan={activePlan} scanHistory={scanHistory} />}
 
       {/* Hidden camera input */}
       <input
@@ -3752,17 +3766,19 @@ function PhysiqueChart({ scans }) {
 }
 
 /* ─── AI Patterns ─────────────────────────────────────────────────────────── */
-function AIPatterns({ profile, activePlan }) {
-  // Cache key includes protein so stale values auto-invalidate when targets change
+function AIPatterns({ profile, activePlan, scanHistory }) {
+  const latestScan = Array.isArray(scanHistory) && scanHistory.length ? scanHistory[scanHistory.length - 1] : null;
+  // Cache key includes protein AND latest scan date so patterns regenerate after each new scan
   const m        = getActiveTargets(activePlan, profile);
-  const cacheKey = `massiq:patterns:p${m.protein}`;
+  const scanDate = latestScan?.date || latestScan?.savedAt || '';
+  const cacheKey = `massiq:patterns:p${m.protein}:s${scanDate}`;
   const isStale  = (() => { const c = LS.get(cacheKey, null); return !c || (Date.now() - (c.ts||0) > 7*24*3600*1000); })();
   const [insights, setInsights] = useState(() => isStale ? null : LS.get(cacheKey, null)?.insights);
   const [loading,  setLoading]  = useState(isStale);
   useEffect(() => {
     if (!loading) return;
     let ok = true;
-    generatePatterns(profile, activePlan)
+    generatePatterns(profile, activePlan, latestScan)
       .then(data => {
         if (!ok) return;
         const arr = data.insights || [];
@@ -3772,7 +3788,7 @@ function AIPatterns({ profile, activePlan }) {
       })
       .catch(err => { console.error('Patterns failed:', err); if (ok) setLoading(false); });
     return () => { ok = false; };
-  }, []);
+  }, [cacheKey]);
 
   return (
     <div className="su" style={{ animationDelay: '.10s' }}>
@@ -4588,7 +4604,7 @@ Return ONLY this JSON (no markdown, no extra text):
     generateWorkoutPlan(profile, plan)
       .then(days => { LS.set(LS_KEYS.workoutplan, days); })
       .catch(err => console.error('Workout plan regen failed:', err));
-    showToast('✓ Plan applied. Generating your meal plan...');
+    showToast('Plan applied. Generating your meal plan...');
     setTab('plan');
   };
 
@@ -5667,7 +5683,7 @@ export default function MassIQ() {
           }
         } catch (planErr) {
           console.error('[sync] step2:upsertPlan:error', planErr?.message, planErr);
-          showToast('Plan sync failed — check console for details.');
+          // Silent — DB errors are logged to console, not surfaced to user
         }
       }
 
@@ -5702,7 +5718,7 @@ export default function MassIQ() {
             setScanHistory(stamped);
           } catch (scanErr) {
             console.error('[sync] step3:createScan:error', scanErr?.message, scanErr);
-            showToast('Scan save failed — check console for details.');
+            // Silent — scan errors logged to console only
           }
         }
       }
@@ -5856,7 +5872,7 @@ export default function MassIQ() {
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
         case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
@@ -5903,7 +5919,6 @@ export default function MassIQ() {
       </div>
 
       <TabBar active={tab} setTab={setTab} />
-      {syncing && <Toast msg="Syncing your account…" onDone={() => {}} />}
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
     </>
   );
