@@ -151,8 +151,9 @@ function serializePlan(userId, plan) {
     protein:   toSafeInt(macros.protein, 'protein'),
     carbs:     toSafeInt(macros.carbs, 'carbs'),
     fat:       toSafeInt(macros.fat, 'fat'),
-    target_bf: toNumber(plan?.targetBF, null),
-    start_bf:  toNumber(plan?.startBF,  null),
+    // target_bf and start_bf require migration 004_plans_target_bf.sql.
+    // Omitted here so writes succeed against the base schema.
+    // These values are computed locally from scan data and profile.
   };
 }
 
@@ -179,8 +180,10 @@ function deserializePlan(row) {
       cardioDays: 2,
     },
     trainDays: 4,
-    targetBF:    toNumber(row.target_bf, null),
-    startBF:     toNumber(row.start_bf,  null),
+    // targetBF and startBF are computed locally from scan data + profile,
+    // not stored in DB (migration 004 not applied).
+    targetBF:    null,
+    startBF:     null,
     createdAt: row.created_at || null,
     sourceScanId: null,
   };
@@ -371,11 +374,11 @@ export async function fetchUser(token) {
 
 export async function upsertProfile(token, userId, profile) {
   const full = serializeProfile(userId, profile);
-  // Strip columns that don't exist in the current DB schema
-  // (name, unit_system are optional additions not yet in the base schema)
+  // Strip columns that don't exist in the DB schema.
+  // name: not in profiles table (no migration for it).
+  // unit_system: EXISTS in profiles table — do NOT strip.
   const row = { ...full };
   delete row.name;
-  delete row.unit_system;
   return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
     method: 'POST',
     headers: {
@@ -388,7 +391,7 @@ export async function upsertProfile(token, userId, profile) {
 
 export async function getProfile(token, userId) {
   const rows = await supabaseFetch(
-    `/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,created_at&id=eq.${userId}&limit=1`,
+    `/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`,
     { method: 'GET', headers: authHeaders(token) },
   );
   return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
@@ -447,7 +450,7 @@ export async function upsertPlan(token, userId, plan) {
 
 export async function getPlan(token, userId) {
   const rows = await supabaseFetch(
-    `/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,target_bf,start_bf,created_at&user_id=eq.${userId}&order=created_at.desc&limit=1`,
+    `/rest/v1/plans?select=id,user_id,phase,calories,protein,carbs,fat,created_at&user_id=eq.${userId}&order=created_at.desc&limit=1`,
     { method: 'GET', headers: authHeaders(token) },
   );
   return Array.isArray(rows) && rows[0] ? deserializePlan(rows[0]) : null;

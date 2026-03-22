@@ -6580,6 +6580,23 @@ export default function MassIQ() {
           loadedPlan = fallbackPlan;
         }
 
+        // Enrich plan with targetBF/startBF from scan data when not stored in DB.
+        // These columns require migration 004 which may not be applied.
+        // Compute from the latest scan + profile goal instead.
+        if (loadedPlan && loadedPlan.targetBF == null && loadedScanHistory.length > 0) {
+          const latestScan = loadedScanHistory[loadedScanHistory.length - 1];
+          const currentBF = latestScan?.bodyFat ?? latestScan?.bodyFatPct ?? null;
+          if (currentBF != null) {
+            loadedPlan = { ...loadedPlan, startBF: currentBF };
+            const goal = (loadedPlan.phase || loadedProfile?.goal || 'Maintain').toLowerCase();
+            if (goal === 'cut') loadedPlan.targetBF = Math.max(6, currentBF - 4);
+            else if (goal === 'bulk' || goal === 'build') loadedPlan.targetBF = currentBF + 2;
+            else if (goal === 'recomp') loadedPlan.targetBF = Math.max(6, currentBF - 2);
+            else loadedPlan.targetBF = currentBF;
+            console.info('[sync] enriched plan with computed BF targets', { startBF: loadedPlan.startBF, targetBF: loadedPlan.targetBF });
+          }
+        }
+
         if (mounted) {
           // Stamp the current user so a future sign-in can detect a user switch
           localStorage.setItem('massiq:current-user', userId);
