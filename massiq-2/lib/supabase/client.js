@@ -183,11 +183,14 @@ function deserializePlan(row) {
 }
 
 function serializeScan(userId, scan) {
+  const bodyFat = toNumber(scan?.bodyFat ?? scan?.bodyFatPct);
+  const leanMass = toNumber(scan?.leanMass);
+  if (bodyFat === null) throw new Error('[scans] Missing body_fat value');
+  if (leanMass === null) throw new Error('[scans] Missing lean_mass value');
   return {
     user_id: userId,
-    body_fat: toNumber(scan?.bodyFat ?? scan?.bodyFatPct),
-    lean_mass: toNumber(scan?.leanMass),
-    raw_result: scan && typeof scan === 'object' ? scan : {},
+    body_fat: bodyFat,
+    lean_mass: leanMass,
   };
 }
 
@@ -316,6 +319,7 @@ export async function ensureProfile(token, userId) {
 
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
+  console.info('[sync] upsertPlan:payload', { userId, phase: row.phase, calories: row.calories, protein: row.protein });
 
   // Check if a plan already exists for this user
   const existing = await supabaseFetch(
@@ -324,27 +328,30 @@ export async function upsertPlan(token, userId, plan) {
   );
   const existingId = Array.isArray(existing) && existing[0]?.id;
 
+  let rows;
   if (existingId) {
-    // Update existing row by primary key
-    return supabaseFetch(`/rest/v1/plans?id=eq.${existingId}`, {
+    // PATCH existing row — returns updated representation
+    rows = await supabaseFetch(`/rest/v1/plans?id=eq.${existingId}`, {
       method: 'PATCH',
-      headers: {
-        ...authHeaders(token),
-        Prefer: 'return=representation',
-      },
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
       body: JSON.stringify(row),
     });
+    // PATCH may return empty array on some PostgREST configs; fall back to existingId
+    const planRow = (Array.isArray(rows) && rows[0]) ? rows[0] : { id: existingId };
+    console.info('[sync] upsertPlan:patch:ok', { planId: planRow.id });
+    return planRow;
   }
 
-  // No existing plan — insert new row
-  return supabaseFetch('/rest/v1/plans', {
+  // INSERT new row
+  rows = await supabaseFetch('/rest/v1/plans', {
     method: 'POST',
-    headers: {
-      ...authHeaders(token),
-      Prefer: 'return=representation',
-    },
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
     body: JSON.stringify(row),
   });
+  const planRow = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  console.info('[sync] upsertPlan:insert:ok', { planId: planRow?.id });
+  if (!planRow?.id) throw new Error('[plans] Insert succeeded but no id returned');
+  return planRow;
 }
 
 export async function getPlan(token, userId) {
@@ -357,6 +364,7 @@ export async function getPlan(token, userId) {
 
 export async function createScan(token, userId, scan) {
   const row = serializeScan(userId, scan);
+  console.info('[sync] createScan:payload', { userId, body_fat: row.body_fat, lean_mass: row.lean_mass });
   const rows = await supabaseFetch('/rest/v1/scans', {
     method: 'POST',
     headers: {
@@ -365,7 +373,10 @@ export async function createScan(token, userId, scan) {
     },
     body: JSON.stringify(row),
   });
-  return Array.isArray(rows) && rows[0] ? deserializeScan(rows[0]) : null;
+  console.info('[sync] createScan:response', rows);
+  const result = Array.isArray(rows) && rows[0] ? deserializeScan(rows[0]) : null;
+  if (!result?.id) throw new Error('[scans] Insert succeeded but no id returned');
+  return result;
 }
 
 export async function getScans(token, userId, limit = 25) {
@@ -382,4 +393,72 @@ export async function getScans(token, userId, limit = 25) {
     });
     return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
   }
+}
+
+// ─── physique_projections ───────────────────────────────────────────────────
+
+function serializeProjection(userId, scanId, planId, plan, scan, profile) {
+  const startBF    = toNumber(plan?.startBF   ?? scan?.bodyFat ?? scan?.bodyFatPct, 20);
+  const targetBF   = toNumber(plan?.targetBF  ?? startBF, startBF);
+  const startWeight = toNumber(profile?.weightLbs ?? profile?.weight, 170);
+  const goal       = String(plan?.phase || 'Maintain').toLowerCase();
+  const timelineWeeks = 12;
+
+  // Estimate projected weight range from goal
+  const iscut  = goal === 'cut';
+  const isbulk = goal === 'bulk';
+  const delta  = iscut ? -(startWeight * 0.05) : isbulk ? (startWeight * 0.03) : 0;
+
+  // Visual keys — e.g. "bf_15" — used to look up before/after physique images
+  const currentVisualKey   = `bf_${Math.round(startBF)}`;
+  const projectedVisualKey = `bf_${Math.round(targetBF)}`;
+
+  // Confidence: the scan field may be 'low'/'medium'/'high' string or a number
+  const rawConf    = scan?.confidence ?? scan?.bodyFatConfidence ?? 'medium';
+  const confidence = ['low', 'medium', 'high'].includes(String(rawConf).toLowerCase())
+    ? String(rawConf).toLowerCase()
+    : 'medium';
+
+  const summary    = plan?.objective || plan?.whyThisWorks || scan?.assessment || scan?.limitingFactor || '';
+  const disclaimer = 'AI visual estimate only. Individual results vary. Consult a qualified professional for medical or nutritional advice.';
+
+  return {
+    user_id:                 userId,
+    scan_id:                 scanId,
+    plan_id:                 planId,
+    current_stage:           plan?.phase   || 'Maintain',
+    projected_stage:         plan?.phase   || 'Maintain',
+    projection_type:         'body_composition',
+    timeline_weeks:          timelineWeeks,
+    confidence,
+    current_visual_key:      currentVisualKey,
+    projected_visual_key:    projectedVisualKey,
+    start_body_fat:          Number(startBF.toFixed(2)),
+    projected_body_fat_low:  Number(Math.max(4,  targetBF - 2).toFixed(2)),
+    projected_body_fat_high: Number(Math.min(50, targetBF + 2).toFixed(2)),
+    start_weight:            Number(startWeight.toFixed(1)),
+    projected_weight_low:    Number(Math.max(80, startWeight + delta - 3).toFixed(1)),
+    projected_weight_high:   Number((startWeight + delta + 3).toFixed(1)),
+    summary,
+    disclaimer,
+  };
+}
+
+export async function createProjection(token, userId, scanId, planId, plan, scan, profile) {
+  if (!scanId) throw new Error('[projection] Missing scanId');
+  if (!planId) throw new Error('[projection] Missing planId');
+  const row = serializeProjection(userId, scanId, planId, plan, scan, profile);
+  console.info('[sync] createProjection:payload', row);
+  const rows = await supabaseFetch('/rest/v1/physique_projections', {
+    method: 'POST',
+    headers: {
+      ...authHeaders(token),
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify(row),
+  });
+  console.info('[sync] createProjection:response', rows);
+  const result = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!result?.id) throw new Error('[projection] Insert succeeded but no id returned');
+  return result;
 }

@@ -16,6 +16,7 @@ import {
   getPlan,
   createScan,
   getScans,
+  createProjection,
 } from '../lib/supabase/client';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
@@ -5635,63 +5636,104 @@ export default function MassIQ() {
   const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
     if (!session?.access_token) return;
     setSyncing(true);
-    let anyError = false;
+
     try {
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
-      if (!userId) { setSyncing(false); return; }
+      if (!userId) return;
 
-      // Profile sync — failure doesn't block plan/scan
+      // ── Step 1: Profile ─────────────────────────────────────────────────
       if (nextProfile) {
         try {
+          console.info('[sync] step1:upsertProfile:start');
           await upsertProfile(session.access_token, userId, nextProfile);
+          console.info('[sync] step1:upsertProfile:ok');
         } catch (profileErr) {
-          console.error('[sync] upsertProfile failed:', profileErr?.message || profileErr);
-          anyError = true;
+          console.error('[sync] step1:upsertProfile:error', profileErr?.message, profileErr);
+          // Non-blocking — continue to plan/scan
         }
       }
 
-      // Plan sync — failure doesn't block scan
+      // ── Step 2: Plan — capture planId ───────────────────────────────────
+      let planId = null;
       if (nextPlan) {
         try {
-          await upsertPlan(session.access_token, userId, nextPlan);
+          console.info('[sync] step2:upsertPlan:start', { phase: nextPlan?.phase });
+          const planRow = await upsertPlan(session.access_token, userId, nextPlan);
+          planId = planRow?.id ?? null;
+          console.info('[sync] step2:upsertPlan:ok', { planId });
+          if (!planId) {
+            console.error('[sync] step2:upsertPlan: returned no id — projection will be skipped');
+          }
         } catch (planErr) {
-          console.error('[sync] upsertPlan failed:', planErr?.message || planErr);
-          anyError = true;
+          console.error('[sync] step2:upsertPlan:error', planErr?.message, planErr);
+          showToast('Plan sync failed — check console for details.');
         }
       }
 
-      // Scan sync — only save scan if it hasn't been persisted to DB yet
-      if (Array.isArray(scanHistory) && scanHistory.length) {
-        const latestScan = scanHistory[scanHistory.length - 1];
-        // Skip if already saved to DB (dbId present means it was already inserted)
-        if (!latestScan.dbId) {
+      // ── Step 3: Scan — capture scanId ───────────────────────────────────
+      let scanId = null;
+      const latestScan = Array.isArray(scanHistory) && scanHistory.length
+        ? scanHistory[scanHistory.length - 1] : null;
+
+      if (latestScan) {
+        if (latestScan.dbId) {
+          // Already persisted in a previous sync
+          scanId = latestScan.dbId;
+          console.info('[sync] step3:createScan:skipped (already saved)', { scanId });
+        } else {
           try {
-            console.info('[sync] createScan:start', { userId, bodyFat: latestScan.bodyFat, leanMass: latestScan.leanMass });
+            console.info('[sync] step3:createScan:start', {
+              bodyFat: latestScan.bodyFat,
+              leanMass: latestScan.leanMass,
+            });
             const saved = await createScan(session.access_token, userId, latestScan);
-            console.info('[sync] createScan:ok', { id: saved?.id });
-            // Stamp dbId into local scan history so we don't re-insert on next sync
-            if (saved?.id) {
-              const currentHistory = LS.get(LS_KEYS.scanHistory, []);
-              const updated = currentHistory.map((s, i) =>
-                i === currentHistory.length - 1 ? { ...s, dbId: saved.id } : s
-              );
-              LS.set(LS_KEYS.scanHistory, updated);
-              setScanHistory(updated);
+            scanId = saved?.id ?? null;
+            console.info('[sync] step3:createScan:ok', { scanId });
+            if (!scanId) {
+              console.error('[sync] step3:createScan: returned no id — projection will be skipped');
             }
+            // Stamp dbId so we never double-insert this scan
+            const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+            const stamped = currentHistory.map((s, i) =>
+              i === currentHistory.length - 1 ? { ...s, dbId: scanId } : s
+            );
+            LS.set(LS_KEYS.scanHistory, stamped);
+            setScanHistory(stamped);
           } catch (scanErr) {
-            console.error('[sync] createScan failed:', scanErr?.message || scanErr);
-            anyError = true;
+            console.error('[sync] step3:createScan:error', scanErr?.message, scanErr);
+            showToast('Scan save failed — check console for details.');
           }
         }
       }
 
-      if (anyError) {
-        showToast("Some data couldn't sync. Your local progress is saved.");
+      // ── Step 4: Physique projection — requires both planId and scanId ───
+      const projectionAlreadySaved = latestScan?.projectionSaved ?? false;
+      if (planId && scanId && latestScan && !projectionAlreadySaved) {
+        try {
+          console.info('[sync] step4:createProjection:start', { planId, scanId });
+          const proj = await createProjection(
+            session.access_token, userId, scanId, planId,
+            nextPlan, latestScan, nextProfile,
+          );
+          console.info('[sync] step4:createProjection:ok', { projectionId: proj?.id });
+          // Mark so we don't re-insert on the next sync call
+          const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+          const stamped = currentHistory.map((s, i) =>
+            i === currentHistory.length - 1 ? { ...s, projectionSaved: true } : s
+          );
+          LS.set(LS_KEYS.scanHistory, stamped);
+          setScanHistory(stamped);
+        } catch (projErr) {
+          console.error('[sync] step4:createProjection:error', projErr?.message, projErr);
+          // Non-critical — app functions fine without projection row
+        }
+      } else if (latestScan && (!planId || !scanId)) {
+        console.warn('[sync] step4:createProjection:skipped — missing planId or scanId', { planId, scanId });
       }
+
     } catch (err) {
-      console.error('[sync] persistUserState outer error:', err?.message || err);
-      showToast("Couldn't connect to server. Your local progress is saved.");
+      console.error('[sync] persistUserState:outer error', err?.message, err);
     } finally {
       setSyncing(false);
     }
