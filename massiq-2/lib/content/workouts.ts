@@ -29,6 +29,20 @@ export interface WorkoutDay {
   cardio?:      string
 }
 
+export interface SymmetryAction {
+  area: string
+  action: string
+}
+
+export interface WorkoutIntelligence {
+  trainingEmphasis?: 'preservation' | 'hypertrophy' | 'correction' | 'recovery'
+  recoveryRisk?: boolean
+  plateau?: boolean
+  cardioDelta?: number
+  volumeDelta?: number
+  symmetryActions?: SymmetryAction[]
+}
+
 /* ─── Exercise library ───────────────────────────────────────────────────── */
 
 const EX = {
@@ -300,10 +314,56 @@ function pplx2Split(goal: string): WorkoutDay[] {
  * @param trainDays  Number of training days per week (3–6)
  * @returns       Array of 7 WorkoutDay objects (Monday–Sunday)
  */
-export function buildWorkoutPlan(goal: string, trainDays: number): WorkoutDay[] {
+function adaptWorkoutPlan(days: WorkoutDay[], intel?: WorkoutIntelligence): WorkoutDay[] {
+  if (!intel) return days
+  const volumeDelta = intel.volumeDelta ?? 0
+  const cardioDelta = intel.cardioDelta ?? 0
+  const symmetryActions = intel.symmetryActions || []
+  const unilateralHint = symmetryActions[0]
+
+  return days.map((d) => {
+    if (!d.isTrainingDay) return d
+    const adaptedExercises = (d.exercises || []).map((ex, idx) => {
+      if (idx > 3) return ex
+      const newSets = Math.max(2, Math.min(6, (ex.sets || 3) + volumeDelta))
+      const lowerStress = intel.recoveryRisk || intel.trainingEmphasis === 'recovery'
+      return {
+        ...ex,
+        sets: newSets,
+        reps: lowerStress && ex.reps.includes('6') ? ex.reps.replace('6–8', '8–10').replace('5–7', '8–10') : ex.reps,
+      }
+    })
+
+    if (intel.trainingEmphasis === 'correction' && unilateralHint) {
+      adaptedExercises.push({
+        name: `${unilateralHint.area} unilateral correction`,
+        sets: 2,
+        reps: '10–12 each side',
+        rest: '60s',
+        weight: 'Moderate',
+        technique: unilateralHint.action,
+      })
+    }
+
+    let cardio = d.cardio
+    if (typeof cardio === 'string' && cardioDelta !== 0) {
+      cardio = cardioDelta > 0
+        ? `${cardio}. Add ${Math.abs(cardioDelta) * 10} min low-intensity finishers.`
+        : `${cardio}. Keep cardio conservative this week to protect recovery.`
+    }
+
+    return { ...d, exercises: adaptedExercises, cardio }
+  })
+}
+
+export function buildWorkoutPlan(goal: string, trainDays: number, intel?: WorkoutIntelligence): WorkoutDay[] {
   const days = Math.max(3, Math.min(6, trainDays))
-  if (days <= 3) return fullBodySplit(goal)
-  if (days === 4) return upperLowerSplit(goal)
-  if (days === 5) return pplULSplit(goal)
-  return pplx2Split(goal)
+  const base = days <= 3
+    ? fullBodySplit(goal)
+    : days === 4
+      ? upperLowerSplit(goal)
+      : days === 5
+        ? pplULSplit(goal)
+        : pplx2Split(goal)
+  return adaptWorkoutPlan(base, intel)
 }

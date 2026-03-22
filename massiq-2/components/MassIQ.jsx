@@ -137,8 +137,67 @@ const CSS = `
 
 /* ─── LocalStorage helpers ───────────────────────────────────────────────── */
 const LS = {
-  get: (k, fb = null) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  scopeMarker: 'massiq:activeUser',
+  userScopedPrefixes: [
+    'massiq:profile',
+    'massiq:activePlan',
+    'massiq:stats',
+    'massiq:mealplan',
+    'massiq:scanHistory',
+    'massiq:completed',
+    'massiq:xp',
+    'massiq:streak',
+    'massiq:workoutplan',
+    'massiq:reminders',
+    'massiq:scanCache',
+    'massiq:missions',
+    'massiq:meals:',
+    'massiq:logged:',
+  ],
+  scopedKey: (k) => {
+    try {
+      const uid = localStorage.getItem('massiq:activeUser');
+      if (!uid) return k;
+      const shouldScope = LS.userScopedPrefixes.some(prefix => k === prefix || k.startsWith(prefix));
+      if (!shouldScope) return k;
+      return `massiq:${uid}:${k.slice('massiq:'.length)}`;
+    } catch {
+      return k;
+    }
+  },
+  get: (k, fb = null) => {
+    try {
+      const scoped = LS.scopedKey(k);
+      const scopedVal = localStorage.getItem(scoped);
+      if (scopedVal) return JSON.parse(scopedVal);
+      const legacy = localStorage.getItem(k);
+      if (!legacy) return fb;
+      // One-time migration from legacy global key to user-scoped key.
+      if (scoped !== k) {
+        localStorage.setItem(scoped, legacy);
+        localStorage.removeItem(k);
+      }
+      return JSON.parse(legacy);
+    } catch { return fb; }
+  },
+  set: (k, v) => {
+    try {
+      const scoped = LS.scopedKey(k);
+      localStorage.setItem(scoped, JSON.stringify(v));
+      if (scoped !== k) localStorage.removeItem(k);
+    } catch {}
+  },
+  clearUserScoped: (uid) => {
+    try {
+      const prefix = `massiq:${uid}:`;
+      const toDelete = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(prefix)) toDelete.push(key);
+      }
+      toDelete.forEach(k => localStorage.removeItem(k));
+    } catch {}
+  },
 };
 
 const LS_KEYS = {
@@ -147,11 +206,13 @@ const LS_KEYS = {
   stats:       'massiq:stats',
   mealplan:    'massiq:mealplan',
   scanHistory: 'massiq:scanHistory',
+  scanHistoryUser: 'massiq:scanHistoryUser',
   completed:   'massiq:completed',
   xp:          'massiq:xp',
   streak:      'massiq:streak',
   meals:       (d) => `massiq:meals:${d}`,
   workoutplan: 'massiq:workoutplan',
+  scanCache:   'massiq:scanCache',
   logged:      (d) => `massiq:logged:${d}`,
   reminders:   'massiq:reminders',
 };
@@ -386,11 +447,11 @@ const getBFDisplay = (scan) => {
 };
 
 const PHASE_META = {
-  Cut:     { label: 'Cut',     emoji: '📉', target: 'Reduce body fat while preserving lean tissue' },
-  Bulk:    { label: 'Bulk',    emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
-  Build:   { label: 'Build',   emoji: '📈', target: 'Increase lean mass with controlled fat gain' },
-  Recomp:  { label: 'Recomp',  emoji: '🔄', target: 'Improve composition while maintaining bodyweight range' },
-  Maintain:{ label: 'Maintain',emoji: '⚖️', target: 'Hold conditioning and improve weak points' },
+  Cut:     { label: 'Cut', target: 'Reduce body fat while preserving lean tissue' },
+  Bulk:    { label: 'Bulk', target: 'Increase lean mass with controlled fat gain' },
+  Build:   { label: 'Build', target: 'Increase lean mass with controlled fat gain' },
+  Recomp:  { label: 'Recomp', target: 'Improve composition while maintaining bodyweight range' },
+  Maintain:{ label: 'Maintain', target: 'Hold conditioning and improve weak points' },
 };
 
 function getTrajectoryStatus(scanHistory = [], phase = 'Maintain') {
@@ -502,19 +563,79 @@ function getPhysiqueProjection(currentBF, goal, gender = 'Male', confidence = 'm
   return { currentStage, projectedStage, projBFLow, projBFHigh, projBFMid, projLabel, timeline, projCopy, stageCopy, improving };
 }
 
+function getScanIntelligence(scanHistory = [], activePlan = null, profile = null) {
+  const latest = scanHistory.slice(-1)[0] || null;
+  const previous = scanHistory.slice(-2)[0] || null;
+  if (!latest) return null;
+  const latestBF = Number(latest.bodyFat ?? latest.bodyFatPct ?? 0);
+  const prevBF = Number(previous?.bodyFat ?? previous?.bodyFatPct ?? 0);
+  const latestLean = Number(latest.leanMass || 0);
+  const prevLean = Number(previous?.leanMass || 0);
+  const latestSym = Number(latest.symmetryScore || 0);
+  const prevSym = Number(previous?.symmetryScore || 0);
+  const bfDelta = previous ? Number((latestBF - prevBF).toFixed(1)) : 0;
+  const leanDelta = previous ? Number((latestLean - prevLean).toFixed(1)) : 0;
+  const symDelta = previous ? Number((latestSym - prevSym).toFixed(1)) : 0;
+  const phase = activePlan?.phase || profile?.goal || 'Maintain';
+  const proximityToTarget = activePlan?.targetBF != null && latestBF
+    ? Math.abs(latestBF - Number(activePlan.targetBF))
+    : null;
+  const plateau = previous ? Math.abs(bfDelta) < 0.2 && Math.abs(leanDelta) < 0.2 : false;
+  const muscleLossRisk = phase === 'Cut' && leanDelta < -0.6;
+  const recoveryRisk = muscleLossRisk || (phase === 'Cut' && bfDelta < -1.2);
+  const needsCorrection = latestSym > 0 && latestSym < 78;
+  const nearingTarget = proximityToTarget != null && proximityToTarget <= 1.2;
+  const trainingEmphasis = recoveryRisk
+    ? 'recovery'
+    : needsCorrection
+      ? 'correction'
+      : phase === 'Bulk' && !plateau
+        ? 'hypertrophy'
+        : 'preservation';
+
+  const asymmetries = Array.isArray(latest?.asymmetries) ? latest.asymmetries : [];
+  const symmetryActions = asymmetries.slice(0, 3).map((item) => {
+    const raw = String(item).toLowerCase();
+    if (raw.includes('shoulder')) return { area: 'Shoulders', action: 'Start unilateral dumbbell pressing on the weaker side first and add 1 corrective set.' };
+    if (raw.includes('chest')) return { area: 'Chest', action: 'Use single-arm cable presses and pause on the weaker side for 1 second at peak contraction.' };
+    if (raw.includes('arm') || raw.includes('bicep') || raw.includes('tricep')) return { area: 'Arms', action: 'Add 1 unilateral set to curls/extensions for the lagging arm with strict tempo.' };
+    if (raw.includes('quad') || raw.includes('leg')) return { area: 'Legs', action: 'Add Bulgarian split squats and single-leg leg press, beginning with the weaker side.' };
+    return { area: 'Core and posture', action: 'Add unilateral carries and anti-rotation core work to improve side-to-side control.' };
+  });
+
+  return {
+    latest,
+    previous,
+    bfDelta,
+    leanDelta,
+    symDelta,
+    plateau,
+    muscleLossRisk,
+    recoveryRisk,
+    needsCorrection,
+    nearingTarget,
+    trainingEmphasis,
+    cardioDelta: plateau ? 1 : recoveryRisk ? -1 : 0,
+    volumeDelta: recoveryRisk ? -1 : phase === 'Bulk' && !plateau ? 1 : 0,
+    symmetryActions,
+  };
+}
+
 function getActiveTargets(activePlan, profile) {
-  // Always recalculate from calcTargets — never use stale stored plan macros
-  const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
-  const fresh = calcTargets(profile, latestScan);
+  // Single source of truth across Home / Plan / Nutrition:
+  // prefer saved plan targets, fallback to recalculation only when plan targets are missing.
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const latestScan = scanHistory.slice(-1)[0] || null;
   const stored = activePlan?.dailyTargets || activePlan?.macros || {};
-  // Preserve non-macro plan targets (steps, sleep, water) from plan if set
+  const fresh = calcTargets(profile, latestScan);
   const targets = {
     ...fresh,
-    steps:               stored.steps               || fresh.steps,
-    sleepHours:          stored.sleepHours          || fresh.sleepHours,
-    waterLiters:         stored.waterLiters         || fresh.waterLiters,
-    trainingDaysPerWeek: stored.trainingDaysPerWeek || fresh.trainingDaysPerWeek,
-    cardioDays:          stored.cardioDays          || fresh.cardioDays,
+    ...stored,
+    steps:               stored.steps               ?? fresh.steps,
+    sleepHours:          stored.sleepHours          ?? fresh.sleepHours,
+    waterLiters:         stored.waterLiters         ?? fresh.waterLiters,
+    trainingDaysPerWeek: stored.trainingDaysPerWeek ?? fresh.trainingDaysPerWeek,
+    cardioDays:          stored.cardioDays          ?? fresh.cardioDays,
   };
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
 }
@@ -580,7 +701,7 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
   return {
     id: meal.id || `sg-${idx + 1}`,
     time: meal.time || meal.mealType || (idx === 1 ? 'Snack' : idx === 0 ? 'Lunch' : 'Dinner'),
-    icon: meal.icon || '🍽️',
+    icon: meal.icon || 'Meal',
     name: invalidVegan ? 'Plant protein bowl' : safeName,
     calories,
     protein,
@@ -606,7 +727,7 @@ function sanitizeScanData(scan, profile) {
   const weight = Number(profile?.weightLbs || 180);
   // Always derive leanMass from weight (lbs) × (1 - BF%) — never trust Claude's raw leanMass
   // value since the model may return it in kg while we store/display everything in lbs.
-  // Example: 75 kg person, 14% BF → weightLbs=165.3, leanMass=165.3×0.86=142.2 lbs ✓
+  // Example: 75 kg person, 14% BF → weightLbs=165.3, leanMass=165.3×0.86=142.2 lbs Done
   const computedLeanMass = weight * (1 - bodyFatPct / 100);
   const leanMass = Number(Math.min(weight * 0.96, Math.max(weight * 0.35, computedLeanMass)).toFixed(1));
   const confidence = ['low', 'medium', 'high'].includes(scan.bodyFatConfidence || scan.confidence)
@@ -630,6 +751,38 @@ function sanitizeScanData(scan, profile) {
     trainingFocus: scan.trainingFocus || null,
     nutritionKeyChange: scan.nutritionKeyChange || '',
   };
+}
+
+function mergeScanHistories(localHistory = [], remoteHistory = []) {
+  const mergedByDate = new Map();
+  [...localHistory, ...remoteHistory].forEach((scan, idx) => {
+    const key = `${scan?.date || 'unknown'}-${idx}`;
+    const prior = mergedByDate.get(scan?.date);
+    if (!prior) {
+      mergedByDate.set(scan?.date, { ...scan, __key: key });
+      return;
+    }
+    const priorScore = Number(prior?.physiqueScore || prior?.score || 0);
+    const nextScore = Number(scan?.physiqueScore || scan?.score || 0);
+    const useNext = nextScore > 0 || (scan?.symmetryScore && !prior?.symmetryScore);
+    mergedByDate.set(scan?.date, useNext ? { ...prior, ...scan, __key: key } : prior);
+  });
+  return [...mergedByDate.values()]
+    .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime())
+    .map(({ __key, ...rest }) => rest);
+}
+
+function getReliableScore(scan) {
+  if (!scan) return null;
+  const candidates = [scan.physiqueScore, scan.score, scan.overallPhysiqueScore, scan.raw_result?.physiqueScore];
+  const valid = candidates.map(Number).find(n => Number.isFinite(n) && n > 0);
+  return valid != null ? Math.round(valid) : null;
+}
+
+async function hashBase64(base64) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
@@ -706,7 +859,9 @@ async function generateMissions(profile, activePlan) {
 async function generateWorkoutPlan(profile, activePlan) {
   // Synchronous — no LLM call. Evidence-based split selection by training days.
   const trainDays = getActiveTargets(activePlan, profile)?.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  return buildWorkoutPlan(profile.goal, trainDays);
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  return buildWorkoutPlan(profile.goal, trainDays, intel);
 }
 
 async function generateRecipeDetails(meal, profile) {
@@ -737,7 +892,7 @@ class TabErrorBoundary extends Component {
     if (this.state.error) {
       return (
         <div style={{ padding: 32, textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 16 }}>⚠️</div>
+          <div style={{ fontSize: 32, marginBottom: 16 }}>Alert</div>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Something went wrong</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
             {String(this.state.error?.message || 'Unexpected error')}
@@ -881,7 +1036,7 @@ function PlanGeneratingScreen({ name }) {
       <div style={{ position: 'relative', width: 100, height: 100, marginBottom: 40 }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}`, animation: 'pulse 2s ease-in-out infinite' }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700 }}>AI</div>
       </div>
       <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 8, textAlign: 'center' }}>Building your plan{name ? `, ${name}` : ''}.</div>
       <div style={{ fontSize: 14, color: C.muted, marginBottom: 32 }}>This takes about 10 seconds</div>
@@ -899,10 +1054,10 @@ const DIET_PREFS  = ['None', 'Vegan', 'Vegetarian', 'Keto', 'Paleo', 'Gluten-Fre
 const CUISINES    = ['American', 'Mediterranean', 'Asian', 'Mexican', 'Italian', 'Middle Eastern', 'Indian', 'Japanese'];
 const AVOID_FOODS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Soy', 'Eggs', 'Red Meat', 'Processed Sugar'];
 const GOALS = [
-  { key: 'Cut',      emoji: '📉', label: 'Cut',      desc: 'Lose fat, preserve muscle' },
-  { key: 'Bulk',     emoji: '📈', label: 'Bulk',     desc: 'Build maximum muscle mass' },
-  { key: 'Recomp',   emoji: '🔄', label: 'Recomp',  desc: 'Lose fat & gain muscle simultaneously' },
-  { key: 'Maintain', emoji: '⚖️', label: 'Maintain', desc: 'Stay lean at current weight' },
+  { key: 'Cut',      label: 'Cut',      desc: 'Lose fat, preserve muscle' },
+  { key: 'Bulk',     label: 'Bulk',     desc: 'Build maximum muscle mass' },
+  { key: 'Recomp',   label: 'Recomp',   desc: 'Lose fat & gain muscle simultaneously' },
+  { key: 'Maintain', label: 'Maintain', desc: 'Stay lean at current weight' },
 ];
 const ACTIVITIES = [
   { key: 'Sedentary', label: 'Sedentary',         desc: 'Mostly sitting, minimal movement',          insight: 'Lower baseline calorie needs.' },
@@ -1177,8 +1332,7 @@ function Onboarding({ onComplete }) {
               <div key={g.key} className={`ob-card${data.goal === g.key ? ' selected' : ''}`}
                 onClick={() => { set('goal', g.key); setTimeout(goNext, 200); }}
                 style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 48, marginBottom: 10 }}>{g.emoji}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 6 }}>{g.label}</div>
+                <div style={{ fontSize: 34, fontWeight: 700, color: data.goal === g.key ? C.green : C.white, marginBottom: 10 }}>{g.label}</div>
                 <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.4 }}>{g.desc}</div>
               </div>
             ))}
@@ -1265,7 +1419,7 @@ function Onboarding({ onComplete }) {
                   <div style={{ fontSize: 12, color: C.dimmed, marginTop: 5 }}>{a.insight}</div>
                 </div>
                 <div style={{ width: 22, height: 22, borderRadius: '50%', border: `1px solid ${data.activity === a.key ? C.green : C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: data.activity === a.key ? C.green : C.dimmed, fontSize: 12, fontWeight: 700 }}>
-                  {data.activity === a.key ? '✓' : '›'}
+                  {data.activity === a.key ? 'Done' : '›'}
                 </div>
               </div>
             ))}
@@ -1331,7 +1485,7 @@ function Onboarding({ onComplete }) {
       case 8: return (
         <div style={{ width: '100%', textAlign: 'center' }}>
           <AILabel />
-          <div style={{ fontSize: 52, marginBottom: 20 }}>🚀</div>
+          <div style={{ fontSize: 24, marginBottom: 20, letterSpacing: '.08em', fontWeight: 700 }}>READY</div>
           <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
             Your profile is ready,<br />{data.name}.
           </h1>
@@ -1420,7 +1574,7 @@ function CalcScreen() {
       <div style={{ position: 'relative', width: 90, height: 90, margin: '0 auto 32px' }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.greenBg}` }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 10, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>🧬</div>
+        <div style={{ position: 'absolute', inset: 10, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>AI</div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center' }}>
         {lines.slice(0, shown).map((l, i) => (
@@ -1468,7 +1622,7 @@ function AIDailyTip({ profile, activePlan, todayMeals }) {
     return () => { ok = false; };
   }, []);
   if (loading) return <div className="skeleton" style={{ height: 14, width: '70%', borderRadius: 6 }} />;
-  return <span>💡 {tip}</span>;
+  return <span>Tip {tip}</span>;
 }
 
 function TargetTile({ icon, label, current, target, unit, color, showProgress = true, sourceLabel }) {
@@ -1682,11 +1836,13 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const lastScan  = scanHistory.slice(-1)[0] || null;
         const prevScan  = scanHistory.slice(-2)[0] || null;
         const currentBF = lastScan?.bodyFat  ?? null;
-        const targetBF  = activePlan?.targetBF ?? null;
+        const phase     = activePlan?.phase ?? null;
+        const targetBF  = phase === 'Maintain'
+          ? currentBF
+          : activePlan?.targetBF ?? null;
         const startBF   = activePlan?.startBF  ?? currentBF ?? null;
         const leanMassLbs = lastScan?.leanMass ?? null;
         const symmetry  = lastScan?.symmetryScore ?? null;
-        const phase     = activePlan?.phase ?? null;
         const phaseColor = phase === 'Cut' ? C.orange : phase === 'Bulk' ? C.blue : C.green;
 
         /* progress toward target: 0→1 */
@@ -1723,14 +1879,14 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const diagExpl  = diag?.explanation ?? null;
 
         /* ADJUST NOW rows — show current targets, with before if prev scan available */
-        const dt = activePlan?.dailyTargets || activePlan?.macros || {};
+        const dt = macros || activePlan?.dailyTargets || activePlan?.macros || {};
         const ptPrev = prevScan?.dailyTargets?.protein  ?? null;
         const calPrev = prevScan?.dailyTargets?.calories ?? null;
         const slpPrev = prevScan?.dailyTargets?.sleepHours ?? null;
         const adjustRows = [
-          { label: 'Protein',  dir: ptPrev  != null ? (dt.protein  > ptPrev  ? '↑' : '↓') : '↑', old: ptPrev,  now: dt.protein,   unit: 'g',   color: C.green },
-          { label: 'Calories', dir: calPrev != null ? (dt.calories > calPrev ? '↑' : '↓') : null, old: calPrev, now: dt.calories,  unit: 'kcal', color: C.orange },
-          { label: 'Sleep',    dir: slpPrev != null ? (dt.sleepHours > slpPrev ? '↑' : '↓') : '↑', old: slpPrev, now: dt.sleepHours ?? activePlan?.sleepHrs ?? 8, unit: 'hrs', color: C.blue },
+          { label: 'Protein',  dir: ptPrev  != null ? (dt.protein  > ptPrev  ? '↑' : '↓') : '↑', prev: ptPrev,  now: dt.protein,   unit: 'g',   color: C.green },
+          { label: 'Calories', dir: calPrev != null ? (dt.calories > calPrev ? '↑' : '↓') : null, prev: calPrev, now: dt.calories,  unit: 'kcal', color: C.orange },
+          { label: 'Sleep',    dir: slpPrev != null ? (dt.sleepHours > slpPrev ? '↑' : '↓') : '↑', prev: slpPrev, now: dt.sleepHours ?? activePlan?.sleepHrs ?? 8, unit: 'hrs', color: C.blue },
         ].filter(r => r.now != null);
 
         return (
@@ -1820,7 +1976,6 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
               <div style={{ padding: '14px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)` }}>
                 <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>⚡</span>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 3 }}>{diagTitle}</div>
                     {diagExpl && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{diagExpl}</div>}
@@ -1852,15 +2007,28 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
                         )}
                         <span style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{r.label}</span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {r.old != null && (
-                          <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{r.old}{r.unit}</span>
-                        )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 15, fontWeight: 800, color: r.color }}>{r.now}{r.unit}</span>
+                        {r.prev != null && r.prev !== r.now && (
+                          <span style={{
+                            fontSize: 10,
+                            color: C.dimmed,
+                            border: `1px solid rgba(255,255,255,0.1)`,
+                            borderRadius: 99,
+                            padding: '2px 7px',
+                            letterSpacing: '.03em',
+                            textTransform: 'uppercase',
+                          }}>
+                            Updated
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
+                {prevScan && (
+                  <div style={{ fontSize: 11, color: C.dimmed, marginTop: 10 }}>Updated from last scan.</div>
+                )}
               </div>
             )}
 
@@ -2086,24 +2254,24 @@ function useAISuggestions(profile, activePlan, meals) {
     const phase = profile?.goal || activePlan?.phase || 'Maintain';
     const mealsByPhase = {
       Cut: [
-        { name: 'Chicken + greens bowl', icon: '🥗', ratio: 0.28 },
-        { name: 'Greek yogurt protein snack', icon: '🥣', ratio: 0.16 },
-        { name: 'Salmon + vegetables plate', icon: '🐟', ratio: 0.33 },
+        { name: 'Chicken + greens bowl', icon: 'Nutrition', ratio: 0.28 },
+        { name: 'Greek yogurt protein snack', icon: 'SNK', ratio: 0.16 },
+        { name: 'Salmon + vegetables plate', icon: 'Meal', ratio: 0.33 },
       ],
       Bulk: [
-        { name: 'Rice + lean beef bowl', icon: '🍚', ratio: 0.34 },
-        { name: 'Oats + whey + berries', icon: '🥣', ratio: 0.22 },
-        { name: 'Pasta + chicken plate', icon: '🍝', ratio: 0.36 },
+        { name: 'Rice + lean beef bowl', icon: 'BWL', ratio: 0.34 },
+        { name: 'Oats + whey + berries', icon: 'SNK', ratio: 0.22 },
+        { name: 'Pasta + chicken plate', icon: 'ML', ratio: 0.36 },
       ],
       Recomp: [
-        { name: 'Egg + toast breakfast plate', icon: '🍳', ratio: 0.25 },
-        { name: 'Turkey rice bowl', icon: '🍲', ratio: 0.3 },
-        { name: 'Steak + potato dinner', icon: '🥩', ratio: 0.32 },
+        { name: 'Egg + toast breakfast plate', icon: 'BF', ratio: 0.25 },
+        { name: 'Turkey rice bowl', icon: 'Meal', ratio: 0.3 },
+        { name: 'Steak + potato dinner', icon: 'Protein', ratio: 0.32 },
       ],
       Maintain: [
-        { name: 'Balanced protein bowl', icon: '🍱', ratio: 0.3 },
-        { name: 'High-protein wrap', icon: '🌯', ratio: 0.24 },
-        { name: 'Fish + grains plate', icon: '🐟', ratio: 0.31 },
+        { name: 'Balanced protein bowl', icon: 'Meal', ratio: 0.3 },
+        { name: 'High-protein wrap', icon: 'Meal', ratio: 0.24 },
+        { name: 'Fish + grains plate', icon: 'Meal', ratio: 0.31 },
       ],
     }[phase] || [];
     return mealsByPhase.map((x, i) => {
@@ -2310,7 +2478,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
             <div style={{ fontSize: 12, fontWeight: 600, color: C.green, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 12 }}>AI Analyze</div>
             {/* Tab toggle */}
             <div style={{ display: 'flex', background: C.card, borderRadius: 10, padding: 3, marginBottom: 14 }}>
-              {[['describe','📝 Describe'],['photo','📷 Photo']].map(([k, lbl]) => (
+              {[['describe','Note Describe'],['photo','Photo Photo']].map(([k, lbl]) => (
                 <button key={k} className="bp" onClick={() => setAiTab(k)} style={{
                   flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
                   background: aiTab === k ? C.green : 'transparent',
@@ -2337,7 +2505,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
                   width: '100%', padding: '28px 0', borderRadius: 12, border: `1.5px dashed ${C.green}`,
                   background: C.greenBg, color: C.green, fontSize: 14, fontWeight: 600, cursor: 'pointer',
                 }}>
-                  {analyzing ? '⏳ Analyzing…' : '📷 Take or upload a photo'}
+                  {analyzing ? 'Loading Analyzing…' : 'Photo Take or upload a photo'}
                 </button>
               </div>
             )}
@@ -2346,7 +2514,7 @@ function LogMealModal({ onClose, onAdd, macros, profile }) {
 
           {comment && (
             <div style={{ background: C.greenBg, border: `1px solid ${C.greenDim}`, borderRadius: 12, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.green, lineHeight: 1.5 }}>
-              💬 {comment}
+              Note {comment}
             </div>
           )}
 
@@ -2426,7 +2594,7 @@ function CountdownTimer({ seconds, onComplete }) {
         </div>
       </div>
       <span style={{ fontSize: 9, color: C.muted }}>
-        {remaining === 0 ? '✓ done' : running ? 'pause' : 'start'}
+        {remaining === 0 ? 'Done done' : running ? 'pause' : 'start'}
       </span>
     </div>
   );
@@ -2456,7 +2624,7 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onW
         )}
       </div>
       {ex.weight && (
-        <div style={{ fontSize: 12, color: C.blue, marginBottom: 10 }}>⚖️ {ex.weight}</div>
+        <div style={{ fontSize: 12, color: C.blue, marginBottom: 10 }}>Balance {ex.weight}</div>
       )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: ex.technique ? 10 : 0 }}>
         {Array.from({ length: sets }).map((_, si) => {
@@ -2470,7 +2638,7 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onW
               cursor: 'pointer', fontSize: 12, fontWeight: 700,
               color: done ? C.green : C.dimmed,
             }}>
-              {done ? '✓' : si + 1}
+              {done ? 'Done' : si + 1}
             </div>
           );
         })}
@@ -2478,7 +2646,7 @@ function ExerciseCard({ ex, exIdx, completedSets, onToggleSet, loggedWeight, onW
       {/* Weight logger */}
       {onWeightChange && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-          <span style={{ fontSize: 11, color: C.dimmed, whiteSpace: 'nowrap' }}>⚖️ Weight used</span>
+          <span style={{ fontSize: 11, color: C.dimmed, whiteSpace: 'nowrap' }}>Balance Weight used</span>
           <input
             type="text"
             inputMode="decimal"
@@ -2575,7 +2743,7 @@ function RecipeModal({ meal, profile, onClose, onLog, onSwap }) {
             <p style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.6 }}>{meal.description}</p>
           )}
           {meal.prepTime && (
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>⏱ {meal.prepTime}</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>Time {meal.prepTime}</div>
           )}
           {loading ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
@@ -2598,7 +2766,7 @@ function RecipeModal({ meal, profile, onClose, onLog, onSwap }) {
                         background: checked[i] ? C.greenBg : 'transparent',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                       }}>
-                        {checked[i] && <span style={{ fontSize: 12, color: C.green }}>✓</span>}
+                        {checked[i] && <span style={{ fontSize: 12, color: C.green }}>Done</span>}
                       </div>
                       <span style={{ fontSize: 14, color: checked[i] ? C.dimmed : C.white, textDecoration: checked[i] ? 'line-through' : 'none' }}>
                         {ing}
@@ -2640,7 +2808,7 @@ function RecipeModal({ meal, profile, onClose, onLog, onSwap }) {
             </div>
           )}
           <div style={{ display: 'flex', gap: 10, paddingBottom: 8 }}>
-            <Btn onClick={onLog} style={{ flex: 1 }}>✓ Log This Meal</Btn>
+            <Btn onClick={onLog} style={{ flex: 1 }}>Done Log This Meal</Btn>
             <Btn onClick={onSwap} variant="outline" style={{ flex: 1 }}>↺ Swap</Btn>
           </div>
         </div>
@@ -2709,7 +2877,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
             <button className="bp" onClick={onClose} style={{ background: C.cardElevated, border: 'none', color: C.muted, width: 32, height: 32, borderRadius: '50%', fontSize: 16, cursor: 'pointer', flexShrink: 0 }}>×</button>
           </div>
           <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{workout.day}'s Workout</h2>
-          {workout.duration && <p style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>⏱ {workout.duration}</p>}
+          {workout.duration && <p style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>Time {workout.duration}</p>}
           {totalSets > 0 && (
             <div style={{ marginBottom: 18 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.muted, marginBottom: 6 }}>
@@ -2725,7 +2893,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
                 width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, cursor: 'pointer',
               }}>
-                <span style={{ fontSize: 14, fontWeight: 600 }}>🔥 Warmup</span>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>Core Warmup</span>
                 <span style={{ fontSize: 11, color: C.muted }}>{showWarmup ? '▲' : '▼'}</span>
               </button>
               {showWarmup && (
@@ -2759,7 +2927,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
           </div>
           {workout.cooldown && (
             <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', border: `1px solid ${C.border}`, marginBottom: 18, fontSize: 13, color: C.muted, lineHeight: 1.5 }}>
-              ❄️ <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
+              Cool <span style={{ fontWeight: 600, color: C.white }}>Cooldown:</span> {workout.cooldown}
             </div>
           )}
           <Btn onClick={() => {
@@ -2780,7 +2948,7 @@ function WorkoutModal({ workout, onClose, onFinish }) {
             LS.set(`massiq:workout:${dateKey}`, log);
             onFinish?.(); onClose();
           }} style={{ width: '100%' }}>
-            {pct === 100 ? '🏆 Workout Complete!' : `Finish Workout (${pct}% done)`}
+            {pct === 100 ? 'Elite Workout Complete!' : `Finish Workout (${pct}% done)`}
           </Btn>
         </div>
       </div>
@@ -2802,7 +2970,7 @@ function TodayWorkoutCard() {
     return (
       <Card className="su" style={{ animationDelay: '.15s', opacity: 0.75 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ fontSize: 24 }}>😴</div>
+          <div style={{ fontSize: 24 }}>Rest</div>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Rest Day</div>
             <div style={{ fontSize: 13, color: C.muted }}>Recovery is part of the process.</div>
@@ -2839,11 +3007,11 @@ function TodayWorkoutCard() {
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.muted }}>
             <span style={{ display: 'flex', gap: 16 }}>
-              {exCount > 0 && <span>🏋️ {exCount} exercises</span>}
-              {todayWorkout.duration && <span>⏱ {todayWorkout.duration}</span>}
+              {exCount > 0 && <span>Lift {exCount} exercises</span>}
+              {todayWorkout.duration && <span>Time {todayWorkout.duration}</span>}
             </span>
             {todayLog && (
-              <span style={{ color: C.green, fontWeight: 650 }}>✓ Logged {todayLog.completedPct}%</span>
+              <span style={{ color: C.green, fontWeight: 650 }}>Done Logged {todayLog.completedPct}%</span>
             )}
           </div>
         </Card>
@@ -2885,7 +3053,7 @@ function NutritionTab({ profile, activePlan, showToast, setTab }) {
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
     setSelectedMeal(null);
-    showToast?.('✓ Meal logged');
+    showToast?.('Done Meal logged');
   };
 
   const remaining = Math.max(0, macros.calories - totals.calories);
@@ -2902,9 +3070,9 @@ function NutritionTab({ profile, activePlan, showToast, setTab }) {
         const hour      = new Date().getHours();
         const lateEnough = hour >= 12; // midday check
         const tip = protPct >= 80
-          ? `✓ On track with protein. Focus on hitting your calories.`
+          ? `Done On track with protein. Focus on hitting your calories.`
           : lateEnough && protPct < 50
-            ? `⚡ You need ${protRem}g more protein today. Add chicken, eggs, or Greek yogurt to your next meal.`
+            ? `Key You need ${protRem}g more protein today. Add chicken, eggs, or Greek yogurt to your next meal.`
             : null;
         const ringDeg = Math.round(protPct * 3.6);
         return (
@@ -2939,7 +3107,7 @@ function NutritionTab({ profile, activePlan, showToast, setTab }) {
               <div style={{ height: '100%', borderRadius: 99, background: ringColor, width: `${protPct}%`, transition: 'width .4s ease' }} />
             </div>
             <div style={{ textAlign: 'right', fontSize: 12, color: protRem === 0 ? C.green : C.muted, marginBottom: tip ? 12 : 0 }}>
-              {protRem > 0 ? `${protRem}g remaining` : '✓ Target hit'}
+              {protRem > 0 ? `${protRem}g remaining` : 'Done Target hit'}
             </div>
             {tip && (
               <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, paddingTop: 10, borderTop: `1px solid rgba(255,255,255,0.06)` }}>{tip}</div>
@@ -3173,7 +3341,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           background: C.card, borderRadius: 20, padding: '36px 24px',
           border: `1px solid rgba(255,255,255,0.08)`, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 34, marginBottom: 18 }}>📋</div>
+          <div style={{ fontSize: 34, marginBottom: 18 }}>Plan</div>
           <div style={{ fontSize: 19, fontWeight: 700, color: C.white, marginBottom: 8 }}>
             Your plan comes from your scan
           </div>
@@ -3213,6 +3381,12 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const steps      = activePlan.steps || macros.steps || 8000;
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const latestScan  = scanHistory.slice(-1)[0] || null;
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  const symmetryFocus = intel?.symmetryActions?.length
+    ? intel.symmetryActions
+    : (latestScan?.symmetryScore && latestScan.symmetryScore < 82
+      ? [{ area: 'General symmetry', action: 'Keep unilateral press, row, split-squat, and single-arm carry volume matched side-to-side this week.' }]
+      : []);
 
   const FOCUS_CARDS = [
     { label: 'Protein',  value: `${macros.protein || 150}g daily`,                reason: 'preserve muscle' },
@@ -3401,7 +3575,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
                                 {label}
                               </div>
                               <div style={{ fontSize: 14, fontWeight: 600, color: isLogged ? C.muted : C.white }}>
-                                {isLogged && <span style={{ color: C.green, marginRight: 6 }}>✓</span>}
+                                {isLogged && <span style={{ color: C.green, marginRight: 6 }}>Done</span>}
                                 {meal.name}
                               </div>
                             </div>
@@ -3504,6 +3678,29 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             <SectionRow sectionKey="workouts" label="Workout plan" meta={`${trainDays}x/wk`} />
             {openSections.has('workouts') && (
               <div>
+                {symmetryFocus.length > 0 && (
+                  <div style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: `1px solid rgba(255,255,255,0.08)`,
+                    borderRadius: 12,
+                    padding: '12px 14px',
+                    marginBottom: 12,
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>
+                      Symmetry Focus
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {symmetryFocus.map((item, idx) => (
+                        <div key={`${item.area}-${idx}`} style={{ display: 'flex', gap: 8 }}>
+                          <span style={{ color: C.green }}>•</span>
+                          <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+                            <span style={{ color: C.white, fontWeight: 600 }}>{item.area}:</span> {item.action}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* Pager nav */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                   <button
@@ -3649,14 +3846,14 @@ function Toast({ msg, onDone }) {
 
 /* Mission definitions */
 const MISSIONS = [
-  { id: 'm_log_meal',    tier: 'Bronze', emoji: '🍽️', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
-  { id: 'm_water',       tier: 'Bronze', emoji: '💧', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
-  { id: 'm_sleep',       tier: 'Bronze', emoji: '🌙', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
-  { id: 'm_steps',       tier: 'Bronze', emoji: '👟', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
-  { id: 'm_protein3',    tier: 'Silver', emoji: '⚡', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_log5',        tier: 'Silver', emoji: '📝', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
-  { id: 'm_fullweek',    tier: 'Gold',   emoji: '🏆', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
-  { id: 'm_alltargets',  tier: 'Gold',   emoji: '🎯', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
+  { id: 'm_log_meal',    tier: 'Bronze', emoji: 'Meal', title: 'Log First Meal',       desc: 'Log your first meal today',              xp: 100, requires: [] },
+  { id: 'm_water',       tier: 'Bronze', emoji: 'Water', title: 'Hydration Init',         desc: 'Drink 2L of water',                       xp: 100, requires: [] },
+  { id: 'm_sleep',       tier: 'Bronze', emoji: 'Sleep', title: 'Sleep Starter',          desc: 'Get 7 hours of sleep',                    xp: 100, requires: [] },
+  { id: 'm_steps',       tier: 'Bronze', emoji: 'Steps', title: 'First Steps',            desc: 'Hit 7,000 steps in a day',                xp: 100, requires: [] },
+  { id: 'm_protein3',    tier: 'Silver', emoji: 'Key', title: 'Protein King',           desc: 'Hit protein target 3 days in a row',      xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_log5',        tier: 'Silver', emoji: 'Note', title: 'Meal Streak',            desc: 'Log meals 5 days straight',               xp: 250, requires: ['m_log_meal','m_water','m_sleep','m_steps'] },
+  { id: 'm_fullweek',    tier: 'Gold',   emoji: 'Elite', title: 'Full Week on Plan',      desc: 'Complete a full week on plan',            xp: 500, requires: ['m_protein3','m_log5'] },
+  { id: 'm_alltargets',  tier: 'Gold',   emoji: 'Target', title: 'Perfect Day',            desc: 'Hit all targets in one day',              xp: 500, requires: ['m_protein3','m_log5'] },
 ];
 const TIER_ORDER  = ['Bronze','Silver','Gold','Platinum','Legendary'];
 const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platinum: C.purple, Legendary: C.green };
@@ -3665,7 +3862,7 @@ const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platin
 function PhysiqueChart({ scans }) {
   if (!scans || scans.length < 2) return null;
   const sorted = [...scans].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const scores = sorted.map(s => s.physiqueScore || 50);
+  const scores = sorted.map(s => getReliableScore(s) || 50);
   const minS = Math.min(...scores) - 5;
   const maxS = Math.max(...scores) + 5;
   const W = 300, H = 72;
@@ -3854,7 +4051,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
       {!lastScan && (
         <Card className="su" style={{ background: '#141A14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: 32, textAlign: 'center', animationDelay: '.02s' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>📷</div>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>Photo</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.white, marginBottom: 10 }}>No scan data yet</div>
           <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 24 }}>
             Complete your first body scan to see your physique metrics, health score, and journey timeline.
@@ -3880,7 +4077,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                 const prev = scanHistory[i - 1];
                 const bfΔ = prev ? Number((getBF(s) || 0) - (getBF(prev) || 0)) : null;
                 const lmΔ = prev ? Number((s.leanMass || 0) - (prev.leanMass || 0)) : null;
-                const scoreΔ = prev ? (s.physiqueScore || 0) - (prev.physiqueScore || 0) : null;
+                const scoreΔ = prev ? (getReliableScore(s) || 0) - (getReliableScore(prev) || 0) : null;
                 const isLatestScan = i === scanHistory.length - 1;
                 return (
                   <div key={i} className="bp" onClick={() => setSelectedScan({ scan: s, isLatest: isLatestScan })} style={{
@@ -3892,7 +4089,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                       {s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Base</span>}
                       {isLatestScan && !s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.green, background: C.greenBg, padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Latest</span>}
                     </div>
-                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(s.physiqueScore)}</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(getReliableScore(s))}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
                     <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ color: C.muted }}>
@@ -4335,18 +4532,30 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
         ? Math.round((Date.now() - new Date(prevScan.date).getTime()) / 86400000) : 0;
       const maxBFChange     = Math.max(2, daysSinceBaseline / 14).toFixed(1);
       const maxLMChange     = Math.max(3, daysSinceBaseline / 7).toFixed(1);
+      const scanHash = await hashBase64(base64);
+      const profileSignature = `${age}-${gender}-${heightCm}-${weightKg}-${profile?.goal || 'Maintain'}`;
+      const scanCache = LS.get(LS_KEYS.scanCache, {});
+      const cacheEntry = scanCache[scanHash];
 
       const baselineContext = baselineScan
         ? `\n\nCONSISTENCY ANCHOR — this user's baseline scan was ${daysSinceBaseline} days ago:\n- Baseline body fat: ${baselineScan.bodyFat}%  |  Lean mass: ${baselineScan.leanMass} lbs  |  Score: ${baselineScan.physiqueScore}\nRealistic change limits given ${daysSinceBaseline} days: ±${maxBFChange}% BF, ±${maxLMChange} lbs lean mass.\nIf your visual estimate falls significantly outside these limits, use the conservative estimate closer to the baseline. Focus on RELATIVE CHANGE detection, not fresh absolute estimates.`
         : '';
 
-      // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
-      const res = await fetch('/api/anthropic', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          system: `You are a physique analysis AI. Analyze this photo using visual body composition estimation techniques.
+      let visualData;
+      const canUseCache = cacheEntry
+        && cacheEntry.profileSignature === profileSignature
+        && (Date.now() - new Date(cacheEntry.cachedAt).getTime()) < (1000 * 60 * 60 * 24 * 30);
+
+      if (canUseCache) {
+        visualData = sanitizeScanData(cacheEntry.result, profile);
+      } else {
+        // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
+        const res = await fetch('/api/anthropic', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            system: `You are a physique analysis AI. Analyze this photo using visual body composition estimation techniques.
 
 IMPORTANT RULES:
 - Give body fat as a RANGE not single number (e.g. low:15, high:18)
@@ -4358,27 +4567,32 @@ IMPORTANT RULES:
 - BANNED words: underdeveloped, below average, above average, lacks, lacking, weak, beginner, poor, inadequate, unfortunately
 - Muscle levels (use exactly): "not yet defined"|"early"|"moderate"|"solid"|"well-developed"
 - SCORES: physique 30-95 (calibrated, avg 52-65), symmetry 60-95 (avg 70-85). Be honest, not generous.${baselineContext}`,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-              { type: 'text', text: `Person details: ${age}yo ${gender}, ${heightCm}cm (${height}in), ${weightKg}kg (${weight}lbs).
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+                { type: 'text', text: `Person details: ${age}yo ${gender}, ${heightCm}cm (${height}in), ${weightKg}kg (${weight}lbs).
 
 Return ONLY this JSON (no markdown, no extra text):
 {"bodyFatRange":{"low":0,"high":0,"midpoint":0},"bodyFatConfidence":"medium","bodyFatReasoning":"specific visual markers that led to this range","leanMass":0,"leanMassTrend":"maintaining","physiqueScore":0,"symmetryScore":0,"symmetryDetails":"specific description of balance or imbalances","muscleGroups":{"chest":"moderate","shoulders":"moderate","back":"moderate","arms":"moderate","core":"moderate","legs":"moderate"},"weakestGroups":[],"limitingFactor":"the single most important thing holding this physique back","limitingFactorExplanation":"specific explanation with reference to their stats and what is visible","strengths":[],"asymmetries":[],"bodyFatSummary":"","muscleSummary":"","priorityAreas":[],"balanceNote":"","diagnosis":"2-3 sentence honest assessment referencing their specific stats","photoQualityIssues":[],"photoQuality":{"overall":"medium","lighting":"good","clothing":"acceptable","pose":"acceptable","notes":""},"recommendation":"2-3 sentence specific recommendation referencing their weight and goal","disclaimer":"Visual AI estimate based on photo. Accuracy improves with consistent lighting and front/side pose."}` },
-            ],
-          }],
-          max_tokens: 1800,
-        }),
-      });
+              ],
+            }],
+            max_tokens: 1800,
+          }),
+        });
 
-      if (!res.ok) throw new Error(`API error ${res.status}`);
-      const { text, error: apiErr } = await res.json();
-      if (apiErr) throw new Error(apiErr);
+        if (!res.ok) throw new Error(`API error ${res.status}`);
+        const { text, error: apiErr } = await res.json();
+        if (apiErr) throw new Error(apiErr);
 
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error('Could not parse scan result');
-      const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
+        const match = text.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error('Could not parse scan result');
+        visualData = sanitizeScanData(JSON.parse(match[0]), profile);
+        LS.set(LS_KEYS.scanCache, {
+          ...scanCache,
+          [scanHash]: { result: visualData, cachedAt: new Date().toISOString(), profileSignature },
+        });
+      }
 
       // Consistency check: flag suspicious swings before showing results
       if (prevScan) {
@@ -4428,9 +4642,14 @@ Return ONLY this JSON (no markdown, no extra text):
         }, profile)
       : baseTargets;
 
+    const provisionalHistory = [...(LS.get(LS_KEYS.scanHistory, [])), { bodyFat: result.bodyFatPct, leanMass: result.leanMass, symmetryScore: result.symmetryScore, asymmetries: result.asymmetries, date: today }];
+    const intel = getScanIntelligence(provisionalHistory, LS.get(LS_KEYS.activePlan, null), profile);
+    const dynamicPhase = intel?.nearingTarget && profile.goal === 'Cut'
+      ? 'Maintain'
+      : (intel?.recoveryRisk && profile.goal === 'Bulk' ? 'Recomp' : profile.goal);
     const plan = {
-      phase:          profile.goal,
-      phaseName:      `${profile.goal} Phase`,
+      phase:          dynamicPhase,
+      phaseName:      `${dynamicPhase} Phase`,
       objective:      eng?.diagnosis?.primary?.recommended_action || '',
       week:           1,
       startDate:      today,
@@ -4444,13 +4663,14 @@ Return ONLY this JSON (no markdown, no extra text):
       bodyFat:        result.bodyFatPct,
       leanMass:       result.leanMass,
       startBF:        eng?.start_bf         ?? result.bodyFatPct,
-      targetBF:       eng?.target_bf        ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct),
+      targetBF:       eng?.target_bf        ?? (dynamicPhase === 'Cut' ? result.bodyFatPct - 4 : dynamicPhase === 'Bulk' ? result.bodyFatPct + 1 : result.bodyFatPct),
       weeklyMissions: result.weeklyMissions  || [],
       whyThisWorks:   result.whyThisWorks    || '',
       cardioDays:     m.cardioDays           || 2,
       engineDiagnosis: eng?.diagnosis        || null,
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
+      trainingEmphasis: intel?.trainingEmphasis || null,
     };
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
@@ -4460,9 +4680,9 @@ Return ONLY this JSON (no markdown, no extra text):
       bodyFat: result.bodyFatPct,
       bodyFatRange: result.bodyFatRange || null,
       leanMass: result.leanMass,
-      physiqueScore: result.physiqueScore,
+      physiqueScore: getReliableScore(result),
       symmetryScore: result.symmetryScore,
-      phase: profile.goal,
+      phase: dynamicPhase,
       confidence: result.confidence || 'medium',
       // Keep only weak group names — not full muscleGroups object (saves storage)
       weakestGroups: result.weakestGroups || (result.priorityAreas || []).slice(0, 3),
@@ -4494,7 +4714,7 @@ Return ONLY this JSON (no markdown, no extra text):
     generateWorkoutPlan(profile, plan)
       .then(days => { LS.set(LS_KEYS.workoutplan, days); })
       .catch(err => console.error('Workout plan regen failed:', err));
-    showToast('✓ Plan applied. Generating your meal plan...');
+    showToast('Done Plan applied. Generating your meal plan...');
     setTab('plan');
   };
 
@@ -4504,7 +4724,7 @@ Return ONLY this JSON (no markdown, no extra text):
       <div style={{ position: 'relative', width: 100, height: 100 }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}` }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>📸</div>
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, letterSpacing: '.08em', color: C.green }}>SCAN</div>
       </div>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Analyzing your physique…</div>
@@ -4536,11 +4756,11 @@ Return ONLY this JSON (no markdown, no extra text):
           <button className="bp" onClick={() => setResult(null)} style={{ background: C.cardElevated, border: 'none', color: C.muted, padding: '6px 14px', borderRadius: 10, fontSize: 13, cursor: 'pointer' }}>Retake</button>
         </div>
 
-        {/* ⚠ Consistency Warning Panel — shown before results when large swings detected */}
+        {/* Consistency Warning Panel — shown before results when large swings detected */}
         {consistencyWarnings.length > 0 && !warningsAccepted && (
           <Card style={{ background: `${C.gold}14`, border: `1px solid ${C.gold}55`, padding: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <span style={{ fontSize: 18 }}>⚠️</span>
+              <span style={{ fontSize: 11, color: C.gold, fontWeight: 700, letterSpacing: '.06em' }}>NOTICE</span>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.gold }}>Consistency Check</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -4586,7 +4806,6 @@ Return ONLY this JSON (no markdown, no extra text):
           return (
             <Card className="su" style={{ borderColor: color + '44' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explanation ? 12 : 0 }}>
-                <span style={{ fontSize: 18 }}>🔬</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
@@ -4638,12 +4857,12 @@ Return ONLY this JSON (no markdown, no extra text):
                   <span style={{ fontSize: 11, fontWeight: 700, color: confColor, background: confColor + '22', padding: '4px 10px', borderRadius: 99, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
                     {conf} confidence
                   </span>
-                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(result.physiqueScore)}/100</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(getReliableScore(result))}/100</span>
                 </div>
               </div>
               {conf !== 'high' && (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: confColor + '12', borderRadius: 10, border: `1px solid ${confColor}33` }}>
-                  <span style={{ fontSize: 13 }}>ℹ️</span>
+                  <span style={{ fontSize: 11, color: confColor, fontWeight: 700 }}>INFO</span>
                   <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
                     {conf === 'medium'
                       ? 'Moderate confidence — a straight-on photo with good lighting narrows this range.'
@@ -4659,7 +4878,7 @@ Return ONLY this JSON (no markdown, no extra text):
         <Card className="su" style={{ animationDelay: '.03s' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
-              {PHASE_META[ph.label]?.emoji || '🎯'} {ph.label || 'Maintain'}
+              {ph.label || 'Maintain'}
             </span>
             <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
           </div>
@@ -4683,38 +4902,22 @@ Return ONLY this JSON (no markdown, no extra text):
           )}
         </Card>
 
-        {/* 4 – ADJUST NOW (before → after targets) */}
+        {/* 4 – ADJUST NOW */}
         <div className="su" style={{ animationDelay: '.04s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>{prevScan ? 'ADJUST NOW' : 'Your Targets'}</div>
           {prevScan && prevScan.dailyTargets && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-              {[
-                { label: 'Calories', before: prevScan.dailyTargets.calories, after: dt.calories, unit: 'kcal', color: C.orange },
-                { label: 'Protein',  before: prevScan.dailyTargets.protein,  after: dt.protein,  unit: 'g',    color: C.blue },
-              ].map(t => (
-                <div key={t.label} style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{t.label}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{t.before ?? '—'}</span>
-                    <span style={{ fontSize: 11, color: C.muted }}>→</span>
-                    <span style={{ fontSize: 19, fontWeight: 700, color: t.color }}>{t.after ?? '—'}</span>
-                  </div>
-                  <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{t.unit}</div>
-                </div>
-              ))}
-            </div>
+            <div style={{ fontSize: 11, color: C.dimmed, marginBottom: 10 }}>Updated from last scan based on your current trajectory.</div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             {[
-              { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
-              { icon: '⚡', label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
-              { icon: '🚶', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
-              { icon: '🌙', label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
-              { icon: '💧', label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
-              { icon: '🏋️', label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
+              { label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
+              { label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
+              { label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
+              { label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
+              { label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
+              { label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
             ].map(t => (
               <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>{t.icon}</div>
                 <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
                 <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
                 <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
@@ -4760,7 +4963,7 @@ Return ONLY this JSON (no markdown, no extra text):
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
               { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+              { label: 'Score',     value: `${safeNum(getReliableScore(result))}/100`,             color: C.green },
               { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
               { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
             ].map(m => (
@@ -5001,7 +5204,7 @@ Return ONLY this JSON (no markdown, no extra text):
         {result.photoQuality && (
           <Card className="su" style={{ animationDelay: '.085s' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <span style={{ fontSize: 16 }}>📷</span>
+              <span style={{ fontSize: 16 }}>Photo</span>
               <span style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.07em' }}>Scan Reliability</span>
               {(() => {
                 const overall = result.photoQuality.overall || 'medium';
@@ -5042,7 +5245,7 @@ Return ONLY this JSON (no markdown, no extra text):
             background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: showCalcDetails ? '14px 14px 0 0' : 14,
             padding: '12px 16px', cursor: 'pointer', color: C.white, fontSize: 14, fontWeight: 600,
           }}>
-            <span>🧮 How we calculate this</span>
+            <span>How we calculate this</span>
             <span style={{ color: C.muted, fontSize: 13, display: 'inline-block', transition: 'transform .2s', transform: showCalcDetails ? 'rotate(180deg)' : 'none' }}>▾</span>
           </button>
           {showCalcDetails && (
@@ -5104,16 +5307,15 @@ Return ONLY this JSON (no markdown, no extra text):
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>What you&apos;ll get</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           {[
-            { icon: '📊', label: 'Body Fat Range' },
-            { icon: '💪', label: 'Muscle Assessment' },
-            { icon: '⚖️', label: 'Lean Mass Estimate' },
-            { icon: '🔄', label: 'Symmetry Score' },
-            { icon: '🎯', label: 'Training Focus' },
-            { icon: '🍽', label: 'Nutrition Adjustment' },
+            { label: 'Body Fat Range' },
+            { label: 'Muscle Assessment' },
+            { label: 'Lean Mass Estimate' },
+            { label: 'Symmetry Score' },
+            { label: 'Training Focus' },
+            { label: 'Nutrition Adjustment' },
           ].map(t => (
-            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
-              <span style={{ fontSize: 24 }}>{t.icon}</span>
-              <span style={{ fontSize: 11, color: C.muted, fontWeight: 500, lineHeight: 1.3 }}>{t.label}</span>
+            <div key={t.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+              <span style={{ fontSize: 12, color: C.muted, fontWeight: 600, lineHeight: 1.4 }}>{t.label}</span>
             </div>
           ))}
         </div>
@@ -5122,7 +5324,7 @@ Return ONLY this JSON (no markdown, no extra text):
       {/* Instructions */}
       <Card style={{ background: C.cardElevated }}>
         <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.7 }}>
-          💡 <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
+          Tip <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
         </div>
       </Card>
 
@@ -5137,8 +5339,8 @@ Return ONLY this JSON (no markdown, no extra text):
       <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
       <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%' }}>📸 Take Photo</Btn>
-        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%' }}>🖼 Upload Photo</Btn>
+        <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%' }}>Take Photo</Btn>
+        <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%' }}>Upload Photo</Btn>
       </div>
 
       {/* Scan History */}
@@ -5161,7 +5363,7 @@ Return ONLY this JSON (no markdown, no extra text):
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-                  {s.physiqueScore > 0 ? s.physiqueScore : '—'}/100
+                  {getReliableScore(s) || '—'}/100
                 </div>
               </div>
             )})}
@@ -5206,7 +5408,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
             {[
               { label: 'Body Fat', value: getBFDisplay(scan), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
               { label: 'Lean Mass', value: fmt.leanMass(scan.leanMass || 0, unitSystem), tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
-              { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
+              { label: 'Physique Score', value: `${getReliableScore(scan) || '—'}/100`, tone: C.white },
               { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
             ].map((m) => (
               <div key={m.label} style={{ background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }}>
@@ -5315,11 +5517,11 @@ const PlaceholderTab = ({ label, icon }) => (
 
 /* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
-  { key: 'home',      label: 'Home',      icon: '🏠' },
-  { key: 'nutrition', label: 'Nutrition', icon: '🥗' },
-  { key: 'scan',      label: 'Scan',      icon: '📸' },
-  { key: 'plan',      label: 'Plan',      icon: '📋' },
-  { key: 'profile',   label: 'Profile',   icon: '👤' },
+  { key: 'home',      label: 'Home',      icon: 'H' },
+  { key: 'nutrition', label: 'Nutrition', icon: 'N' },
+  { key: 'scan',      label: 'Scan',      icon: 'S' },
+  { key: 'plan',      label: 'Plan',      icon: 'P' },
+  { key: 'profile',   label: 'Profile',   icon: 'U' },
 ];
 
 /* ─── Mobile Tab Bar ─────────────────────────────────────────────────────── */
@@ -5354,7 +5556,7 @@ function TabBar({ active, setTab }) {
 
 /* ─── Desktop Sidebar ────────────────────────────────────────────────────── */
 function Sidebar({ active, setTab, profile }) {
-  const goalEmoji = { Cut: '📉', Bulk: '📈', Recomp: '🔄', Maintain: '⚖️' }[profile?.goal] || '🎯';
+  const goalLabel = profile?.goal || 'Maintain';
   return (
     <div className="desktop-sidebar" style={{
       width: 220, minHeight: '100dvh', background: '#101711',
@@ -5393,7 +5595,7 @@ function Sidebar({ active, setTab, profile }) {
         <div style={{ padding: '16px 20px 28px', borderTop: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.white, marginBottom: 6 }}>{profile.name || 'Athlete'}</div>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-            {goalEmoji} {profile.goal}
+            {goalLabel}
           </div>
         </div>
       )}
@@ -5511,16 +5713,21 @@ export default function MassIQ() {
             const fallbackName = persistedName || cached?.name || null;
             if (fallbackName) loadedProfile = { ...loadedProfile, name: fallbackName };
           }
+          const cachedUserId = localStorage.getItem(LS_KEYS.scanHistoryUser);
+          const cachedHistory = cachedUserId === userId ? LS.get(LS_KEYS.scanHistory, []) : [];
+          const mergedHistory = mergeScanHistories(cachedHistory, loadedScanHistory);
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
-          LS.set(LS_KEYS.scanHistory, loadedScanHistory);
+          LS.set(LS_KEYS.scanHistory, mergedHistory);
+          localStorage.setItem(LS_KEYS.scanHistoryUser, userId);
+          localStorage.setItem(LS.scopeMarker, userId);
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
-        if (mounted) setAuthError("We couldn't finish syncing your account. Please try again.");
+        if (mounted) setAuthError(null);
       } finally {
         if (mounted) setReady(true);
       }
@@ -5536,17 +5743,22 @@ export default function MassIQ() {
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
       if (!userId) return;
-      if (nextProfile) await upsertProfile(session.access_token, userId, nextProfile);
+      if (nextProfile) {
+        try { await upsertProfile(session.access_token, userId, nextProfile); }
+        catch (err) { console.error('[sync] profile upsert failed', err); }
+      }
       if (nextPlan) {
-        await upsertPlan(session.access_token, userId, nextPlan);
+        try { await upsertPlan(session.access_token, userId, nextPlan); }
+        catch (err) { console.error('[sync] plan upsert failed', err); }
       }
       if (Array.isArray(scanHistory) && scanHistory.length) {
         const latestScan = scanHistory[scanHistory.length - 1];
-        await createScan(session.access_token, userId, latestScan);
+        try { await createScan(session.access_token, userId, latestScan); }
+        catch (err) { console.error('[sync] scan create failed', err); }
       }
     } catch (err) {
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      showToast("We couldn't finish syncing your account. Please try again.");
+      // Non-blocking: keep local experience uninterrupted even if cloud sync fails.
     } finally {
       setSyncing(false);
     }
@@ -5650,7 +5862,29 @@ export default function MassIQ() {
     }
   };
 
-  const showToast = (msg) => setToast(msg);
+  const showToast = (msg) => {
+    const text = String(msg || '');
+    if (text.toLowerCase().includes("couldn't finish syncing your account")) {
+      setToast('Cloud sync delayed. Your local data is safe.');
+      return;
+    }
+    setToast(text);
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const checkout = url.searchParams.get('checkout');
+    if (!checkout) return;
+    if (checkout === 'success') {
+      showToast('Premium activation in progress...');
+    } else if (checkout === 'cancel') {
+      showToast('Checkout canceled.');
+    }
+    url.searchParams.delete('checkout');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+    setTab('home');
+  }, []);
 
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
@@ -5658,7 +5892,12 @@ export default function MassIQ() {
     return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
-  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  const profileComplete = Boolean(
+    profile
+    && profile.age != null
+    && profile.weightLbs != null
+    && profile.heightCm != null
+  );
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
