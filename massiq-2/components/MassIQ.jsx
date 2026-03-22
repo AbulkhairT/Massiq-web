@@ -6,6 +6,7 @@ import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
 import {
   initializeSession,
+  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
   signOut as signOutSession,
@@ -1835,6 +1836,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
   const completedCount  = focusItems.filter(i => i.met).length;
   const resolvedHistory = Array.isArray(scanHistory) && scanHistory.length ? scanHistory : LS.get(LS_KEYS.scanHistory, []);
+  const hasScan         = resolvedHistory.length > 0;
   const insight         = getHomeInsight(activePlan, resolvedHistory, macros, todayStats);
 
   /* Status line */
@@ -1914,7 +1916,6 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
       {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
       {(() => {
-        const hasScan   = resolvedHistory.length > 0;
         const lastScan  = resolvedHistory.slice(-1)[0] || null;
         const prevScan  = resolvedHistory.slice(-2)[0] || null;
         const currentBF = lastScan?.bodyFat  ?? null;
@@ -2178,7 +2179,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
             const traj       = activePlan.engineTrajectory;
             const weeksLeft  = traj?.timeline_weeks;
             const targetBF   = activePlan.targetBF ?? activePlan.bodyFat;
-            const currentBF  = currentBF;
+            const currentBF  = resolvedHistory.slice(-1)[0]?.bodyFat ?? null;
             const weeklyRate = traj?.weekly_change;
             if (!weeksLeft) return null;
             return (

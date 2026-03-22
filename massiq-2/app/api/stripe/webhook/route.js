@@ -98,16 +98,26 @@ function buildSubscriptionRow(sub, userId) {
  * Verifies the Stripe signature and syncs subscription state into Supabase.
  * This is the ONLY place premium entitlement is granted — never from the client.
  */
+/** GET /api/stripe/webhook — health-check so the route is never a 404 */
+export async function GET() {
+  return NextResponse.json({ ok: true, route: '/api/stripe/webhook' });
+}
+
 export async function POST(req) {
+  console.info('[stripe:webhook] POST received — processing...');
+
   const secretKey     = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!secretKey || !webhookSecret) {
+    console.error('[stripe:webhook] Missing env: STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET');
     return NextResponse.json({ error: 'Stripe env vars missing' }, { status: 500 });
   }
 
   const sig  = req.headers.get('stripe-signature');
   const body = await req.text();
+
+  console.info('[stripe:webhook] sig present:', !!sig, 'body length:', body.length);
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
