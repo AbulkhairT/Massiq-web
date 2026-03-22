@@ -109,7 +109,10 @@ function PremiumSuccessInner() {
     return () => { cancelledRef.current = true; };
   }, [stripeSession]);
 
-  const goToApp = () => router.push('/app');
+  const goToApp = () => {
+    try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
+    router.push('/app');
+  };
 
   const btnStyle = {
     background: C.green, color: '#0A0D0A', border: 'none',

@@ -151,27 +151,29 @@ function deserializePlan(row) {
   const phaseLabel = toPhaseLabel(row.phase);
   const macros = {
     calories: toNumber(row.calories, 2200),
-    protein: toNumber(row.protein, 160),
-    carbs: toNumber(row.carbs, 220),
-    fat: toNumber(row.fat, 65),
+    protein:  toNumber(row.protein,  160),
+    carbs:    toNumber(row.carbs,     220),
+    fat:      toNumber(row.fat,        65),
   };
   return {
-    phase: phaseLabel,
+    phase:     phaseLabel,
     phaseName: `${phaseLabel} Phase`,
     objective: '',
     macros,
     dailyTargets: {
       ...macros,
-      steps: 9000,
-      sleepHours: 8,
-      waterLiters: 3,
+      steps:               9000,
+      sleepHours:          8,
+      waterLiters:         3,
       trainingDaysPerWeek: 4,
-      cardioDays: 2,
+      cardioDays:          2,
     },
-    trainDays: 4,
-    targetBF:    toNumber(row.target_bf, null),
-    startBF:     toNumber(row.start_bf,  null),
-    createdAt: row.created_at || null,
+    trainDays:    4,
+    // target_bf and start_bf are NOT columns in the plans table.
+    // They are derived at UI-time from the activePlan or latest scan.
+    targetBF:     null,
+    startBF:      null,
+    createdAt:    row.created_at || null,
     sourceScanId: null,
   };
 }
@@ -225,16 +227,64 @@ function serializeScan(userId, scan) {
 }
 
 function deserializeScan(row) {
-  const ma  = row?.muscle_assessment || {};
-  const ctx = row?.scan_context      || {};
+  if (!row) return null;
+  const ma  = (row.muscle_assessment && typeof row.muscle_assessment === 'object')
+    ? row.muscle_assessment : {};
+  const ctx = (row.scan_context && typeof row.scan_context === 'object')
+    ? row.scan_context : {};
+
+  const bf = toNumber(row.body_fat, null);
+  // Reconstruct bodyFatRange from stored JSONB or derive from bf value
+  const bfRange = (ma.body_fat_range && typeof ma.body_fat_range === 'object')
+    ? ma.body_fat_range
+    : bf !== null
+      ? { low: Math.max(4, bf - 2), high: Math.min(55, bf + 2), midpoint: bf }
+      : null;
+
   return {
-    ...raw,
-    id: row?.id || raw.id,
-    date: raw.date || row?.created_at,
-    bodyFat: toNumber(row?.body_fat, toNumber(raw.bodyFat ?? raw.bodyFatPct, null)),
-    bodyFatPct: toNumber(row?.body_fat, toNumber(raw.bodyFatPct ?? raw.bodyFat, null)),
-    leanMass: toNumber(row?.lean_mass, toNumber(raw.leanMass, null)),
-    confidence: (typeof raw.confidence === 'string' ? raw.confidence : null) || toNumber(raw.confidence, 0.75),
+    // Identity
+    id:           row.id   || null,
+    date:         row.created_at ? row.created_at.slice(0, 10) : null,
+    savedAt:      row.created_at || null,
+
+    // Body composition — primary columns
+    bodyFat:      bf,
+    bodyFatPct:   bf,       // alias kept for UI compat
+    bodyFatRange: bfRange,
+    leanMass:     toNumber(row.lean_mass, null),
+
+    // Scores
+    physiqueScore:  toNumber(row.physique_score, null),
+    symmetryScore:  toNumber(row.symmetry_score, null),
+    confidence:     row.scan_confidence || 'medium',
+
+    // muscle_assessment JSONB — matches serializeScan field names
+    weakestGroups:             Array.isArray(ma.weakest_groups) ? ma.weakest_groups : [],
+    phase:                     ma.phase                       || null,
+    limitingFactor:            ma.limiting_factor             || null,
+    limitingFactorExplanation: ma.limiting_factor_explanation || null,
+    nutritionKeyChange:        ma.nutrition_key_change        || null,
+    recommendation:            ma.recommendation              || null,
+    isBaseline:                ma.is_baseline                 || false,
+    dailyTargets:              ma.daily_targets               || null,
+
+    // scan_context JSONB — matches scanContext construction in applyPlan
+    adaptationDecision:  ctx.adaptation?.decision  || null,
+    adaptationRationale: ctx.adaptation?.rationale || null,
+    scanComparison:      ctx.comparison            || null,
+    scoringBreakdown:    ctx.scoring_breakdown     || null,
+    ffmi:                ctx.ffmi                  || null,
+    imageHash:           ctx.image_hash            || null,
+    perceptualHash:      ctx.perceptual_hash       || null,
+
+    // Status / dedup columns
+    scanStatus:        row.scan_status          || 'complete',
+    duplicateOfScanId: row.duplicate_of_scan_id || null,
+    assetId:           row.asset_id             || null,
+    engineVersion:     row.engine_version        || null,
+
+    // Notes / assessment text
+    assessment:        row.scan_notes || ma.limiting_factor || null,
   };
 }
 
@@ -445,19 +495,26 @@ export async function createScan(token, userId, scan) {
   return result;
 }
 
+// All real columns in the scans table — verified against schema
+const SCAN_SELECT_COLS = [
+  'id', 'user_id', 'body_fat', 'lean_mass',
+  'physique_score', 'symmetry_score', 'scan_confidence',
+  'muscle_assessment', 'scan_notes', 'created_at',
+  'engine_version', 'scan_status', 'duplicate_of_scan_id',
+  'asset_id', 'scan_context',
+].join(',');
+
 export async function getScans(token, userId, limit = 25) {
   try {
-    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,raw_result,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+    const rows = await supabaseFetch(
+      `/rest/v1/scans?select=${SCAN_SELECT_COLS}&user_id=eq.${userId}&order=created_at.asc&limit=${limit}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    if (!Array.isArray(rows)) return [];
+    return rows.map(deserializeScan).filter(Boolean);
   } catch (err) {
-    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
-      method: 'GET',
-      headers: authHeaders(token),
-    });
-    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
+    console.warn('[getScans] failed:', err?.message);
+    return [];
   }
 }
 
@@ -566,9 +623,8 @@ export async function findSimilarAsset(token, userId, perceptualHash, threshold 
  * Given an asset id, find the most recent scan that references it.
  */
 export async function getScanByAssetId(token, assetId) {
-  const cols = 'id,user_id,body_fat,lean_mass,physique_score,symmetry_score,scan_confidence,muscle_assessment,scan_notes,created_at,engine_version,scan_status,duplicate_of_scan_id,asset_id,scan_context';
   const rows = await supabaseFetch(
-    `/rest/v1/scans?asset_id=eq.${assetId}&order=created_at.desc&limit=1&select=${cols}`,
+    `/rest/v1/scans?asset_id=eq.${assetId}&order=created_at.desc&limit=1&select=${SCAN_SELECT_COLS}`,
     { method: 'GET', headers: authHeaders(token) },
   );
   return Array.isArray(rows) && rows[0] ? deserializeScan(rows[0]) : null;

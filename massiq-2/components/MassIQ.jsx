@@ -6841,6 +6841,7 @@ export default function MassIQ() {
           LS.set(LS_KEYS.scanHistory, mergedHistory);
           localStorage.setItem(LS_KEYS.scanHistoryUser, userId);
           localStorage.setItem(LS.scopeMarker, userId);
+          setScanHistory(mergedHistory);
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
@@ -6853,8 +6854,36 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
+  // Detect return from premium success page and force a subscription refresh
+  useEffect(() => {
+    let cancelled = false;
+    const flag = (() => { try { return sessionStorage.getItem('massiq:premium-return'); } catch { return null; } })();
+    if (!flag || !session?.access_token) return;
+    try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+    const refreshSub = async () => {
+      const user = session.user || await fetchUser(session.access_token).catch(() => null);
+      const userId = user?.id;
+      if (!userId || cancelled) return;
+      // Poll up to 6×2s for the webhook to sync the subscription
+      for (let i = 0; i < 6 && !cancelled; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, 2000));
+        try {
+          const sub = await getSubscription(session.access_token, userId);
+          if (!cancelled) setSubscription(sub);
+          if (sub?.status === 'active' || sub?.status === 'trialing') break;
+        } catch { break; }
+      }
+    };
+    refreshSub();
+    return () => { cancelled = true; };
+  }, [session?.access_token]);
+
   // criticalProfile: when true the profile write failure is re-thrown instead of
   // swallowed. Used during onboarding so the Paywall can gate checkout on success.
+  //
+  // newScanEntry: when provided, saves this scan to the DB, updates scanHistory
+  // state + localStorage, and refreshes entitlements. Throws on scan save failure
+  // so the caller (applyPlan) can surface the error to the user.
   const persistUserState = async (nextProfile, nextPlan, newScanEntry = null, { criticalProfile = false } = {}) => {
     if (!session?.access_token) return;
     setSyncing(true);
@@ -6863,23 +6892,75 @@ export default function MassIQ() {
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
       if (!userId) return;
+
+      // Profile upsert — re-throw only when criticalProfile is set (onboarding/paywall gate)
       if (nextProfile) {
-        try { await upsertProfile(session.access_token, userId, nextProfile); }
-        catch (err) { console.error('[sync] profile upsert failed', err); }
+        try {
+          await upsertProfile(session.access_token, userId, nextProfile);
+          console.info('[sync] profile upsert: ok');
+        } catch (err) {
+          console.error('[sync] profile upsert failed', err);
+          if (criticalProfile) throw err;
+        }
       }
+
+      // Plan upsert — non-fatal (local plan is already applied)
       if (nextPlan) {
-        try { await upsertPlan(session.access_token, userId, nextPlan); }
-        catch (err) { console.error('[sync] plan upsert failed', err); }
+        try {
+          await upsertPlan(session.access_token, userId, nextPlan);
+          console.info('[sync] plan upsert: ok');
+        } catch (err) {
+          console.error('[sync] plan upsert failed', err);
+        }
       }
-      if (Array.isArray(scanHistory) && scanHistory.length) {
-        const latestScan = scanHistory[scanHistory.length - 1];
-        try { await createScan(session.access_token, userId, latestScan); }
-        catch (err) { console.error('[sync] scan create failed', err); }
+
+      // Scan insert — FATAL for the scan flow: re-throw so applyPlan can show error
+      if (newScanEntry) {
+        console.info('[sync] createScan: start', {
+          bodyFat: newScanEntry.bodyFat,
+          leanMass: newScanEntry.leanMass,
+          scanStatus: newScanEntry.scanStatus,
+        });
+        const savedScan = await createScan(session.access_token, userId, newScanEntry);
+        console.info('[sync] createScan: ok', { id: savedScan?.id });
+
+        // Build the canonical entry with the DB-issued id
+        const confirmedEntry = { ...newScanEntry, id: savedScan.id };
+
+        // Update localStorage and React state atomically
+        const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+        // Guard against duplicate appends (retry / double-submit)
+        const alreadyIn = currentHistory.some(
+          s => s.id === confirmedEntry.id
+            || (s.date === confirmedEntry.date && s.bodyFat === confirmedEntry.bodyFat)
+        );
+        if (!alreadyIn) {
+          const newHistory = [...currentHistory, confirmedEntry];
+          LS.set(LS_KEYS.scanHistory, newHistory);
+          localStorage.setItem(LS_KEYS.scanHistoryUser, userId);
+          setScanHistory(newHistory);           // ← update HomeTab immediately
+          console.info('[sync] scanHistory updated in state + LS', { length: newHistory.length });
+        }
+
+        // Refresh entitlements so the scan counter is correct
+        try {
+          const ent = await getEntitlements(session.access_token, userId);
+          if (ent) {
+            setEntitlements(ent);
+            console.info('[sync] entitlements refreshed', {
+              free_scans_used: ent.free_scans_used,
+              free_scan_limit: ent.free_scan_limit,
+            });
+          }
+        } catch (entErr) {
+          console.warn('[sync] entitlements refresh failed (non-fatal):', entErr?.message);
+        }
       }
 
     } catch (err) {
-      console.error('Persist failed (original Supabase error):', err?.message || err, err);
-      // Non-blocking: keep local experience uninterrupted even if cloud sync fails.
+      console.error('[sync] persistUserState failed:', err?.message || err);
+      // Re-throw so scan saves surface as errors; profile/plan failures are non-blocking.
+      if (newScanEntry) throw err;
     } finally {
       setSyncing(false);
     }
