@@ -1,12 +1,15 @@
 "use client";
 import { useState, useEffect, useRef, useMemo, Component } from "react";
+import { Icon } from './Icon';
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan }    from '../lib/content/meals';
 import {
   initializeSession,
+  getStoredSession,
   signInWithPassword,
   signUpWithPassword,
+  requestPasswordReset,
   signOut as signOutSession,
   fetchUser,
   upsertProfile,
@@ -15,7 +18,18 @@ import {
   getPlan,
   createScan,
   getScans,
+  createProjection,
+  uploadScanPhoto,
+  createScanAsset,
+  findAssetBySha256,
+  findSimilarAsset,
+  getScanByAssetId,
+  getSubscription,
+  getEntitlements,
 } from '../lib/supabase/client';
+import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
+import { computeAdaptation } from '../lib/engine/adaptation';
+import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT } from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -38,13 +52,15 @@ const C = {
 
 /* ─── Global CSS ─────────────────────────────────────────────────────────── */
 const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800;1,14..32,300..800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;background:${C.bg}}
   ::-webkit-scrollbar{display:none}
   body{
-    font-family:'Inter',sans-serif;color:${C.white};-webkit-font-smoothing:antialiased;
-    text-rendering:optimizeLegibility;letter-spacing:-0.01em;
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;
+    color:${C.white};-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;letter-spacing:-0.015em;
+    font-feature-settings:'cv02','cv03','cv04','cv11';
   }
   @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -733,6 +749,21 @@ function sanitizeScanData(scan, profile) {
   const confidence = ['low', 'medium', 'high'].includes(scan.bodyFatConfidence || scan.confidence)
     ? (scan.bodyFatConfidence || scan.confidence)
     : 'medium';
+  // Deterministic scoring — replaces raw Claude clamping
+  // Claude's visual estimate is one component (visualAssessment), not the whole score.
+  const heightCm = profile?.heightCm || (profile?.heightIn ? Math.round(Number(profile.heightIn) * 2.54) : 170);
+  const claudeRawScore    = Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60);
+  const claudeRawSymmetry = Number(scan.symmetryScore || 75);
+  const scored = computePhysiqueScore({
+    bodyFatPct,
+    leanMassLbs:    leanMass,
+    heightCm,
+    gender:         profile?.gender || 'Male',
+    claudeScore:    claudeRawScore,
+    claudeSymmetry: claudeRawSymmetry,
+    confidence,
+  });
+
   return {
     ...scan,
     bodyFatPct: Number(bodyFatPct.toFixed(1)),
@@ -741,8 +772,11 @@ function sanitizeScanData(scan, profile) {
     bodyFatReasoning: scan.bodyFatReasoning || '',
     leanMass: Number(leanMass.toFixed(1)),
     leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
-    physiqueScore: Math.min(95, Math.max(30, Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60))),
-    symmetryScore: Math.min(95, Math.max(60, Number(scan.symmetryScore || 75))),
+    physiqueScore:    scored.physiqueScore,
+    symmetryScore:    scored.symmetryScore,
+    ffmi:             scored.ffmi,
+    scoringBreakdown: scored.breakdown,
+    scoringVersion:   SCORING_VERSION,
     symmetryDetails: scan.symmetryDetails || '',
     confidence,
     limitingFactor: scan.limitingFactor || '',
@@ -841,11 +875,25 @@ async function generateDailyTip(profile, activePlan, todayMeals) {
   return getDailyTip(profile.goal, { calories: m.calories||2000, protein: m.protein||150 }, eaten, new Date().getDay());
 }
 
-async function generatePatterns(profile, activePlan) {
+async function generatePatterns(profile, activePlan, latestScan = null) {
   // Synchronous — no LLM call. Returns same shape as previous Claude version.
   const m         = getActiveTargets(activePlan, profile);
   const trainDays = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  const insights  = buildInsights(profile, { calories: m.calories||2000, protein: m.protein||150 }, trainDays, null);
+
+  // Reconstruct engineOutput shape from data saved on the activePlan at scan time.
+  // This ensures insights reflect the actual diagnosis from the user's latest scan.
+  const engineOutput = activePlan?.engineDiagnosis ? {
+    diagnosis:  activePlan.engineDiagnosis,
+    physio:     { tdee: activePlan.tdee ?? null },
+    trajectory: activePlan.engineTrajectory ?? null,
+  } : null;
+
+  const insights = buildInsights(
+    { goal: profile.goal, activity: profile.activity || 'Moderate' },
+    { calories: m.calories || 2000, protein: m.protein || 150 },
+    trainDays,
+    engineOutput,
+  );
   return { insights };
 }
 
@@ -1082,7 +1130,7 @@ function CountUp({ target, unit }) {
   return <span>{val}<span style={{ fontSize: 14, color: C.muted, marginLeft: 4 }}>{unit}</span></span>;
 }
 
-function Onboarding({ onComplete }) {
+function Onboarding({ onComplete, currentUserId }) {
   const [step,     setStep]     = useState(0);
   const [visible,  setVisible]  = useState(true);   // for fade animation
   const [calcDone, setCalcDone] = useState(false);   // step 7 auto-advance done
@@ -1123,6 +1171,11 @@ function Onboarding({ onComplete }) {
   useEffect(() => {
     const saved = LS.get(LS_KEYS.profile, null);
     if (!saved) return;
+    // Skip pre-fill if the cache belongs to a different user
+    if (saved.id && currentUserId && saved.id !== currentUserId) {
+      console.info('[onboarding] skipping pre-fill — cached profile is for different user', { cached: saved.id, current: currentUserId });
+      return;
+    }
     const inches = saved.heightCm ? saved.heightCm / 2.54 : (saved.heightIn || 0);
     setData((p) => ({
       ...p,
@@ -1710,8 +1763,229 @@ function getHomeInsight(activePlan, scanHistory, macros, todayStats) {
   return null;
 }
 
+/* ─── Premium Gate + Paywall ─────────────────────────────────────────────────
+   Central gating layer. Use <PremiumGate> to wrap any premium-only section.
+   Pass onUpgrade to open the paywall from any locked teaser card.
+────────────────────────────────────────────────────────────────────────────── */
+
+const FEATURE_COPY = {
+  [FEATURES.SCAN_COMPARISON]:    { title: 'See What Actually Changed',    desc: 'Every scan shows precise before/after deltas — body fat lost, lean mass gained, score shift. Know if your effort is working.' },
+  [FEATURES.PROJECTIONS]:        { title: 'Your Timeline to the Goal',    desc: 'Based on your actual scan pace, Premium calculates how many weeks to reach your target body fat. No guessing.' },
+  [FEATURES.ADAPTIVE_PLAN]:      { title: 'Macros That Update With You',  desc: 'After each scan, your calorie and protein targets automatically adjust to what your body actually needs right now.' },
+  [FEATURES.DECISION_LOG]:       { title: 'Why Your Plan Changed',        desc: 'Every macro update comes with a specific reason — plateau detected, pace off target, lean mass shift. Full transparency.' },
+  [FEATURES.CORRECTIONS]:        { title: 'Fix the Weakest Links',        desc: 'Premium identifies muscle imbalances from your scan and gives you specific protocol adjustments to correct them.' },
+  [FEATURES.PREMIUM_INSIGHTS]:   { title: 'Deeper Body Composition Data', desc: 'FFMI, scoring breakdown, and composition analytics beyond body fat — for users who want the full picture.' },
+  [FEATURES.TREND_ANALYSIS]:     { title: 'Track Progress Over Time',     desc: 'See how your body fat, lean mass, and physique score are trending week over week across all your scans.' },
+  [FEATURES.WORKOUT_ADJUSTMENTS]:{ title: 'Training Adjusts to Your Scan',desc: 'When scan results show a plateau or imbalance, your training volume and priority areas update automatically.' },
+};
+
+function PremiumGate({ feature, subscription, onUpgrade, children }) {
+  if (hasFeature(subscription, feature)) return children;
+
+  const copy = FEATURE_COPY[feature] || { title: 'Premium Feature', desc: 'Upgrade to MassIQ Premium to unlock this.' };
+
+  return (
+    <div style={{
+      borderRadius: 18, border: `1px solid rgba(114,184,149,0.18)`,
+      background: 'rgba(114,184,149,0.04)', padding: '20px 18px',
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{
+          width: 22, height: 22, borderRadius: '50%', background: 'rgba(114,184,149,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <Icon name="lock" size={11} color={C.green} strokeWidth={2.5} />
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.green, textTransform: 'uppercase' }}>Premium</span>
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.white }}>{copy.title}</div>
+      <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{copy.desc}</div>
+      <button
+        className="bp"
+        onClick={onUpgrade}
+        style={{
+          marginTop: 4, background: C.green, color: '#0A0D0A', border: 'none',
+          padding: '10px 20px', borderRadius: 99, fontSize: 13, fontWeight: 700,
+          cursor: 'pointer', alignSelf: 'flex-start',
+        }}
+      >
+        Unlock Premium →
+      </button>
+    </div>
+  );
+}
+
+// persistGate — a React ref whose .current holds the Promise from the initial
+// onboarding profile write. The Paywall awaits it before opening Stripe so that
+// we NEVER navigate away while a DB write is still in flight (which would cause
+// the browser to cancel it, leaving an incomplete profile in the DB and routing
+// the user back into onboarding on return from checkout).
+function Paywall({ userId, accessToken, onClose, persistGate }) {
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  const handleUpgrade = async () => {
+    // Client-side auth guard — prevents hitting the API without a valid session
+    if (!userId || !accessToken) {
+      setError('Please sign in to continue.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+
+    // ── Persist gate ─────────────────────────────────────────────────────────
+    // If an onboarding profile write is still in flight, wait for it to finish
+    // before we navigate to Stripe. This is the source-level fix for the bug
+    // where `window.location.href` cancelled the in-flight write.
+    const pendingSync = persistGate?.current;
+    if (pendingSync) {
+      console.info('[paywall] awaiting onboarding profile sync before checkout…');
+      try {
+        await pendingSync;
+        persistGate.current = null;  // consumed — clear for future opens
+        console.info('[paywall] profile sync complete — proceeding to checkout');
+      } catch (syncErr) {
+        console.error('[paywall] profile sync failed — blocking checkout', syncErr);
+        setError('Your profile could not be saved. Check your connection and try again before upgrading.');
+        setLoading(false);
+        return;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const { url, error: apiErr } = await res.json();
+      if (apiErr) throw new Error(apiErr);
+      if (url) window.location.href = url;
+    } catch (err) {
+      setError(err.message || 'Could not start checkout. Please try again.');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 400,
+      background: 'rgba(6,10,7,0.92)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+      display: 'flex', alignItems: 'flex-end', padding: 0,
+    }}>
+      <div style={{
+        width: '100%', maxWidth: 520, margin: '0 auto',
+        background: '#111811', borderRadius: '28px 28px 0 0',
+        border: '1px solid rgba(255,255,255,0.1)', borderBottom: 'none',
+        padding: '28px 24px max(28px, env(safe-area-inset-bottom))',
+        maxHeight: '92dvh', overflowY: 'auto',
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 6 }}>
+              MassIQ Premium
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 900, color: C.white, lineHeight: 1.15 }}>
+              Your scan data<br />should drive decisions.
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="bp"
+            style={{
+              width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.06)',
+              border: '1px solid rgba(255,255,255,0.1)', color: C.muted, fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            }}
+          >×</button>
+        </div>
+
+        {/* Subheadline */}
+        <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
+          Free shows you where you are. Premium tells you exactly what to do next — and updates your plan as you progress.
+        </div>
+
+        {/* 3 core outcome blocks */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 28 }}>
+          {[
+            {
+              icon: 'rotate',
+              label: 'Macros that adapt after every scan',
+              desc: 'Stop guessing. After each scan, your calorie and protein targets update automatically based on what your body actually shows.',
+            },
+            {
+              icon: 'clock',
+              label: 'Know how many weeks to your goal',
+              desc: 'Premium calculates your timeline to target body fat based on your actual pace — not generic estimates.',
+            },
+            {
+              icon: 'bolt',
+              label: 'See exactly what changed and why',
+              desc: 'Scan-to-scan comparison with precise deltas. Understand whether you\'re progressing, plateauing, or need a correction.',
+            },
+          ].map(b => (
+            <div key={b.label} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 14,
+              background: 'rgba(114,184,149,0.05)', border: '1px solid rgba(114,184,149,0.12)',
+              borderRadius: 16, padding: '14px 16px',
+            }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon name={b.icon} size={17} color={C.green} strokeWidth={1.8} />
+              </div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 4, lineHeight: 1.3 }}>{b.label}</div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{b.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        {error && (
+          <div style={{ fontSize: 12, color: '#FFB4B7', marginBottom: 12, padding: '10px 12px', background: 'rgba(255,90,95,0.08)', borderRadius: 10 }}>
+            {error}
+          </div>
+        )}
+        <button
+          onClick={handleUpgrade}
+          disabled={loading}
+          style={{
+            width: '100%', background: loading ? 'rgba(114,184,149,0.5)' : C.green,
+            color: '#0A0D0A', border: 'none', padding: '16px', borderRadius: 99,
+            fontSize: 16, fontWeight: 800, cursor: loading ? 'default' : 'pointer', marginBottom: 12,
+          }}
+        >
+          {loading ? 'Loading…' : 'Upgrade to Premium'}
+        </button>
+        <button
+          onClick={onClose}
+          className="bp"
+          style={{
+            width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 14, color: C.dimmed, padding: '8px', marginBottom: 8,
+          }}
+        >
+          Continue with free
+        </button>
+        <div style={{ textAlign: 'center', fontSize: 11, color: C.dimmed }}>
+          Cancel anytime · No hidden charges
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function HomeTab({ profile, activePlan, setTab, showToast }) {
+function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade }) {
   const today      = new Date().toISOString().slice(0, 10);
   const macros     = getActiveTargets(activePlan, profile);
   const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
@@ -1751,19 +2025,20 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
     },
   ];
 
-  const completedCount = focusItems.filter(i => i.met).length;
-  const scanHistory    = LS.get(LS_KEYS.scanHistory, []);
-  const insight        = getHomeInsight(activePlan, scanHistory, macros, todayStats);
+  const completedCount  = focusItems.filter(i => i.met).length;
+  const resolvedHistory = Array.isArray(scanHistory) && scanHistory.length ? scanHistory : LS.get(LS_KEYS.scanHistory, []);
+  const hasScan         = resolvedHistory.length > 0;
+  const insight         = getHomeInsight(activePlan, resolvedHistory, macros, todayStats);
 
   /* Status line */
   const statusText = !activePlan
     ? 'Start your first scan'
     : completedCount === focusItems.length ? 'All goals hit today'
     : completedCount >= 2               ? "You're on track"
-    : getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'warn'
+    : getTrajectoryStatus(resolvedHistory, activePlan?.phase).tone === 'warn'
                                         ? 'Needs attention today'
     : "Let's get going";
-  const statusGood = activePlan && (completedCount >= 2 || getTrajectoryStatus(scanHistory, activePlan?.phase).tone === 'good');
+  const statusGood = activePlan && (completedCount >= 2 || getTrajectoryStatus(resolvedHistory, activePlan?.phase).tone === 'good');
 
   /* Insight action pills — context-aware navigation */
   const insightActions = (() => {
@@ -1832,9 +2107,8 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
 
       {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
       {(() => {
-        const hasScan   = scanHistory.length > 0;
-        const lastScan  = scanHistory.slice(-1)[0] || null;
-        const prevScan  = scanHistory.slice(-2)[0] || null;
+        const lastScan  = resolvedHistory.slice(-1)[0] || null;
+        const prevScan  = resolvedHistory.slice(-2)[0] || null;
         const currentBF = lastScan?.bodyFat  ?? null;
         const phase     = activePlan?.phase ?? null;
         const targetBF  = phase === 'Maintain'
@@ -1844,6 +2118,61 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const leanMassLbs = lastScan?.leanMass ?? null;
         const symmetry  = lastScan?.symmetryScore ?? null;
         const phaseColor = phase === 'Cut' ? C.orange : phase === 'Bulk' ? C.blue : C.green;
+
+        /* ── STATE A: No scans yet — render polished pre-scan hero ── */
+        if (!hasScan) {
+          const freeLeft = scansRemaining(subscription, resolvedHistory, entitlements);
+          const isPremium = isPremiumActive(subscription);
+          return (
+            <div style={{
+              borderRadius: 22,
+              background: '#0D1810',
+              border: '1px solid rgba(255,255,255,0.07)',
+              overflow: 'hidden',
+            }}>
+              {/* Header */}
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '14px 18px 12px',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: C.dimmed }} />
+                  <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '.1em', color: C.dimmed }}>
+                    BODY SCAN
+                  </span>
+                </div>
+                {!isPremium && freeLeft > 0 && (
+                  <span style={{ fontSize: 11, color: C.dimmed }}>
+                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} included
+                  </span>
+                )}
+                {!isPremium && freeLeft <= 0 && (
+                  <button className="bp" onClick={onUpgrade} style={{
+                    fontSize: 11, fontWeight: 700, color: C.green, background: 'none',
+                    border: 'none', cursor: 'pointer', padding: 0,
+                  }}>Upgrade →</button>
+                )}
+              </div>
+
+              {/* Pre-scan content */}
+              <div style={{ padding: '24px 18px 22px' }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 8, lineHeight: 1.2 }}>
+                  Complete your first body scan
+                </div>
+                <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 22 }}>
+                  Your target body fat, timeline, and next-step plan will appear after your first scan.
+                </div>
+                <button className="bp" onClick={() => setTab('scan')} style={{
+                  background: C.green, color: '#0A0D0A', border: 'none',
+                  padding: '13px 28px', borderRadius: 99, fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                }}>
+                  Start first scan →
+                </button>
+              </div>
+            </div>
+          );
+        }
 
         /* progress toward target: 0→1 */
         const bfProgress = (startBF != null && targetBF != null && startBF !== targetBF && currentBF != null)
@@ -1926,12 +2255,18 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  {hasScan && <span style={{ fontSize: 18, color: C.dimmed }}>→</span>}
+                  <span style={{ fontSize: 18, color: C.dimmed }}>→</span>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 4 }}>Target</div>
-                    <div style={{ fontSize: 38, fontWeight: 900, color: hasScan ? C.green : 'rgba(255,255,255,0.18)', lineHeight: 1 }}>
-                      {targetBF != null ? `${targetBF}%` : '--'}
-                    </div>
+                    {targetBF != null ? (
+                      <div style={{ fontSize: 38, fontWeight: 900, color: C.green, lineHeight: 1 }}>
+                        {targetBF}%
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.dimmed, lineHeight: 1.2, marginTop: 6 }}>
+                        Pending
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1957,9 +2292,9 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
               borderBottom: `1px solid rgba(255,255,255,0.06)`,
             }}>
               {[
-                { label: 'LEAN MASS',  value: leanMassLbs != null ? `${leanMassLbs} lb` : '--', color: C.blue },
-                { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '--', color: C.purple },
-                { label: 'PHASE',      value: phase ?? '--',                                     color: phaseColor },
+                { label: 'LEAN MASS',  value: leanMassLbs != null ? fmt.leanMass(leanMassLbs, profile?.unitSystem) : '—', color: C.blue },
+                { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '—', color: C.purple },
+                { label: 'PHASE',      value: phase ?? '—',                                     color: phaseColor },
               ].map((s, i) => (
                 <div key={s.label} style={{
                   padding: '12px 0', textAlign: 'center',
@@ -2023,6 +2358,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
                           </span>
                         )}
                       </div>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: r.color }}>{r.now}{r.unit}</span>
                     </div>
                   ))}
                 </div>
@@ -2054,8 +2390,102 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         );
       })()}
 
+      {/* ══ PREMIUM: Adaptation Insight ══════════════════════════════════════ */}
+      {hasScan && (
+        <PremiumGate feature={FEATURES.DECISION_LOG} subscription={subscription} onUpgrade={onUpgrade}>
+          {(() => {
+            const latestScan = resolvedHistory[resolvedHistory.length - 1];
+            const decision   = latestScan?.adaptationDecision;
+            const rationale  = latestScan?.adaptationRationale;
+            const cmp        = latestScan?.scanComparison;
+            if (!decision) return null;
+
+            const decisionLabel = {
+              keep_plan:            { label: 'On Track',            color: C.green,  icon: 'check' },
+              reduce_calories:      { label: 'Reduce Surplus',      color: C.orange, icon: 'arrow-down' },
+              increase_protein:     { label: 'Protein Needs Boost', color: C.blue,   icon: 'arrow-up' },
+              flag_plateau:         { label: 'Plateau Detected',    color: C.gold || '#FFD600', icon: 'warning' },
+              aggressive_deficit:   { label: 'Too Aggressive',      color: C.red || '#FF5A5F', icon: 'warning' },
+              bulk_pace_too_fast:   { label: 'Slowing Fat Gain',    color: C.orange, icon: 'arrow-down' },
+              low_confidence_rescan:{ label: 'Rescan Needed',       color: C.muted,  icon: 'scan' },
+              duplicate_reused:     { label: 'Duplicate Photo',     color: C.dimmed, icon: 'copy' },
+            }[decision] || { label: decision, color: C.muted, icon: 'bolt' };
+
+            return (
+              <Card style={{ background: '#0E1A12', border: `1px solid rgba(114,184,149,0.18)` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%', background: decisionLabel.color, flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: decisionLabel.color, textTransform: 'uppercase' }}>
+                    Adaptation · {decisionLabel.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 14, color: C.white, lineHeight: 1.6, marginBottom: cmp ? 14 : 0 }}>
+                  {rationale}
+                </div>
+                {cmp && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    {[
+                      { label: 'BF Change',    value: `${cmp.bf_delta > 0 ? '+' : ''}${cmp.bf_delta}%`,    color: cmp.bf_delta <= 0 ? C.green : C.orange },
+                      { label: 'Lean Mass',    value: `${cmp.lm_delta_lbs >= 0 ? '+' : ''}${cmp.lm_delta_lbs} lb`, color: cmp.lm_delta_lbs >= 0 ? C.green : C.orange },
+                      { label: 'Score',        value: `${cmp.score_delta >= 0 ? '+' : ''}${cmp.score_delta}`, color: cmp.score_delta >= 0 ? C.green : C.orange },
+                    ].map(m => (
+                      <div key={m.label} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '8px 10px', textAlign: 'center' }}>
+                        <div style={{ fontSize: 9, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>{m.label}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: m.color }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+        </PremiumGate>
+      )}
+
+      {/* ══ PREMIUM: Goal Timeline ════════════════════════════════════════════ */}
+      {hasScan && activePlan?.engineTrajectory && (
+        <PremiumGate feature={FEATURES.PROJECTIONS} subscription={subscription} onUpgrade={onUpgrade}>
+          {(() => {
+            const traj       = activePlan.engineTrajectory;
+            const weeksLeft  = traj?.timeline_weeks;
+            const targetBF   = activePlan.targetBF ?? activePlan.bodyFat;
+            const currentBF  = resolvedHistory.slice(-1)[0]?.bodyFat ?? null;
+            const weeklyRate = traj?.weekly_change;
+            if (!weeksLeft) return null;
+            return (
+              <Card style={{ background: '#0E1A12', border: `1px solid rgba(114,184,149,0.18)` }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.green, textTransform: 'uppercase', marginBottom: 10 }}>
+                  Goal Timeline
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 36, fontWeight: 900, color: C.white, lineHeight: 1 }}>
+                      {Math.max(1, Math.round(weeksLeft))}
+                    </div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>weeks to target</div>
+                  </div>
+                  {targetBF != null && (
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 10, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 3 }}>Target BF</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{targetBF}%</div>
+                    </div>
+                  )}
+                </div>
+                {weeklyRate && (
+                  <div style={{ fontSize: 12, color: C.muted, borderTop: `1px solid rgba(255,255,255,0.06)`, paddingTop: 10 }}>
+                    Expected pace: <span style={{ color: C.white, fontWeight: 600 }}>{Math.abs(weeklyRate).toFixed(2)}% BF / week</span>
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+        </PremiumGate>
+      )}
+
       {/* ══ TODAY'S FOCUS (only after first scan) ════════════════════════════ */}
-      {activePlan && scanHistory.length > 0 && (
+      {activePlan && resolvedHistory.length > 0 && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
@@ -2128,7 +2558,7 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
 
 
       {/* ══ YOUR PATTERNS ════════════════════════════════════════════════════ */}
-      {activePlan && <AIPatterns profile={profile} activePlan={activePlan} />}
+      {activePlan && <AIPatterns profile={profile} activePlan={activePlan} scanHistory={scanHistory} />}
 
       {/* Hidden camera input */}
       <input
@@ -3261,7 +3691,7 @@ function getWeeklyPriorities(profile, targets, plan) {
   return [p1, p2, p3];
 }
 
-function PlanTab({ profile, activePlan, setTab, showToast }) {
+function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgrade }) {
   const weekKey = getWeekKey();
   const [openSections,  setOpenSections]  = useState(() => new Set(['week', 'focus']));
   const [workoutPage,   setWorkoutPage]   = useState(() => {
@@ -3372,8 +3802,8 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
     const d = new Date(startDate); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10);
   })();
   const daysLeft   = Math.max(0, daysBetween(today, nextScanDate));
-  const startBF    = activePlan.startBF || activePlan.bodyFat || 18;
-  const targetBF   = activePlan.targetBF || (phase === 'Cut' ? startBF - 4 : phase === 'Bulk' ? startBF + 1 : startBF);
+  const startBF    = activePlan.startBF ?? null;
+  const targetBF   = activePlan.targetBF ?? null;
   const trainDays  = activePlan.trainDays || 4;
   const cardioDays = activePlan.cardioDays || 2;
   const sleepHrs   = activePlan.sleepHrs || 8;
@@ -3415,7 +3845,7 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         </div>
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>
           {daysLeft > 0 ? `${daysLeft} days remaining` : 'Final week'}
-          {latestScan ? ` \u00b7 ${getBFDisplay(latestScan)} \u2192 ${targetBF}%` : ''}
+          {latestScan && targetBF != null ? ` \u00b7 ${getBFDisplay(latestScan)} \u2192 ${targetBF}%` : ''}
         </div>
         <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
           <div style={{
@@ -3450,6 +3880,28 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
           </div>
         )}
       </div>
+
+      {/* ══ PREMIUM: Why this plan ══════════════════════════════════════ */}
+      <PremiumGate feature={FEATURES.ADAPTIVE_PLAN} subscription={subscription} onUpgrade={onUpgrade}>
+        {latestScan?.adaptationDecision ? (
+          <div style={{ background: '#0E1A12', borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(114,184,149,0.2)` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.green, textTransform: 'uppercase', marginBottom: 10 }}>
+              Why this plan
+            </div>
+            <div style={{ fontSize: 14, color: C.white, lineHeight: 1.65, marginBottom: latestScan.scanComparison ? 14 : 0 }}>
+              {latestScan.adaptationRationale || 'Plan is based on your latest scan results.'}
+            </div>
+            {latestScan.scanComparison?.pace_vs_expected && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(114,184,149,0.1)', borderRadius: 99, padding: '5px 12px', marginTop: 4 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: latestScan.scanComparison.pace_vs_expected === 'on_track' ? C.green : C.orange }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: latestScan.scanComparison.pace_vs_expected === 'on_track' ? C.green : C.orange }}>
+                  {latestScan.scanComparison.pace_vs_expected === 'on_track' ? 'Pace: on track' : latestScan.scanComparison.pace_vs_expected === 'ahead' ? 'Pace: ahead' : 'Pace: behind'}
+                </span>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </PremiumGate>
 
       {/* ══ 3. FOCUS ════════════════════════════════════════════════════ */}
       <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
@@ -3807,6 +4259,66 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
         );
       })()}
 
+      {/* ── Symmetry & Balance Suggestions ── */}
+      {(() => {
+        const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0];
+        const weakGroups = latestScan?.weakestGroups || [];
+        if (weakGroups.length === 0) return null;
+
+        const SYMMETRY_EXERCISES = {
+          chest: [{ name: 'Single-Arm Cable Fly', sets: '3', reps: '12–15', note: 'Isolates each side independently' }, { name: 'Dumbbell Press', sets: '4', reps: '8–12', note: 'Expose left/right imbalances' }],
+          shoulders: [{ name: 'Single-Arm Lateral Raise', sets: '3', reps: '15', note: 'Correct shoulder height imbalance' }, { name: 'Cable Face Pull', sets: '3', reps: '15–20', note: 'Rear delt and rotator balance' }],
+          back: [{ name: 'Single-Arm Dumbbell Row', sets: '4', reps: '10–12', note: 'Match rep quality both sides' }, { name: 'Lat Pulldown (neutral grip)', sets: '3', reps: '10–12', note: 'Bilateral engagement check' }],
+          arms: [{ name: 'Alternating Dumbbell Curl', sets: '3', reps: '12 each', note: 'Identify strength gap between arms' }, { name: 'Single-Arm Tricep Pushdown', sets: '3', reps: '12–15', note: 'Equalise tricep volume' }],
+          core: [{ name: 'Pallof Press', sets: '3', reps: '12 each side', note: 'Anti-rotation for core symmetry' }, { name: 'Copenhagen Plank', sets: '3', reps: '20s each', note: 'Adductor and hip balance' }],
+          legs: [{ name: 'Bulgarian Split Squat', sets: '4', reps: '8–10 each', note: 'Expose quad/glute imbalance' }, { name: 'Single-Leg Press', sets: '3', reps: '10–12', note: 'Match load both legs' }],
+        };
+
+        const suggestions = weakGroups.slice(0, 3).flatMap(g => {
+          const key = String(g).toLowerCase().replace(/[^a-z]/g, '');
+          return (SYMMETRY_EXERCISES[key] || []).slice(0, 2).map(ex => ({ ...ex, group: g }));
+        });
+
+        if (suggestions.length === 0) return null;
+
+        const symScore = latestScan?.symmetryScore;
+        return (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 600 }}>
+                Symmetry corrections
+              </span>
+              {symScore != null && (
+                <span style={{ fontSize: 12, color: C.purple, fontWeight: 700 }}>{symScore}/100</span>
+              )}
+            </div>
+            <div style={{ borderRadius: 16, background: C.cardElevated, border: `1px solid rgba(255,255,255,0.07)`, overflow: 'hidden' }}>
+              <div style={{ padding: '12px 16px', borderBottom: `1px solid rgba(255,255,255,0.05)`, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {weakGroups.slice(0, 3).map(g => (
+                  <span key={g} style={{ fontSize: 11, color: C.orange, background: 'rgba(255,140,0,0.08)',
+                    padding: '3px 10px', borderRadius: 99, border: '1px solid rgba(255,140,0,0.15)', fontWeight: 600, textTransform: 'capitalize' }}>
+                    {g}
+                  </span>
+                ))}
+              </div>
+              {suggestions.map((ex, i) => (
+                <div key={`${ex.name}-${i}`} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '10px 16px',
+                  borderBottom: i < suggestions.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none',
+                }}>
+                  <div>
+                    <div style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{ex.name}</div>
+                    {ex.note && <div style={{ fontSize: 11, color: C.dimmed, marginTop: 1 }}>{ex.note}</div>}
+                  </div>
+                  <span style={{ fontSize: 13, color: C.muted, fontWeight: 600, flexShrink: 0, marginLeft: 12 }}>{ex.sets}×{ex.reps}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* selectedMeal modal */}
       {selectedMeal && (
         <RecipeModal
@@ -3888,17 +4400,19 @@ function PhysiqueChart({ scans }) {
 }
 
 /* ─── AI Patterns ─────────────────────────────────────────────────────────── */
-function AIPatterns({ profile, activePlan }) {
-  // Cache key includes protein so stale values auto-invalidate when targets change
+function AIPatterns({ profile, activePlan, scanHistory }) {
+  const latestScan = Array.isArray(scanHistory) && scanHistory.length ? scanHistory[scanHistory.length - 1] : null;
+  // Cache key includes protein AND latest scan date so patterns regenerate after each new scan
   const m        = getActiveTargets(activePlan, profile);
-  const cacheKey = `massiq:patterns:p${m.protein}`;
+  const scanDate = latestScan?.date || latestScan?.savedAt || '';
+  const cacheKey = `massiq:patterns:p${m.protein}:s${scanDate}`;
   const isStale  = (() => { const c = LS.get(cacheKey, null); return !c || (Date.now() - (c.ts||0) > 7*24*3600*1000); })();
   const [insights, setInsights] = useState(() => isStale ? null : LS.get(cacheKey, null)?.insights);
   const [loading,  setLoading]  = useState(isStale);
   useEffect(() => {
     if (!loading) return;
     let ok = true;
-    generatePatterns(profile, activePlan)
+    generatePatterns(profile, activePlan, latestScan)
       .then(data => {
         if (!ok) return;
         const arr = data.insights || [];
@@ -3908,7 +4422,7 @@ function AIPatterns({ profile, activePlan }) {
       })
       .catch(err => { console.error('Patterns failed:', err); if (ok) setLoading(false); });
     return () => { ok = false; };
-  }, []);
+  }, [cacheKey]);
 
   return (
     <div className="su" style={{ animationDelay: '.10s' }}>
@@ -3951,11 +4465,14 @@ function AIPatterns({ profile, activePlan }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLogout, showToast, onUpdateUnits }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade }) {
   const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmDeleteHistory, setConfirmDeleteHistory] = useState(false);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
+  const [deleteHistoryBusy, setDeleteHistoryBusy] = useState(false);
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
   const [selectedScan, setSelectedScan] = useState(null);
   const [reminders, setReminders] = useState(() => LS.get(LS_KEYS.reminders, {
     workout: { enabled: true, time: '17:30' },
@@ -4044,9 +4561,124 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
     return () => clearInterval(interval);
   }, []);
 
+  const isPremium     = isPremiumActive(subscription);
+  const isCanceling   = subscription?.cancel_at_period_end === true;
+  const isPastDue     = subscription?.status === 'past_due';
+  const periodEnd     = subscription?.current_period_end
+    ? new Date(subscription.current_period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : null;
+
+  const [portalLoading, setPortalLoading] = useState(false);
+  const openBillingPortal = async () => {
+    const customerId = subscription?.stripe_customer_id;
+    if (!customerId) return;
+    setPortalLoading(true);
+    try {
+      const res = await fetch('/api/stripe/portal', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ customerId }),
+      });
+      const { url, error: apiErr } = await res.json();
+      if (apiErr) throw new Error(apiErr);
+      if (url) window.location.href = url;
+    } catch (err) {
+      showToast('Could not open billing portal. Try again.');
+    }
+    setPortalLoading(false);
+  };
+
   return (
     <div className="screen">
       <h1 className="screen-title">Profile</h1>
+
+      {/* ── Subscription status ─────────────────────────────────────────── */}
+      <Card className="su" style={{
+        animationDelay: '.01s',
+        background: isPremium ? '#0E1A12' : C.card,
+        border: isPremium
+          ? `1px solid ${isPastDue ? 'rgba(212,114,74,0.4)' : isCanceling ? 'rgba(196,168,50,0.3)' : 'rgba(114,184,149,0.25)'}`
+          : `1px solid ${C.border}`,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 5,
+              color: isPastDue ? C.orange : isCanceling ? C.gold : isPremium ? C.green : C.dimmed }}>
+              {isPastDue ? 'Payment Failed' : isCanceling ? 'Premium · Canceling' : isPremium ? 'Premium · Active' : 'Free Plan'}
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.white }}>
+              {isPremium ? 'MassIQ Premium' : 'MassIQ Free'}
+            </div>
+            {isPremium && periodEnd && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                {isCanceling
+                  ? `Access until ${periodEnd} — won't renew`
+                  : isPastDue
+                    ? `Payment issue — update billing to keep access`
+                    : `Renews ${periodEnd}`}
+              </div>
+            )}
+            {!isPremium && (
+              <div style={{ fontSize: 12, color: C.dimmed, marginTop: 3 }}>
+                {FREE_SCAN_LIMIT} free scans included
+              </div>
+            )}
+          </div>
+          {!isPremium && (
+            <button
+              className="bp"
+              onClick={onUpgrade}
+              style={{
+                background: C.green, color: '#0A0D0A', border: 'none',
+                padding: '9px 18px', borderRadius: 99, fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+              }}
+            >
+              Upgrade →
+            </button>
+          )}
+          {isPremium && !isPastDue && !isCanceling && (
+            <div style={{
+              background: 'rgba(114,184,149,0.12)', borderRadius: 10,
+              padding: '6px 12px', fontSize: 12, color: C.green, fontWeight: 600, flexShrink: 0,
+            }}>
+              Active
+            </div>
+          )}
+          {isPastDue && (
+            <div style={{
+              background: 'rgba(212,114,74,0.12)', borderRadius: 10,
+              padding: '6px 12px', fontSize: 12, color: C.orange, fontWeight: 600, flexShrink: 0,
+            }}>
+              Past Due
+            </div>
+          )}
+        </div>
+
+        {/* Manage Billing — shown for all premium users */}
+        {isPremium && subscription?.stripe_customer_id && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid rgba(255,255,255,0.07)` }}>
+            <button
+              onClick={openBillingPortal}
+              disabled={portalLoading}
+              className="bp"
+              style={{
+                background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.1)`,
+                color: C.muted, borderRadius: 10, padding: '9px 16px', fontSize: 13,
+                fontWeight: 600, cursor: portalLoading ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 7,
+              }}
+            >
+              <Icon name="settings" size={13} color={C.muted} strokeWidth={2} />
+              {portalLoading ? 'Opening…' : isCanceling ? 'Renew or Manage Billing' : 'Manage Billing'}
+            </button>
+            {isCanceling && (
+              <div style={{ fontSize: 11, color: C.dimmed, marginTop: 8, lineHeight: 1.5 }}>
+                You can reactivate anytime before {periodEnd} to keep your scan history and premium access.
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* 1+2 ── No-scan placeholder (covers Journey + Health Score) ── */}
       {!lastScan && (
@@ -4243,22 +4875,78 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         </div>
       </Card>
 
-      {/* 6 ── Reset ── */}
+      {/* Legal ── */}
+      <Card style={{ padding: '4px 0' }}>
+        {[
+          { label: 'Privacy Policy', href: '/privacy' },
+          { label: 'Terms of Service', href: '/terms' },
+        ].map((item, i) => (
+          <a
+            key={item.label}
+            href={item.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '13px 16px',
+              borderBottom: i === 0 ? `1px solid ${C.border}` : 'none',
+              color: C.muted, fontSize: 14, fontWeight: 500, textDecoration: 'none',
+            }}
+          >
+            <span>{item.label}</span>
+            <Icon name="arrow-right" size={14} color={C.dimmed} strokeWidth={2} />
+          </a>
+        ))}
+      </Card>
+
+      {/* 6 ── Destructive actions ── */}
       <div style={{ paddingTop: 8, textAlign: 'center' }}>
         <button className="bp" onClick={onLogout} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '8px 0 14px' }}>
           Log Out
         </button>
-        {!confirmReset ? (
-          <button className="bp" onClick={() => setConfirmReset(true)} style={{ background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '10px 0' }}>
-            Reset All Data
+
+        {/* Delete scan history */}
+        {!confirmDeleteHistory ? (
+          <button className="bp" onClick={() => setConfirmDeleteHistory(true)} style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: C.red, fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: '8px 0' }}>
+            Delete scan history
+          </button>
+        ) : (
+          <Card style={{ border: `1px solid ${C.red}`, textAlign: 'center', padding: 20, marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Delete all scans?</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
+              Your scan photos and results will be permanently deleted. This does not restore free scan credits — those are tracked separately.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="ghost" onClick={() => setConfirmDeleteHistory(false)} style={{ flex: 1 }}>Cancel</Btn>
+              <Btn disabled={deleteHistoryBusy} onClick={async () => {
+                setDeleteHistoryBusy(true);
+                try { await onDeleteScanHistory(); } finally { setDeleteHistoryBusy(false); setConfirmDeleteHistory(false); }
+              }} style={{ flex: 1, background: C.red, color: C.white }}>
+                {deleteHistoryBusy ? 'Deleting…' : 'Yes, delete'}
+              </Btn>
+            </div>
+          </Card>
+        )}
+
+        {/* Delete account */}
+        {!confirmDeleteAccount ? (
+          <button className="bp" onClick={() => setConfirmDeleteAccount(true)} style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: C.red, fontSize: 13, fontWeight: 500, cursor: 'pointer', padding: '6px 0 14px', opacity: 0.7 }}>
+            Delete account
           </button>
         ) : (
           <Card style={{ border: `1px solid ${C.red}`, textAlign: 'center', padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Are you sure?</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>This will clear all your data and restart onboarding.</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Permanently delete your account?</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
+              Your account, profile, all scans, and all data will be permanently erased. This cannot be undone.
+            </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <Btn variant="ghost" onClick={() => setConfirmReset(false)} style={{ flex: 1 }}>Cancel</Btn>
-              <Btn onClick={onReset} style={{ flex: 1, background: C.red, color: C.white }}>Yes, Reset</Btn>
+              <Btn variant="ghost" onClick={() => setConfirmDeleteAccount(false)} style={{ flex: 1 }}>Cancel</Btn>
+              <Btn disabled={deleteAccountBusy} onClick={async () => {
+                setDeleteAccountBusy(true);
+                try { await onDeleteAccount(); } finally { setDeleteAccountBusy(false); setConfirmDeleteAccount(false); }
+              }} style={{ flex: 1, background: C.red, color: C.white }}>
+                {deleteAccountBusy ? 'Deleting…' : 'Yes, delete account'}
+              </Btn>
             </div>
           </Card>
         )}
@@ -4461,11 +5149,12 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, entitlements, parentScanHistory }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
   const [scanning,          setScanning]          = useState(false);
+  const [applying,          setApplying]          = useState(false);
   const [result,            setResult]            = useState(null);
   const [error,             setError]             = useState('');
   const [scanHistory,       setScanHistory]       = useState(() => LS.get(LS_KEYS.scanHistory, []));
@@ -4515,6 +5204,124 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
+      // ── Step 0: Compute image hashes ─────────────────────────────────────
+      // SHA-256 for exact-duplicate detection (DB-backed)
+      // Perceptual hash for near-duplicate detection
+      let sha256Hash   = null;
+      let pHash        = null;
+      let imgDimensions = { width: null, height: null };
+
+      try {
+        // SHA-256 via WebCrypto (browser native, no library needed)
+        // NOTE: only available in secure contexts (HTTPS / localhost)
+        const encoder = new TextEncoder();
+        const data    = encoder.encode(base64);
+        const hashBuf = await crypto.subtle.digest('SHA-256', data);
+        sha256Hash    = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        console.info('[scan:hash] SHA-256 computed:', sha256Hash.slice(0, 16) + '…');
+      } catch (hashErr) {
+        console.warn('[scan:hash] SHA-256 unavailable (non-HTTPS context?):', hashErr?.message);
+      }
+
+      // Perceptual hash via canvas (dHash — difference hash, 64 bits → 16 hex chars)
+      try {
+        pHash = await new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              imgDimensions = { width: img.naturalWidth, height: img.naturalHeight };
+              const SIZE = 9; // 9×8 pixels for dHash
+              const c    = document.createElement('canvas');
+              c.width = SIZE; c.height = SIZE - 1;
+              const ctx = c.getContext('2d');
+              ctx.drawImage(img, 0, 0, SIZE, SIZE - 1);
+              const px   = ctx.getImageData(0, 0, SIZE, SIZE - 1).data;
+              const gray = [];
+              for (let i = 0; i < px.length; i += 4) gray.push(0.299 * px[i] + 0.587 * px[i+1] + 0.114 * px[i+2]);
+              let bits = '';
+              for (let row = 0; row < 8; row++)
+                for (let col = 0; col < 8; col++)
+                  bits += gray[row * 9 + col] < gray[row * 9 + col + 1] ? '1' : '0';
+              let hex = '';
+              for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+              resolve(hex);
+            } catch { resolve(null); }
+          };
+          img.onerror = () => resolve(null);
+          img.src = 'data:image/jpeg;base64,' + base64;
+        });
+      } catch {}
+
+      // ── Step 0b: Exact-duplicate check against Supabase scan_assets ──────
+      const session    = getStoredSession();
+      const userId     = session?.user?.id || session?.user_id || null;
+      if (session?.access_token && userId && sha256Hash) {
+        try {
+          const existingAsset = await findAssetBySha256(session.access_token, userId, sha256Hash);
+          if (existingAsset) {
+            console.info('[scan] Exact duplicate detected (SHA-256 match):', existingAsset.id);
+            // Retrieve the scan that was linked to this asset
+            const priorScan = await getScanByAssetId(session.access_token, existingAsset.id).catch(() => null);
+            if (priorScan) {
+              // Re-run engine on the prior scan data so targets are fresh, but reuse visual analysis
+              const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: priorScan.bodyFat, weight: profile?.weightLbs || 170, leanMass: priorScan.leanMass };
+              const engineOutput  = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
+              const scanTargets   = calcTargets(profile, { leanMass: priorScan.leanMass });
+              const engineBase    = engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal });
+              setResult({
+                ...priorScan,
+                dailyTargets:    clampMacros({ ...engineBase, protein: scanTargets.protein }, profile),
+                phase:           { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+                whyThisWorks:    engineOutput?.diagnosis?.primary?.primary_issue || priorScan.assessment,
+                weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+                nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+                engineOutput,
+                isDuplicate:         true,
+                duplicateOfScanId:   priorScan.id,
+                assetId:             existingAsset.id,
+                imageHash:           sha256Hash,
+                perceptualHash:      pHash,
+              });
+              showToast('This photo was already scanned — previous result loaded to prevent duplicate history.');
+              setScanning(false);
+              return;
+            }
+          }
+        } catch (dupErr) {
+          // Non-fatal: if dedup check fails, continue with fresh scan
+          console.warn('[scan] Duplicate check failed (non-fatal):', dupErr?.message);
+        }
+      }
+
+      // ── Step 0c: localStorage 7-day cache (lightweight, no DB needed) ─────
+      const cacheKey = `massiq:scan_cache:${sha256Hash || (base64.slice(0, 64) + base64.length)}`;
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { visualData: cachedVisual, ts } = JSON.parse(cached);
+          if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
+            console.info('[scan] returning localStorage-cached result for same photo');
+            const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
+            const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
+            const scanTargets = calcTargets(profile, { leanMass: cachedVisual.leanMass });
+            const engineBase = engineOutput?.macro_targets || calcMacros({ ...profile, goal: profile.goal });
+            setResult({
+              ...cachedVisual,
+              dailyTargets: clampMacros({ ...engineBase, protein: scanTargets.protein }, profile),
+              phase: { label: profile.goal, name: `${profile.goal} Phase`, durationWeeks: 12, objective: engineOutput?.diagnosis?.primary?.recommended_action || '' },
+              whyThisWorks: engineOutput?.diagnosis?.primary?.primary_issue || cachedVisual.diagnosis,
+              weeklyMissions: engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
+              nextScanDate: (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
+              engineOutput,
+              imageHash:      sha256Hash,
+              perceptualHash: pHash,
+            });
+            setScanning(false);
+            return;
+          }
+        }
+      } catch {}
+
       const age    = profile?.age       || 25;
       const gender = profile?.gender    || 'Male';
       const height = profile?.heightIn  || 70;
@@ -4594,6 +5401,62 @@ Return ONLY this JSON (no markdown, no extra text):
         });
       }
 
+      // ── Step 1b: Upload photo to Supabase Storage + create scan_asset row ─
+      // sha256Hash is optional — upload proceeds even without it (non-HTTPS fallback).
+      // Upload is REQUIRED for logged-in users — failure surfaces as a scan error.
+      let resolvedAssetId = null;
+      if (session?.access_token && userId) {
+        console.info('[scan:asset] Pipeline start', {
+          userId,
+          hasSha256: !!sha256Hash,
+          hasPHash:  !!pHash,
+          mediaType,
+          base64Length: base64.length,
+        });
+
+        // Step A — storage upload (throws on failure — do not silently continue)
+        let storagePath;
+        try {
+          storagePath = await uploadScanPhoto(session.access_token, userId, base64, mediaType);
+          console.info('[scan:asset] Storage upload OK →', storagePath);
+        } catch (uploadErr) {
+          console.error('[scan:asset] Storage upload FAILED:', uploadErr?.message);
+          throw new Error(`Photo upload failed: ${uploadErr?.message || 'storage error'}. Check your connection and try again.`);
+        }
+
+        // Step B — scan_assets row (throws on failure)
+        try {
+          const asset = await createScanAsset(session.access_token, userId, {
+            storagePath,
+            mimeType:       mediaType,
+            fileSizeBytes:  Math.round(base64.length * 0.75),
+            sha256:         sha256Hash,
+            perceptualHash: pHash,
+            width:          imgDimensions.width,
+            height:         imgDimensions.height,
+          });
+          resolvedAssetId = asset?.id || null;
+          if (resolvedAssetId) {
+            console.info('[scan:asset] scan_assets row created, assetId:', resolvedAssetId);
+          } else {
+            console.error('[scan:asset] scan_assets insert returned no id — check RLS SELECT policy', asset);
+            throw new Error('Scan record could not be saved (asset id missing). Check Supabase RLS policies on scan_assets.');
+          }
+        } catch (assetErr) {
+          if (assetErr.message.includes('asset id missing') || assetErr.message.includes('RLS')) throw assetErr;
+          console.error('[scan:asset] scan_assets insert FAILED:', assetErr?.message);
+          throw new Error(`Scan metadata could not be saved: ${assetErr?.message || 'database error'}.`);
+        }
+      } else {
+        console.warn('[scan:asset] Skipping upload — user not logged in', {
+          hasToken: !!session?.access_token,
+          userId,
+        });
+      }
+
+      // Cache this result keyed by SHA-256 (or lightweight fallback) so re-scanning same photo returns same result
+      try { localStorage.setItem(cacheKey, JSON.stringify({ visualData, ts: Date.now() })); } catch {}
+
       // Consistency check: flag suspicious swings before showing results
       if (prevScan) {
         const warnings = validateScanConsistency(visualData, prevScan, daysSincePrev);
@@ -4616,6 +5479,9 @@ Return ONLY this JSON (no markdown, no extra text):
         weeklyMissions:  engineOutput?.next_actions?.slice(0, 3).map(a => a.value) || [],
         nextScanDate:    (() => { const d = new Date(); d.setDate(d.getDate() + 28); return d.toISOString().slice(0, 10); })(),
         engineOutput,    // attach full engine output for applyPlan to use
+        imageHash:       sha256Hash,
+        perceptualHash:  pHash,
+        assetId:         resolvedAssetId,
       };
       setResult(data);
     } catch (err) {
@@ -4674,6 +5540,26 @@ Return ONLY this JSON (no markdown, no extra text):
     };
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
+    const prevScanForAdaptation = existingHistory[existingHistory.length - 1] || null;
+
+    // Compute dynamic adaptation decision (compare new scan vs prior)
+    const adaptation = computeAdaptation(
+      { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' },
+      prevScanForAdaptation,
+      plan,
+    );
+
+    // Build scan_context: adaptation + scoring breakdown + image hash (for DB dedup audit)
+    const scanContext = {
+      adaptation:       { decision: adaptation.decision, rationale: adaptation.rationale, adjustment: adaptation.adjustment || null },
+      comparison:       adaptation.comparison || null,
+      scoring_breakdown: result.scoringBreakdown || null,
+      scoring_version:  result.scoringVersion   || null,
+      ffmi:             result.ffmi             || null,
+      image_hash:       result.imageHash        || null,       // SHA-256 of original photo
+      perceptual_hash:  result.perceptualHash   || null,
+    };
+
     const entry = {
       date: today,
       savedAt: new Date().toISOString(),
@@ -4700,13 +5586,39 @@ Return ONLY this JSON (no markdown, no extra text):
         steps: m.steps || 9000,
         trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
       },
+      // Extended persistence fields
+      engineVersion:   SCORING_VERSION,
+      scanStatus:      result.isDuplicate ? 'duplicate' : 'complete',
+      duplicateOfScanId: result.duplicateOfScanId || null,
+      assetId:         result.assetId        || null,
+      scanContext,
+      // Expose adaptation for UI display without re-computing
+      adaptationDecision:  adaptation.decision,
+      adaptationRationale: adaptation.rationale,
+      scanComparison:      adaptation.comparison || null,
     };
-    const history = [...existingHistory, entry];
+    // Save plan + stats to LS immediately (safe to be optimistic)
     LS.set(LS_KEYS.activePlan, plan);
     LS.set(LS_KEYS.stats, { calories: 0, protein: 0 });
-    LS.set(LS_KEYS.scanHistory, history);
-    setScanHistory(history);
-    onPlanApplied(plan, history);
+
+    // Do NOT touch scanHistory until the DB insert confirms — otherwise a failed
+    // insert leaves a ghost scan that disappears after logout.
+    setApplying(true);
+    setError('');
+    try {
+      console.info('[scan] applyPlan: awaiting DB persistence before updating scan history');
+      await onPlanApplied(plan, entry);
+      // DB confirmed — now read the freshly-stamped history back from LS
+      setScanHistory(LS.get(LS_KEYS.scanHistory, []));
+      console.info('[scan] applyPlan: scan persisted, history updated');
+    } catch (persistErr) {
+      console.error('[scan] applyPlan: DB persist failed', persistErr?.message);
+      setError('Your scan could not be saved to your account. Check your connection and try again.');
+      setApplying(false);
+      return; // Stay on scan tab so user can retry
+    }
+    setApplying(false);
+
     // Regenerate meal plan + workout plan with scan data in background
     generateMealPlan(profile, plan, result)
       .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
@@ -4985,177 +5897,102 @@ Return ONLY this JSON (no markdown, no extra text):
           const leanMassDisplay = result.leanMass > 0
             ? fmt.leanMass(result.leanMass, profile?.unitSystem) : null;
 
-          // Premium smooth-bezier body silhouette — no harsh outlines, organic curves
-          const BodySilhouette = ({ bfPct, isProjected }) => {
-            const bfC = Math.max(6, Math.min(42, bfPct));
-            const t   = Math.min(1, Math.max(0, (bfC - 6) / 36)); // 0=lean, 1=heavy
-            const cx  = 40;
-            // Key half-widths
-            const shW = 19 - t * 3;     // shoulder: 19 lean → 16 heavy
-            const trW = shW - 3;         // torso side just below shoulder
-            const waW = 9  + t * 11;    // waist: 9 lean → 20 heavy
-            const hiW = 13 + t * 8;     // hip: 13 lean → 21 heavy
-            const thW = 8  + t * 5;     // thigh: 8 lean → 13 heavy
-            const clW = 4.5 + t * 2;    // calf: 4.5 lean → 6.5 heavy
-            const lgG = 3;              // leg inner gap from center
-            const nkW = 5;              // neck half-width
-            // Y positions
-            const nkY = 31;  const shY = 37;  const arY = 54;
-            const waY = 92;  const hiY = 110; const crY = 124;
-            const knY = 160; const anY = 196; const ftY = 200;
-
-            const gradId = isProjected ? 'siProjG' : 'siCurrG';
-
-            // One continuous smooth bezier outline: neck → shoulders → torso → hips →
-            // left leg down → foot across → inner left leg up → crotch arch →
-            // inner right leg down → right foot → right outer leg up → close
-            const d = `
-              M ${cx - nkW} ${nkY}
-              C ${cx - nkW - 4} ${nkY + 2}  ${cx - shW - 2} ${shY - 4}  ${cx - shW} ${shY}
-              C ${cx - shW - 2} ${shY + 6}  ${cx - trW - 1} ${arY - 5}  ${cx - trW} ${arY}
-              C ${cx - trW} ${arY + 5}  ${cx - waW - 2} ${waY - 12}  ${cx - waW} ${waY}
-              C ${cx - waW - 1} ${waY + 7}  ${cx - hiW + 1} ${hiY - 7}  ${cx - hiW} ${hiY}
-              C ${cx - hiW - 1} ${hiY + 6}  ${cx - thW - 1} ${crY - 5}  ${cx - thW} ${crY}
-              C ${cx - thW - 1} ${crY + 8}  ${cx - thW} ${knY - 8}  ${cx - thW + 1} ${knY}
-              C ${cx - thW + 1} ${knY + 10}  ${cx - clW} ${knY + 14}  ${cx - clW} ${knY + 18}
-              L ${cx - clW} ${anY}
-              L ${cx - clW + 1} ${ftY}
-              L ${cx - lgG} ${ftY}
-              L ${cx - lgG} ${crY}
-              Q ${cx} ${crY + 7}  ${cx + lgG} ${crY}
-              L ${cx + lgG} ${ftY}
-              L ${cx + clW - 1} ${ftY}
-              L ${cx + clW} ${anY}
-              L ${cx + clW} ${knY + 18}
-              C ${cx + clW} ${knY + 14}  ${cx + thW - 1} ${knY + 10}  ${cx + thW - 1} ${knY}
-              C ${cx + thW} ${knY - 8}  ${cx + thW + 1} ${crY + 8}  ${cx + thW} ${crY}
-              C ${cx + thW + 1} ${crY - 5}  ${cx + hiW + 1} ${hiY + 6}  ${cx + hiW} ${hiY}
-              C ${cx + hiW - 1} ${hiY - 7}  ${cx + waW + 1} ${waY + 7}  ${cx + waW} ${waY}
-              C ${cx + waW + 2} ${waY - 12}  ${cx + trW + 1} ${arY + 5}  ${cx + trW} ${arY}
-              C ${cx + trW + 1} ${arY - 5}  ${cx + shW + 2} ${shY + 6}  ${cx + shW} ${shY}
-              C ${cx + shW + 2} ${shY - 4}  ${cx + nkW + 4} ${nkY + 2}  ${cx + nkW} ${nkY}
-              Z`;
-
-            return (
-              <svg viewBox="0 0 80 210" style={{ width: '100%', height: '100%' }}>
-                <defs>
-                  {isProjected ? (
-                    <linearGradient id="siProjG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="rgba(90,230,150,0.38)" />
-                      <stop offset="55%"  stopColor="rgba(52,209,123,0.26)" />
-                      <stop offset="100%" stopColor="rgba(28,155,84,0.16)" />
-                    </linearGradient>
-                  ) : (
-                    <linearGradient id="siCurrG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="rgba(255,255,255,0.11)" />
-                      <stop offset="100%" stopColor="rgba(255,255,255,0.03)" />
-                    </linearGradient>
-                  )}
-                </defs>
-                {/* Head */}
-                <circle cx={cx} cy={13} r={9} fill={`url(#${gradId})`} />
-                {/* Neck */}
-                <rect x={cx - nkW} y={22} width={nkW * 2} height={10} rx={2} fill={`url(#${gradId})`} />
-                {/* Full body outline */}
-                <path d={d} fill={`url(#${gradId})`} />
-              </svg>
-            );
-          };
-
-          // Shorten stage labels for cleaner display
-          const SHORT = { 'Athletic & Defined': 'Athletic', 'Athletic & Toned': 'Athletic', 'Lean & Active': 'Lean', 'Healthy & Active': 'Active', 'Building Phase': 'Building', 'Heavy Bulk': 'Heavy' };
-          const shortLabel = (l) => SHORT[l] || l;
-
-          // One sharp summary line keyed to goal
-          const goalKey = (profile?.goal || '').toLowerCase();
-          const punchyCopy = goalKey === 'cut'
-            ? 'Stay consistent — you\'re trending toward a visibly leaner physique.'
+          // Projected Outcome card — clean data summary, no decorative silhouettes
+          const goalKey         = (profile?.goal || '').toLowerCase();
+          const projRangeLabel  = proj.projBFLow === proj.projBFHigh
+            ? `${proj.projBFMid}%`
+            : `${proj.projBFLow}–${proj.projBFHigh}%`;
+          const confColor = result.confidence === 'high' ? C.green
+            : result.confidence === 'low' ? C.red : C.gold;
+          const confBg = result.confidence === 'high' ? 'rgba(114,184,149,0.10)'
+            : result.confidence === 'low' ? 'rgba(201,92,92,0.10)' : 'rgba(196,168,50,0.10)';
+          const explanation = goalKey === 'cut'
+            ? `At your current pace, you are projected to move from ${curr.label} to ${proj.projLabel} over the next ${proj.timeline}.`
             : (goalKey === 'bulk' || goalKey === 'build')
-              ? 'Lean bulk in progress — muscle density builds as body fat stays controlled.'
+              ? `A lean bulk keeps body fat controlled while adding muscle mass. Your projected stage over ${proj.timeline} reflects that trajectory.`
               : goalKey === 'recomp'
-                ? 'Slow and sustainable — fat reduces, muscle improves, week by week.'
-                : 'Consistency locks this in. Your stage remains stable by design.';
+                ? `Body recomposition is gradual. Over ${proj.timeline}, consistent training and nutrition should shift your stage toward ${proj.projLabel}.`
+                : `Consistent effort over ${proj.timeline} is projected to maintain or refine your current physique stage.`;
 
           return (
             <div className="su" style={{
               animationDelay: '.065s',
-              background: 'linear-gradient(170deg, #0D1511 0%, #0A0F0C 100%)',
+              background: '#0F1410',
               border: '1px solid rgba(255,255,255,0.06)',
               borderRadius: 24,
-              padding: '26px 22px 22px',
+              padding: '22px 22px 20px',
             }}>
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
+              {/* Section label */}
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(114,184,149,0.45)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 18 }}>
+                Projected Outcome
+              </div>
+
+              {/* Current → Projected data row */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 28px 1fr', alignItems: 'flex-start', gap: 8, marginBottom: 18 }}>
+                {/* Current */}
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(52,209,123,0.4)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 6 }}>Physique Projection</div>
-                  <div style={{ fontSize: 21, fontWeight: 700, color: '#ECEEED', letterSpacing: '-.025em', lineHeight: 1.1 }}>Visual Trajectory</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Now</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: C.white, letterSpacing: '-.03em', lineHeight: 1 }}>{bf}%</div>
+                  <div style={{ fontSize: 12, color: C.dimmed, marginTop: 6, lineHeight: 1.35 }}>{curr.label}</div>
                 </div>
-                <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 99, padding: '5px 13px', marginTop: 2 }}>
-                  <span style={{ color: '#4D5C50', fontSize: 11, fontWeight: 500 }}>{proj.timeline}</span>
-                </div>
-              </div>
-
-              {/* Silhouettes — projected is taller and more opaque (the hero) */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', alignItems: 'flex-end', gap: 12, marginBottom: 16 }}>
-                {/* Current — muted, smaller */}
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, fontWeight: 600, color: '#2E3A30', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>Today</div>
-                  <div style={{ height: 160, opacity: 0.38 }}>
-                    <BodySilhouette bfPct={bf} isProjected={false} />
-                  </div>
-                </div>
-                {/* Projected — dominant, full size */}
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, fontWeight: 600, color: 'rgba(52,209,123,0.55)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>In ~{proj.timeline}</div>
-                  <div style={{ height: 200 }}>
-                    <BodySilhouette bfPct={proj.projBFMid} isProjected={true} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Stage labels */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22, paddingTop: 4 }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#505F52', letterSpacing: '-.01em' }}>{shortLabel(curr.label)}</div>
-                  <div style={{ fontSize: 11, color: '#3A4A3C', marginTop: 3 }}>{bf}%</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: '#34D17B', letterSpacing: '-.02em' }}>{shortLabel(proj.projLabel)}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(52,209,123,0.38)', marginTop: 3 }}>
-                    ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`}
-                  </div>
+                {/* Arrow */}
+                <div style={{ paddingTop: 20, color: C.dimmed, fontSize: 14, textAlign: 'center' }}>→</div>
+                {/* Projected */}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(114,184,149,0.5)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Projected</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: C.green, letterSpacing: '-.03em', lineHeight: 1 }}>{projRangeLabel}</div>
+                  <div style={{ fontSize: 12, color: 'rgba(114,184,149,0.6)', marginTop: 6, lineHeight: 1.35 }}>{proj.projLabel}</div>
                 </div>
               </div>
 
               {/* Hairline */}
-              <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent)', marginBottom: 18 }} />
+              <div style={{ height: 1, background: 'rgba(255,255,255,0.04)', marginBottom: 16 }} />
 
-              {/* Punchy summary */}
-              <p style={{ color: '#4D5C50', fontSize: 13, lineHeight: 1.65, margin: '0 0 18px', fontStyle: 'italic' }}>{punchyCopy}</p>
+              {/* Chips */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+                <div style={{
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 99, padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <Icon name="clock" size={11} color={C.dimmed} strokeWidth={2} />
+                  <span style={{ fontSize: 11, color: C.dimmed, fontWeight: 500 }}>~{proj.timeline}</span>
+                </div>
+                {result.confidence && (
+                  <div style={{
+                    background: confBg, border: `1px solid ${confColor}44`,
+                    borderRadius: 99, padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <div style={{ width: 5, height: 5, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, color: confColor, fontWeight: 500 }}>{result.confidence} confidence</span>
+                  </div>
+                )}
+              </div>
 
-              {/* Details toggle */}
+              {/* Explanation */}
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: '0 0 16px' }}>
+                {explanation}
+              </p>
+
+              {/* "Why this projection" toggle */}
               <button onClick={() => setShowPhysiqueDetails(o => !o)} style={{
                 display: 'flex', alignItems: 'center', gap: 5,
                 background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                color: '#2E3A30', fontSize: 12, fontWeight: 500,
+                color: C.dimmed, fontSize: 12, fontWeight: 500,
               }}>
-                <span>{showPhysiqueDetails ? 'Less' : 'Details'}</span>
+                <span>Why this projection</span>
                 <span style={{ display: 'inline-block', fontSize: 9, transform: showPhysiqueDetails ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>▾</span>
               </button>
 
               {showPhysiqueDetails && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                  {result.confidence && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                      <div style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.red : C.gold }} />
-                      <span style={{ color: '#3A4A3C', fontSize: 12 }}>{result.confidence} confidence</span>
-                    </div>
-                  )}
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.65, margin: 0 }}>
+                    This projection is derived from your current body fat percentage, stated training goal, and standard physiological progress rates for your phase. It represents a realistic range based on consistent effort — not a guaranteed outcome.
+                  </p>
                   {leanMassDisplay && (
-                    <div style={{ fontSize: 12, color: '#3A4A3C', marginBottom: 10 }}>Lean mass: {leanMassDisplay}</div>
+                    <div style={{ fontSize: 12, color: C.dimmed }}>Current lean mass estimate: {leanMassDisplay}</div>
                   )}
-                  <p style={{ color: '#252E27', fontSize: 11, lineHeight: 1.65, margin: 0 }}>
-                    Reference projection only — not an exact image of your future physique.
+                  <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', lineHeight: 1.6, margin: 0 }}>
+                    AI estimate only. Individual results vary. Consult a qualified professional for medical or nutritional advice.
                   </p>
                 </div>
               )}
@@ -5278,7 +6115,9 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 10 – Apply This Plan → */}
-        <Btn onClick={applyPlan} style={{ width: '100%', marginTop: 4 }}>Apply This Plan →</Btn>
+        <Btn onClick={applyPlan} disabled={applying} style={{ width: '100%', marginTop: 4 }}>
+          {applying ? 'Saving to account…' : 'Apply This Plan →'}
+        </Btn>
         <Card className="su" style={{ animationDelay: '.11s' }}>
           <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Next decision</div>
           <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: 0 }}>{nextDecision}</p>
@@ -5295,6 +6134,9 @@ Return ONLY this JSON (no markdown, no extra text):
   }
 
   /* ── Pre-scan state ── */
+  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements);
+  const scanLocked = !canScan(subscription, parentScanHistory, entitlements);
+
   return (
     <div className="screen">
       <div>
@@ -5327,6 +6169,70 @@ Return ONLY this JSON (no markdown, no extra text):
           Tip <strong style={{ color: C.white }}>Best results:</strong> good lighting, fitted clothing or shirtless, facing camera, full body visible.
         </div>
       </Card>
+
+      {/* ── Free scan remaining notice ── */}
+      {!scanLocked && remaining < Infinity && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: remaining === 1 ? 'rgba(212,114,74,0.08)' : 'rgba(114,184,149,0.06)',
+          border: `1px solid ${remaining === 1 ? 'rgba(212,114,74,0.3)' : 'rgba(114,184,149,0.2)'}`,
+          borderRadius: 12, padding: '10px 14px',
+        }}>
+          <Icon name="camera" size={14} color={remaining === 1 ? C.orange : C.green} strokeWidth={2} />
+          <span style={{ fontSize: 13, color: remaining === 1 ? C.orange : C.muted, flex: 1 }}>
+            {remaining === 1
+              ? 'Last free scan. Upgrade before your next check-in to keep tracking.'
+              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining.`}
+          </span>
+        </div>
+      )}
+
+      {/* ── Scan limit reached — upgrade gate ── */}
+      {scanLocked && (
+        <div style={{
+          background: 'rgba(114,184,149,0.04)', border: '1px solid rgba(114,184,149,0.2)',
+          borderRadius: 20, padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 14,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name="lock" size={16} color={C.green} strokeWidth={2} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.green, textTransform: 'uppercase' }}>Free Limit Reached</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.white, marginTop: 2 }}>Upgrade to keep scanning</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>
+            You&apos;ve used your {FREE_SCAN_LIMIT} free scans. Premium gives you unlimited scans — plus adaptive macros, progress tracking, and a timeline to your goal.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {[
+              'Unlimited scans — scan weekly or monthly',
+              'Macros that update after every scan',
+              'Precise scan-to-scan progress comparison',
+              'Goal timeline: weeks to your target body fat',
+            ].map(item => (
+              <div key={item} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ color: C.green, fontSize: 13, marginTop: 1, flexShrink: 0 }}>✓</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>{item}</div>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => setTab('profile')}
+            style={{
+              background: C.green, color: '#0A0D0A', border: 'none',
+              padding: '14px', borderRadius: 99, fontSize: 15, fontWeight: 800,
+              cursor: 'pointer', width: '100%',
+            }}
+          >
+            Upgrade to Premium →
+          </button>
+        </div>
+      )}
 
       {error && (
         <div style={{ background: `${C.red}18`, border: `1px solid ${C.red}44`, borderRadius: 14, padding: '12px 16px', fontSize: 13, color: C.red, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -5456,64 +6362,160 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
   );
 }
 
-function AuthScreen({ onSubmit, loading, error, notice }) {
-  const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
+function AuthScreen({ onSubmit, onForgotPassword, loading, error, notice }) {
+  const [mode,     setMode]     = useState('login'); // 'login' | 'signup' | 'forgot'
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
-  const disabled = loading || !email.trim() || password.length < 6;
+  const [touched,  setTouched]  = useState({ email: false, password: false });
+
+  const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+  const emailOk    = isValidEmail(email);
+  const passwordOk = password.length >= 6;
+
+  const emailErr   = touched.email    && email.trim()    && !emailOk    ? 'Enter a valid email address.' : '';
+  const passwordErr= touched.password && password.length && !passwordOk ? 'Password must be at least 6 characters.' : '';
+
+  const canSubmit  = !loading && emailOk && (mode === 'forgot' || passwordOk);
+
+  const handleSubmit = () => {
+    setTouched({ email: true, password: true });
+    if (!canSubmit) return;
+    if (mode === 'forgot') { onForgotPassword(email.trim()); return; }
+    onSubmit(mode, email.trim(), password);
+  };
+
+  const switchMode = (m) => {
+    setMode(m);
+    setTouched({ email: false, password: false });
+  };
+
+  const inputStyle = (hasErr) => ({
+    padding: '12px 14px', borderRadius: 12, fontSize: 14, width: '100%',
+    border: `1px solid ${hasErr ? C.red + '88' : C.border}`,
+    background: hasErr ? `rgba(201,92,92,0.06)` : C.card,
+    color: C.white, outline: 'none',
+  });
 
   return (
     <div style={{ minHeight: '100dvh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <style>{CSS}</style>
       <Card className="glass su" style={{ width: '100%', maxWidth: 420, padding: 24, background: C.cardElevated }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 14 }}>MASSIQ</div>
-        <h1 style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
-        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
-          {mode === 'login' ? 'Log in to continue your plan, scans, and progress timeline.' : 'Set up your identity once. MassIQ will remember your profile, scans, and active plan.'}
-        </p>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 16 }}>MASSIQ</div>
 
-        <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
-          {['login', 'signup'].map((m) => (
-            <button key={m} className="bp" onClick={() => setMode(m)} style={{
-              flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
-              background: mode === m ? C.greenBg : 'transparent',
-              color: mode === m ? C.green : C.muted,
-              border: 'none',
-            }}>
-              {m === 'login' ? 'Log In' : 'Create Account'}
+        {/* ── Forgot password mode ── */}
+        {mode === 'forgot' ? (
+          <>
+            <h1 style={{ fontSize: 26, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>Reset your password</h1>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+              Enter your email and we'll send you a link to reset your password.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, email: true }))}
+                placeholder="Email address"
+                type="email"
+                autoComplete="email"
+                style={inputStyle(!!emailErr)}
+              />
+              {emailErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{emailErr}</div>}
+              <Btn disabled={!canSubmit || loading} onClick={handleSubmit} style={{ width: '100%', marginTop: 8 }}>
+                {loading ? 'Sending…' : 'Send Reset Link'}
+              </Btn>
+            </div>
+            {(error || notice) && (
+              <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red + '66' : C.greenDim}`, background: error ? 'rgba(201,92,92,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
+                {error || notice}
+              </div>
+            )}
+            <button className="bp" onClick={() => switchMode('login')} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, cursor: 'pointer', marginTop: 16, width: '100%', textAlign: 'center' }}>
+              ← Back to log in
             </button>
-          ))}
-        </div>
+          </>
+        ) : (
+          <>
+            <h1 style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 }}>
+              {mode === 'login' ? 'Welcome back' : 'Create your account'}
+            </h1>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+              {mode === 'login'
+                ? 'Log in to continue your plan, scans, and progress timeline.'
+                : 'Set up your account once. MassIQ will remember your profile, scans, and progress.'}
+            </p>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" style={{ padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.card, fontSize: 14 }} />
-          <Btn disabled={disabled} onClick={() => onSubmit(mode, email.trim(), password)} style={{ width: '100%', marginTop: 6 }}>
-            {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
-          </Btn>
-        </div>
+            {/* Mode toggle */}
+            <div style={{ display: 'flex', border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
+              {['login', 'signup'].map(m => (
+                <button key={m} className="bp" onClick={() => switchMode(m)} style={{
+                  flex: 1, padding: '10px 12px', fontSize: 13, fontWeight: 650,
+                  background: mode === m ? C.greenBg : 'transparent',
+                  color: mode === m ? C.green : C.muted, border: 'none',
+                }}>
+                  {m === 'login' ? 'Log In' : 'Create Account'}
+                </button>
+              ))}
+            </div>
 
-        {(error || notice) && (
-          <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red : C.greenDim}`, background: error ? 'rgba(255,90,95,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
-            {error || notice}
-          </div>
+            {/* Fields */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, email: true }))}
+                placeholder="Email address"
+                type="email"
+                autoComplete={mode === 'login' ? 'email' : 'email'}
+                style={inputStyle(!!emailErr)}
+              />
+              {emailErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{emailErr}</div>}
+
+              <input
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onBlur={() => setTouched(t => ({ ...t, password: true }))}
+                placeholder={mode === 'signup' ? 'Password (min 6 characters)' : 'Password'}
+                type="password"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                style={{ ...inputStyle(!!passwordErr), marginTop: 4 }}
+                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              />
+              {passwordErr && <div style={{ fontSize: 11, color: C.red, paddingLeft: 4 }}>{passwordErr}</div>}
+
+              <Btn disabled={!canSubmit} onClick={handleSubmit} style={{ width: '100%', marginTop: 8 }}>
+                {loading ? 'Please wait…' : mode === 'login' ? 'Log In' : 'Create Account'}
+              </Btn>
+            </div>
+
+            {/* Error / notice */}
+            {(error || notice) && (
+              <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red + '66' : C.greenDim}`, background: error ? 'rgba(201,92,92,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
+                {error || notice}
+              </div>
+            )}
+
+            {/* Legal acknowledgment — signup only */}
+            {mode === 'signup' && (
+              <p style={{ fontSize: 11, color: C.dimmed, lineHeight: 1.6, marginTop: 14, textAlign: 'center' }}>
+                By creating an account, you agree to our{' '}
+                <a href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: C.muted, textDecoration: 'underline' }}>Terms of Service</a>
+                {' '}and{' '}
+                <a href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: C.muted, textDecoration: 'underline' }}>Privacy Policy</a>.
+              </p>
+            )}
+
+            {/* Forgot password link — login only */}
+            {mode === 'login' && (
+              <button className="bp" onClick={() => switchMode('forgot')} style={{ background: 'none', border: 'none', color: C.dimmed, fontSize: 12, cursor: 'pointer', marginTop: 14, width: '100%', textAlign: 'center' }}>
+                Forgot your password?
+              </button>
+            )}
+          </>
         )}
       </Card>
     </div>
   );
 }
-
-/* ─── Placeholder tabs ───────────────────────────────────────────────────── */
-const PlaceholderTab = ({ label, icon }) => (
-  <div style={{
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
-    justifyContent: 'center', height: '60vh', gap: 14,
-  }}>
-    <div style={{ fontSize: 48 }}>{icon}</div>
-    <div style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{label}</div>
-    <div style={{ fontSize: 14, color: C.muted }}>Coming in the next commit</div>
-  </div>
-);
 
 /* ─── Nav config (shared by TabBar + Sidebar) ────────────────────────────── */
 const TABS = [
@@ -5541,9 +6543,12 @@ function TabBar({ active, setTab }) {
             gap: 4, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0',
           }}>
             <div style={{
-              padding: '4px 12px', borderRadius: 16, fontSize: 20, lineHeight: 1,
+              padding: '4px 12px', borderRadius: 16, lineHeight: 1,
               background: isActive ? C.greenBg : 'transparent',
-            }}>{t.icon}</div>
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name={t.icon} size={22} color={isActive ? C.green : C.dimmed} strokeWidth={isActive ? 2 : 1.5} />
+            </div>
             <span style={{ fontSize: 10, fontWeight: 580, letterSpacing: '.02em', color: isActive ? C.green : C.dimmed }}>
               {t.label}
             </span>
@@ -5582,7 +6587,7 @@ function Sidebar({ active, setTab, profile }) {
               fontFamily: 'inherit', fontSize: 14, fontWeight: isActive ? 700 : 500,
               transition: 'all .15s ease',
             }}>
-              <span style={{ fontSize: 18 }}>{t.icon}</span>
+              <Icon name={t.icon} size={18} color={isActive ? C.green : C.muted} strokeWidth={isActive ? 2 : 1.5} />
               {t.label}
               {isActive && <div style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: '50%', background: C.green }} />}
             </button>
@@ -5617,6 +6622,13 @@ export default function MassIQ() {
   const [toast,      setToast]      = useState(null);
   const [editing,    setEditing]    = useState(false);
   const [syncing,    setSyncing]    = useState(false);
+  const [scanHistory,   setScanHistory]   = useState(() => LS.get(LS_KEYS.scanHistory, []));
+  const [subscription,  setSubscription]  = useState(null);
+  const [entitlements,  setEntitlements]  = useState(null);
+  const [paywallOpen,   setPaywallOpen]   = useState(false);
+  // Holds the Promise from the initial onboarding profile+plan write so the
+  // Paywall can gate checkout on it completing. null = no pending onboarding sync.
+  const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
   // Sub-components call getActiveTargets() themselves so they stay fresh.
@@ -5628,6 +6640,18 @@ export default function MassIQ() {
   // ──────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // If the user landed on /app with a Supabase recovery token in the URL hash
+    // (e.g. site URL fallback when redirect_to URL isn't in the Supabase allowlist),
+    // forward them to the dedicated reset-password page so the flow works properly.
+    try {
+      const hash = window.location.hash.replace(/^#/, '');
+      const params = new URLSearchParams(hash);
+      if (params.get('type') === 'recovery' && params.get('access_token')) {
+        window.location.replace(`/reset-password#${hash}`);
+        return;
+      }
+    } catch {}
+
     let mounted = true;
     const boot = async () => {
       try {
@@ -5650,6 +6674,9 @@ export default function MassIQ() {
     if (!session?.access_token) {
       setProfile(null);
       setActivePlan(null);
+      setScanHistory([]);
+      setSubscription(null);
+      setEntitlements(null);
       setReady(true);
       return;
     }
@@ -5670,6 +6697,22 @@ export default function MassIQ() {
           console.info('[sync] ensureProfile:start', { userId });
           loadedProfile = await ensureProfile(session.access_token, userId);
           console.info('[sync] ensureProfile:ok', { hasProfile: Boolean(loadedProfile) });
+          // Recovery: if DB returned an incomplete profile (fields null — e.g. because
+          // the browser navigated away during onboarding before the upsert finished),
+          // but localStorage has a complete profile that belongs to THIS user, re-sync it.
+          if (loadedProfile && (!loadedProfile.age || !loadedProfile.weightLbs || !loadedProfile.heightCm)) {
+            const cachedProfile = LS.get(LS_KEYS.profile, null);
+            if (cachedProfile?.id === userId && cachedProfile.age && cachedProfile.weightLbs && cachedProfile.heightCm) {
+              console.info('[sync] ensureProfile: incomplete DB profile — recovering from local cache');
+              try {
+                await upsertProfile(session.access_token, userId, cachedProfile);
+                loadedProfile = { ...loadedProfile, ...cachedProfile, id: userId };
+                console.info('[sync] ensureProfile: recovery ok');
+              } catch (recoveryErr) {
+                console.error('[sync] ensureProfile: profile recovery failed', recoveryErr?.message);
+              }
+            }
+          }
         } catch (profileErr) {
           console.error('sync:ensureProfile failed', profileErr);
           throw profileErr;
@@ -5691,6 +6734,24 @@ export default function MassIQ() {
           loadedScanHistory = [];
         }
 
+        // Load subscription status (non-fatal — null means free tier)
+        try {
+          const sub = await getSubscription(session.access_token, userId);
+          if (mounted) setSubscription(sub);
+          console.info('[sync] subscription:ok', { status: sub?.status || 'none' });
+        } catch {
+          // Non-fatal: free tier assumed
+        }
+
+        // Load entitlements (non-fatal — null means no scans yet, free limit applies)
+        try {
+          const ent = await getEntitlements(session.access_token, userId);
+          if (mounted) setEntitlements(ent);
+          console.info('[sync] entitlements:ok', { free_scans_used: ent?.free_scans_used ?? 0 });
+        } catch {
+          // Non-fatal: migration 003 may not be applied yet
+        }
+
         if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan) {
           const fallbackPlan = buildBaselinePlanFromProfile(loadedProfile);
           try {
@@ -5705,6 +6766,8 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          // Stamp the current user so a future sign-in can detect a user switch
+          localStorage.setItem('massiq:current-user', userId);
           // Restore name if DB doesn't have it — check a logout-resilient key first,
           // then fall back to the profile cache (may have been cleared on logout)
           if (loadedProfile && !loadedProfile.name) {
@@ -5736,10 +6799,13 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+  // criticalProfile: when true the profile write failure is re-thrown instead of
+  // swallowed. Used during onboarding so the Paywall can gate checkout on success.
+  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null, { criticalProfile = false } = {}) => {
     if (!session?.access_token) return;
+    setSyncing(true);
+
     try {
-      setSyncing(true);
       const user = session.user || await fetchUser(session.access_token);
       const userId = user?.id;
       if (!userId) return;
@@ -5756,11 +6822,31 @@ export default function MassIQ() {
         try { await createScan(session.access_token, userId, latestScan); }
         catch (err) { console.error('[sync] scan create failed', err); }
       }
+
     } catch (err) {
       console.error('Persist failed (original Supabase error):', err?.message || err, err);
       // Non-blocking: keep local experience uninterrupted even if cloud sync fails.
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handlePasswordReset = async (email) => {
+    setAuthBusy(true);
+    setAuthError('');
+    setAuthNotice('');
+    try {
+      await requestPasswordReset(email);
+      setAuthNotice(`Check your inbox — we sent a reset link to ${email}.`);
+    } catch (err) {
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('rate limit') || msg.includes('too many')) {
+        setAuthError('Too many reset requests. Please wait a minute and try again.');
+      } else {
+        setAuthError('Could not send reset email. Check the address and try again.');
+      }
+    } finally {
+      setAuthBusy(false);
     }
   };
 
@@ -5770,22 +6856,33 @@ export default function MassIQ() {
 
     const mapAuthError = (err, m) => {
       const raw = String(err?.message || '').toLowerCase();
-      if (raw.includes('invalid login') || raw.includes('invalid credentials')) return 'Incorrect email or password.';
-      if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered')) {
+      if (raw.includes('invalid login') || raw.includes('invalid credentials') || raw.includes('invalid email or password') || raw.includes('email not confirmed')) {
+        return 'Incorrect email or password.';
+      }
+      if (raw.includes('already registered') || raw.includes('already been registered') || raw.includes('user already registered') || raw.includes('email address is already')) {
         return 'An account already exists for this email. Log in instead.';
       }
-      if (raw.includes('password') && (raw.includes('weak') || raw.includes('6'))) {
-        return 'Use a stronger password with at least 6 characters.';
+      if (raw.includes('email') && raw.includes('invalid')) {
+        return 'Enter a valid email address.';
       }
-      if (raw.includes('rate limit') || raw.includes('too many requests')) {
-        return 'Too many attempts right now. Please wait and try again.';
+      if (raw.includes('password') && (raw.includes('weak') || raw.includes('6') || raw.includes('short'))) {
+        return 'Password must be at least 6 characters.';
       }
-      if (raw.includes('failed to fetch') || raw.includes('network') || raw.includes('request failed (5')) {
-        return 'Connection issue. Please try again.';
+      if (raw.includes('email not found') || raw.includes('no user found') || raw.includes('not found')) {
+        return m === 'login' ? 'Incorrect email or password.' : 'Could not create account. Try again.';
+      }
+      if (raw.includes('rate limit') || raw.includes('too many requests') || raw.includes('too many')) {
+        return 'Too many attempts. Please wait a minute and try again.';
+      }
+      if (raw.includes('failed to fetch') || raw.includes('network') || raw.includes('request failed (5') || raw.includes('connection')) {
+        return 'Connection issue. Check your internet and try again.';
+      }
+      if (raw.includes('signup') && raw.includes('disabled')) {
+        return 'Sign-ups are temporarily disabled. Try again later.';
       }
       return m === 'signup'
-        ? 'Could not create account right now.'
-        : 'Could not log in right now.';
+        ? 'Could not create account. Please try again.'
+        : 'Could not log in. Please try again.';
     };
 
     setAuthBusy(true);
@@ -5799,6 +6896,16 @@ export default function MassIQ() {
         setAuthNotice('Could not start your session. Ensure Supabase Confirm Email is disabled for this environment.');
         return;
       }
+      // User-switch detection: if a different user was previously active, wipe all
+      // massiq:* localStorage keys so stale data never leaks to the new user.
+      const newUserId = res?.user?.id;
+      const prevUserId = localStorage.getItem('massiq:current-user');
+      if (prevUserId && newUserId && prevUserId !== newUserId) {
+        console.info('[auth] user switch detected — clearing stale cache', { from: prevUserId, to: newUserId });
+        Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
+        setScanHistory([]);
+      }
+      if (newUserId) localStorage.setItem('massiq:current-user', newUserId);
       setSession(res);
     } catch (err) {
       setAuthError(mapAuthError(err, mode));
@@ -5813,22 +6920,47 @@ export default function MassIQ() {
     } catch (err) {
       console.error('Logout failed:', err);
     }
+    onboardingPersistRef.current = null;  // cancel any pending checkout gate
     setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setScanHistory([]);
     setEditing(false);
+    setSubscription(null);
+    setEntitlements(null);
     setReady(true);
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
   };
 
-  const handleReset = () => {
-    // Clear all local data
+  const handleDeleteScanHistory = async () => {
+    if (!session?.access_token) return;
+    await fetch('/api/user/scan-history', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    // Clear local scan state — entitlements are NOT cleared (free credits don't restore)
+    setScanHistory([]);
+    LS.set(LS_KEYS.scanHistory, []);
+    showToast('Scan history deleted.');
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!session?.access_token) return;
+    await fetch('/api/user/account', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    // Sign out and clear all local data — account is gone
+    try { await signOutSession(session.access_token); } catch {}
+    onboardingPersistRef.current = null;
     Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
-    // Reset app state — user stays authenticated but re-enters onboarding
+    setSession(null);
     setProfile(null);
     setActivePlan(null);
+    setScanHistory([]);
+    setSubscription(null);
+    setEntitlements(null);
     setTab('home');
-    setEditing(false);
   };
 
   const handleEditProfile = () => {
@@ -5837,17 +6969,43 @@ export default function MassIQ() {
 
   const handleOnboardingComplete = (p, plan) => {
     setProfile(p);
-    LS.set(LS_KEYS.profile, p);
+    // Store the user's id in the cache so that:
+    // 1) profile recovery in the hydration effect can verify ownership
+    // 2) Onboarding pre-fill guard can reject mismatched user caches
+    const profileWithId = { ...p, id: session?.user?.id || p.id };
+    LS.set(LS_KEYS.profile, profileWithId);
     // Persist name under a non-massiq: key so it survives logout/clear
     if (p?.name && session?.user?.id) {
       localStorage.setItem(`miq:name:${session.user.id}`, p.name);
     }
     setEditing(false);
+
+    // ── Critical persistence ─────────────────────────────────────────────────
+    // Start the DB write immediately and hold the Promise in a ref.
+    // The Paywall reads this ref and AWAITS it before navigating to Stripe.
+    // criticalProfile: true means a profile write failure will throw, which the
+    // Paywall will catch and surface as an error, blocking checkout.
+    const persistTask = persistUserState(
+      profileWithId,
+      plan || activePlan,
+      null,
+      { criticalProfile: true },
+    ).then(() => {
+      console.info('[onboarding] profile+plan persisted to DB');
+    }).catch(err => {
+      console.error('[onboarding] profile persistence failed — checkout will be blocked', err);
+      // Null the ref so a retry Paywall open re-runs the gate cleanly (rejected
+      // promises resolve immediately and would always block, so we clear them).
+      onboardingPersistRef.current = null;
+      throw err;  // re-throw so Paywall's await sees the rejection
+    });
+    onboardingPersistRef.current = persistTask;
+    // ────────────────────────────────────────────────────────────────────────
+
     if (plan) {
       LS.set(LS_KEYS.activePlan, plan);
       setActivePlan(plan);
-      persistUserState(p, plan);
-      // Background: generate meal plan, workout plan, missions
+      // Background content generation — independent of the DB write above
       generateMealPlan(p, plan)
         .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
         .catch(console.error);
@@ -5857,8 +7015,6 @@ export default function MassIQ() {
       generateMissions(p, plan)
         .then(missions => { LS.set('massiq:missions', missions); })
         .catch(console.error);
-    } else {
-      persistUserState(p, activePlan);
     }
   };
 
@@ -5889,7 +7045,7 @@ export default function MassIQ() {
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   if (!session?.access_token) {
-    return <AuthScreen onSubmit={handleAuthSubmit} loading={authBusy} error={authError} notice={authNotice} />;
+    return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
   }
 
   const profileComplete = Boolean(
@@ -5901,26 +7057,29 @@ export default function MassIQ() {
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
-      <Onboarding onComplete={handleOnboardingComplete} />
+      <Onboarding onComplete={handleOnboardingComplete} currentUserId={session?.user?.id} />
     </>
   );
 
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
-        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
+        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
             profile={profile}
             activePlan={activePlan}
             setTab={setTab}
             onEditProfile={handleEditProfile}
-            onReset={handleReset}
+            onDeleteScanHistory={handleDeleteScanHistory}
+            onDeleteAccount={handleDeleteAccount}
             onLogout={handleLogout}
             showToast={showToast}
+            subscription={subscription}
+            onUpgrade={() => setPaywallOpen(true)}
             onUpdateUnits={(unit) => {
               const updated = { ...profile, unitSystem: unit };
               setProfile(updated);
@@ -5955,8 +7114,15 @@ export default function MassIQ() {
       </div>
 
       <TabBar active={tab} setTab={setTab} />
-      {syncing && <Toast msg="Syncing your account…" onDone={() => {}} />}
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
+      {paywallOpen && (
+        <Paywall
+          userId={session?.user?.id}
+          accessToken={session?.access_token}
+          onClose={() => setPaywallOpen(false)}
+          persistGate={onboardingPersistRef}
+        />
+      )}
     </>
   );
 }

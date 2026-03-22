@@ -1,5 +1,6 @@
 "use client";
 import { useEffect } from "react";
+import { Icon } from '../components/Icon';
 
 /* ─── Design tokens ───────────────────────────────────────────────────────── */
 const C = {
@@ -377,6 +378,18 @@ const STEPS = [
 
 /* ─── Landing page ────────────────────────────────────────────────────────── */
 export default function LandingPage() {
+  // If Supabase redirects a recovery link to the root URL (site-URL fallback when
+  // redirect_to isn't in the allowlist), forward to the dedicated reset-password page.
+  useEffect(() => {
+    try {
+      const hash = window.location.hash.replace(/^#/, '');
+      const params = new URLSearchParams(hash);
+      if (params.get('type') === 'recovery' && params.get('access_token')) {
+        window.location.replace(`/reset-password#${hash}`);
+      }
+    } catch {}
+  }, []);
+
   useFadeUp();
 
   return (
@@ -708,7 +721,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.05)', border: `1px solid rgba(255,255,255,0.08)`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 20, marginBottom: 16,
-                }}>{card.icon}</div>
+                }}><Icon name={card.icon} size={20} color="rgba(255,255,255,0.65)" strokeWidth={1.5} /></div>
                 <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: C.muted, marginBottom: 10 }}>
                   {card.tag}
                 </div>
@@ -902,13 +915,13 @@ export default function LandingPage() {
             <div style={{ fontSize: 12, color: C.dim }}>The operating system for your physique.</div>
           </div>
           <div style={{ fontSize: 12, color: C.dim }}>
-            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="/privacy" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Privacy</a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Privacy Policy</a>
             {' · '}
-            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="/terms" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Terms</a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Terms of Service</a>
           </div>
         </div>
       </footer>
