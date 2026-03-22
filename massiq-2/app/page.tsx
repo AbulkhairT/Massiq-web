@@ -322,12 +322,9 @@ function IntelPanel() {
       {/* Diagnosis */}
       <div style={{ padding: '13px 16px', background: 'rgba(255,80,50,0.04)', borderBottom: `1px solid rgba(255,255,255,0.05)` }}>
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '2px', color: C.dim, textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <Icon name="bolt" size={14} color="#D4724A" />
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
-            <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
-          </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.white, marginBottom: 3 }}>Cutting too aggressively</div>
+          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.55 }}>Protein is insufficient at this deficit. Lean mass is at risk.</div>
         </div>
       </div>
 
@@ -340,12 +337,10 @@ function IntelPanel() {
               <span style={{ fontSize: 12, fontWeight: 800, color: a.color, width: 12, textAlign: 'center' }}>{a.arrow}</span>
               <span style={{ fontSize: 11, color: C.muted }}>{a.label}</span>
             </div>
-            <div style={{ fontSize: 11, color: C.white, fontWeight: 600 }}>
-              <span style={{ color: C.dim, textDecoration: 'line-through', marginRight: 5 }}>{a.from}</span>
-              {a.to}
-            </div>
+            <div style={{ fontSize: 11, color: C.white, fontWeight: 600 }}>{a.to}</div>
           </div>
         ))}
+        <div style={{ fontSize: 10, color: C.dim, marginTop: 6 }}>Updated from last scan.</div>
       </div>
 
       {/* Footer */}
@@ -521,7 +516,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.06)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}><Icon name="chart-bar" size={16} color="#556655" /></div>
+                }}>Data</div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: '#556655',
@@ -568,7 +563,7 @@ export default function LandingPage() {
                   background: 'rgba(255,255,255,0.05)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 15, flexShrink: 0,
-                }}><Icon name="brain" size={16} color="#72B895" /></div>
+                }}>AI</div>
                 <span style={{
                   fontSize: 11, fontWeight: 600, letterSpacing: '2px',
                   textTransform: 'uppercase', color: C.white,
@@ -702,17 +697,17 @@ export default function LandingPage() {
           <div className="diag-grid">
             {[
               {
-                icon: 'bolt', tag: 'Fat Loss Phase', delay: 'd1',
+                icon: 'Key', tag: 'Fat Loss Phase', delay: 'd1',
                 title: 'You\'re losing weight too fast',
                 body: 'Your caloric deficit is too aggressive for your lean mass target. At this rate, you\'ll lose muscle. The fix: reduce deficit by 220 kcal, increase protein by 30g.',
               },
               {
-                icon: 'scale', tag: 'Body Composition', delay: 'd2',
+                icon: 'Balance', tag: 'Body Composition', delay: 'd2',
                 title: 'Your symmetry is imbalanced',
                 body: 'Upper-body development is lagging significantly behind lower body. Training focus should shift to chest, shoulders, and arms for the next 4–6 weeks.',
               },
               {
-                icon: 'rotate', tag: 'Phase Shift', delay: 'd3',
+                icon: 'Cycle', tag: 'Phase Shift', delay: 'd3',
                 title: 'Time to stop cutting',
                 body: 'You\'ve reached 13.1% body fat — your target. Continuing the cut risks lean mass loss. MassIQ is shifting you to a recomposition phase.',
               },
@@ -770,9 +765,9 @@ export default function LandingPage() {
                 ].map(([label, a, b, c]) => (
                   <tr key={String(label)}>
                     <td>{label}</td>
-                    <td className="massiq-td"><span className="ck">{a ? '✓' : '—'}</span></td>
-                    <td><span className={b ? 'ck' : 'cx'}>{b ? '✓' : '—'}</span></td>
-                    <td><span className={c ? 'ck' : 'cx'}>{c ? '✓' : '—'}</span></td>
+                    <td className="massiq-td"><span className="ck">{a ? 'Done' : '—'}</span></td>
+                    <td><span className={b ? 'ck' : 'cx'}>{b ? 'Done' : '—'}</span></td>
+                    <td><span className={c ? 'ck' : 'cx'}>{c ? 'Done' : '—'}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -871,7 +866,7 @@ export default function LandingPage() {
             <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap' }}>
               {['No fake transformations', 'No generic plans', 'No guesswork'].map(point => (
                 <div key={point} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                  <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>✓</span>
+                  <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>Done</span>
                   <span style={{ fontSize: 13, color: C.muted }}>{point}</span>
                 </div>
               ))}

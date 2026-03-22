@@ -238,36 +238,13 @@ function deserializeScan(row) {
   const ma  = row?.muscle_assessment || {};
   const ctx = row?.scan_context      || {};
   return {
-    id:                          row?.id,
-    dbId:                        row?.id,
-    date:                        row?.created_at,
-    bodyFat:                     toNumber(row?.body_fat,           null),
-    bodyFatPct:                  toNumber(row?.body_fat,           null),
-    leanMass:                    toNumber(row?.lean_mass,          null),
-    physiqueScore:               toNumber(row?.physique_score,     null),
-    symmetryScore:               toNumber(row?.symmetry_score,     null),
-    confidence:                  row?.scan_confidence              || 'medium',
-    phase:                       ma?.phase                         || null,
-    bodyFatRange:                ma?.body_fat_range                || null,
-    assessment:                  row?.scan_notes                   || ma?.limiting_factor || null,
-    limitingFactor:              ma?.limiting_factor               || null,
-    limitingFactorExplanation:   ma?.limiting_factor_explanation   || null,
-    nutritionKeyChange:          ma?.nutrition_key_change          || null,
-    recommendation:              ma?.recommendation                || null,
-    weakestGroups:               Array.isArray(ma?.weakest_groups) ? ma.weakest_groups : [],
-    isBaseline:                  ma?.is_baseline                   || false,
-    dailyTargets:                ma?.daily_targets                 || null,
-    // Extended fields
-    engineVersion:               row?.engine_version               || null,
-    scanStatus:                  row?.scan_status                  || 'complete',
-    duplicateOfScanId:           row?.duplicate_of_scan_id         || null,
-    assetId:                     row?.asset_id                     || null,
-    adaptationDecision:          ctx?.adaptation?.decision         || null,
-    adaptationRationale:         ctx?.adaptation?.rationale        || null,
-    scanComparison:              ctx?.comparison                   || null,
-    scoringBreakdown:            ctx?.scoring_breakdown            || null,
-    imageHash:                   ctx?.image_hash                   || null,
-    perceptualHash:              ctx?.perceptual_hash              || null,
+    ...raw,
+    id: row?.id || raw.id,
+    date: raw.date || row?.created_at,
+    bodyFat: toNumber(row?.body_fat, toNumber(raw.bodyFat ?? raw.bodyFatPct, null)),
+    bodyFatPct: toNumber(row?.body_fat, toNumber(raw.bodyFatPct ?? raw.bodyFat, null)),
+    leanMass: toNumber(row?.lean_mass, toNumber(raw.leanMass, null)),
+    confidence: (typeof raw.confidence === 'string' ? raw.confidence : null) || toNumber(raw.confidence, 0.75),
   };
 }
 
@@ -480,34 +457,19 @@ export async function createScan(token, userId, scan) {
 }
 
 export async function getScans(token, userId, limit = 25) {
-  const cols = [
-    'id', 'user_id', 'body_fat', 'lean_mass',
-    'physique_score', 'symmetry_score', 'scan_confidence',
-    'muscle_assessment', 'scan_notes', 'created_at',
-    // Extended fields added in migration 001_extend_scans
-    'engine_version', 'scan_status', 'duplicate_of_scan_id',
-    'asset_id', 'scan_context',
-  ].join(',');
-  let rows;
   try {
-    rows = await supabaseFetch(
-      `/rest/v1/scans?select=${cols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
-      { method: 'GET', headers: authHeaders(token) },
-    );
+    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,raw_result,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
   } catch (err) {
-    // Fall back to base columns if extended columns don't exist yet (pre-migration)
-    if (String(err?.message).includes('column') || String(err?.message).includes('does not exist')) {
-      console.warn('[scans] Extended columns not found, falling back to base columns. Run supabase migration.');
-      const baseCols = 'id,user_id,body_fat,lean_mass,physique_score,symmetry_score,scan_confidence,muscle_assessment,scan_notes,created_at';
-      rows = await supabaseFetch(
-        `/rest/v1/scans?select=${baseCols}&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`,
-        { method: 'GET', headers: authHeaders(token) },
-      );
-    } else {
-      throw err;
-    }
+    const rows = await supabaseFetch(`/rest/v1/scans?select=id,user_id,body_fat,lean_mass,created_at&user_id=eq.${userId}&order=created_at.desc&limit=${limit}`, {
+      method: 'GET',
+      headers: authHeaders(token),
+    });
+    return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
   }
-  return Array.isArray(rows) ? rows.map(deserializeScan).reverse() : [];
 }
 
 // ─── scan_assets ──────────────────────────────────────────────────────────────
