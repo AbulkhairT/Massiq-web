@@ -11,7 +11,7 @@ function bad(msg, status = 400) {
  * POST /api/stripe/checkout
  *
  * Creates a Stripe Checkout Session in subscription mode.
- * The client sends { userId } — validated against the session token.
+ * User identity is verified from the Authorization Bearer token — never trusted from the request body.
  * Premium is NEVER granted from this endpoint; entitlement comes from the webhook.
  */
 export async function POST(req) {
@@ -19,36 +19,46 @@ export async function POST(req) {
   const priceId   = process.env.STRIPE_PRICE_ID;
   const appUrl    = process.env.NEXT_PUBLIC_APP_URL;
 
-  if (!secretKey) return bad('Server misconfigured: STRIPE_SECRET_KEY missing', 500);
-  if (!priceId)   return bad('Server misconfigured: STRIPE_PRICE_ID missing', 500);
-  if (!appUrl)    return bad('Server misconfigured: NEXT_PUBLIC_APP_URL missing', 500);
+  if (!secretKey) return bad('Server misconfigured', 500);
+  if (!priceId)   return bad('Server misconfigured', 500);
+  if (!appUrl)    return bad('Server misconfigured', 500);
 
-  let body;
-  try { body = await req.json(); } catch { return bad('Invalid JSON body'); }
+  // ── Verify authentication via Bearer token ──────────────────────────────
+  // Never trust userId from the request body — extract it from the verified session.
+  const authHeader  = req.headers.get('authorization') || '';
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  const { userId } = body || {};
-  if (!userId || typeof userId !== 'string') return bad('userId is required');
-
-  // Validate the user exists in Supabase before creating a session
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (supabaseUrl && serviceKey) {
-    try {
-      const check = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=id&limit=1`, {
-        headers: {
-          apikey:        serviceKey,
-          Authorization: `Bearer ${serviceKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      const rows = await check.json().catch(() => []);
-      if (!Array.isArray(rows) || rows.length === 0) {
-        return bad('User not found', 404);
-      }
-    } catch {
-      // Non-fatal: continue even if validation fails (avoids blocking checkout)
-    }
+  if (!bearerToken) {
+    return bad('Sign in to continue', 401);
   }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey     = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !anonKey) {
+    return bad('Server misconfigured', 500);
+  }
+
+  let userId;
+  try {
+    const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        apikey:        anonKey,
+        Authorization: `Bearer ${bearerToken}`,
+      },
+    });
+    if (!userRes.ok) {
+      return bad('Sign in to continue', 401);
+    }
+    const user = await userRes.json();
+    userId = user?.id;
+    if (!userId || typeof userId !== 'string') {
+      return bad('Sign in to continue', 401);
+    }
+  } catch {
+    return bad('Sign in to continue', 401);
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
@@ -69,6 +79,6 @@ export async function POST(req) {
     return NextResponse.json({ url: session.url });
   } catch (err) {
     console.error('[stripe:checkout] Session creation failed:', err.message);
-    return bad(err.message || 'Failed to create checkout session', 500);
+    return bad('Could not start checkout. Please try again.', 500);
   }
 }

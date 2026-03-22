@@ -1659,24 +1659,32 @@ function PremiumGate({ feature, subscription, onUpgrade, children }) {
   );
 }
 
-function Paywall({ userId, onClose }) {
+function Paywall({ userId, accessToken, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
 
   const handleUpgrade = async () => {
+    // Client-side auth guard — prevents hitting the API without a valid session
+    if (!userId || !accessToken) {
+      setError('Please sign in to continue.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const res = await fetch('/api/stripe/checkout', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ userId }),
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ userId }),
       });
       const { url, error: apiErr } = await res.json();
       if (apiErr) throw new Error(apiErr);
       if (url) window.location.href = url;
     } catch (err) {
-      setError(err.message || 'Could not start checkout. Try again.');
+      setError(err.message || 'Could not start checkout. Please try again.');
     }
     setLoading(false);
   };
@@ -1794,7 +1802,7 @@ function Paywall({ userId, onClose }) {
 }
 
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, onUpgrade }) {
+function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade }) {
   const today      = new Date().toISOString().slice(0, 10);
   const macros     = getActiveTargets(activePlan, profile);
   const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
@@ -1926,6 +1934,61 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         const phase     = activePlan?.phase ?? null;
         const phaseColor = phase === 'Cut' ? C.orange : phase === 'Bulk' ? C.blue : C.green;
 
+        /* ── STATE A: No scans yet — render polished pre-scan hero ── */
+        if (!hasScan) {
+          const freeLeft = scansRemaining(subscription, resolvedHistory, entitlements);
+          const isPremium = isPremiumActive(subscription);
+          return (
+            <div style={{
+              borderRadius: 22,
+              background: '#0D1810',
+              border: '1px solid rgba(255,255,255,0.07)',
+              overflow: 'hidden',
+            }}>
+              {/* Header */}
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '14px 18px 12px',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: C.dimmed }} />
+                  <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '.1em', color: C.dimmed }}>
+                    BODY SCAN
+                  </span>
+                </div>
+                {!isPremium && freeLeft > 0 && (
+                  <span style={{ fontSize: 11, color: C.dimmed }}>
+                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} included
+                  </span>
+                )}
+                {!isPremium && freeLeft <= 0 && (
+                  <button className="bp" onClick={onUpgrade} style={{
+                    fontSize: 11, fontWeight: 700, color: C.green, background: 'none',
+                    border: 'none', cursor: 'pointer', padding: 0,
+                  }}>Upgrade →</button>
+                )}
+              </div>
+
+              {/* Pre-scan content */}
+              <div style={{ padding: '24px 18px 22px' }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 8, lineHeight: 1.2 }}>
+                  Complete your first body scan
+                </div>
+                <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 22 }}>
+                  Your target body fat, timeline, and next-step plan will appear after your first scan.
+                </div>
+                <button className="bp" onClick={() => setTab('scan')} style={{
+                  background: C.green, color: '#0A0D0A', border: 'none',
+                  padding: '13px 28px', borderRadius: 99, fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                }}>
+                  Start first scan →
+                </button>
+              </div>
+            </div>
+          );
+        }
+
         /* progress toward target: 0→1 */
         const bfProgress = (startBF != null && targetBF != null && startBF !== targetBF && currentBF != null)
           ? Math.min(1, Math.max(0, (startBF - currentBF) / (startBF - targetBF)))
@@ -2007,12 +2070,18 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  {hasScan && <span style={{ fontSize: 18, color: C.dimmed }}>→</span>}
+                  <span style={{ fontSize: 18, color: C.dimmed }}>→</span>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 10, color: C.dimmed, letterSpacing: '.07em', textTransform: 'uppercase', marginBottom: 4 }}>Target</div>
-                    <div style={{ fontSize: 38, fontWeight: 900, color: hasScan ? C.green : 'rgba(255,255,255,0.18)', lineHeight: 1 }}>
-                      {targetBF != null ? `${targetBF}%` : '--'}
-                    </div>
+                    {targetBF != null ? (
+                      <div style={{ fontSize: 38, fontWeight: 900, color: C.green, lineHeight: 1 }}>
+                        {targetBF}%
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.dimmed, lineHeight: 1.2, marginTop: 6 }}>
+                        Pending
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2038,9 +2107,9 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
               borderBottom: `1px solid rgba(255,255,255,0.06)`,
             }}>
               {[
-                { label: 'LEAN MASS',  value: leanMassLbs != null ? fmt.leanMass(leanMassLbs, profile?.unitSystem) : '--', color: C.blue },
-                { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '--', color: C.purple },
-                { label: 'PHASE',      value: phase ?? '--',                                     color: phaseColor },
+                { label: 'LEAN MASS',  value: leanMassLbs != null ? fmt.leanMass(leanMassLbs, profile?.unitSystem) : '—', color: C.blue },
+                { label: 'SYMMETRY',   value: symmetry    != null ? `${symmetry}/100`    : '—', color: C.purple },
+                { label: 'PHASE',      value: phase ?? '—',                                     color: phaseColor },
               ].map((s, i) => (
                 <div key={s.label} style={{
                   padding: '12px 0', textAlign: 'center',
@@ -3530,8 +3599,8 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
     const d = new Date(startDate); d.setDate(d.getDate() + 84); return d.toISOString().slice(0, 10);
   })();
   const daysLeft   = Math.max(0, daysBetween(today, nextScanDate));
-  const startBF    = activePlan.startBF || activePlan.bodyFat || 18;
-  const targetBF   = activePlan.targetBF || (phase === 'Cut' ? startBF - 4 : phase === 'Bulk' ? startBF + 1 : startBF);
+  const startBF    = activePlan.startBF ?? null;
+  const targetBF   = activePlan.targetBF ?? null;
   const trainDays  = activePlan.trainDays || 4;
   const cardioDays = activePlan.cardioDays || 2;
   const sleepHrs   = activePlan.sleepHrs || 8;
@@ -3567,7 +3636,7 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
         </div>
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>
           {daysLeft > 0 ? `${daysLeft} days remaining` : 'Final week'}
-          {latestScan ? ` \u00b7 ${getBFDisplay(latestScan)} \u2192 ${targetBF}%` : ''}
+          {latestScan && targetBF != null ? ` \u00b7 ${getBFDisplay(latestScan)} \u2192 ${targetBF}%` : ''}
         </div>
         <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 99, marginBottom: 6, overflow: 'hidden' }}>
           <div style={{
@@ -6790,7 +6859,7 @@ export default function MassIQ() {
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
         case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
@@ -6843,9 +6912,9 @@ export default function MassIQ() {
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
       {paywallOpen && (
         <Paywall
-          userId={profile?.id}
+          userId={session?.user?.id}
+          accessToken={session?.access_token}
           onClose={() => setPaywallOpen(false)}
-          showToast={showToast}
         />
       )}
     </>
