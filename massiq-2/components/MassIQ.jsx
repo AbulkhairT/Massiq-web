@@ -502,13 +502,72 @@ function getPhysiqueProjection(currentBF, goal, gender = 'Male', confidence = 'm
   return { currentStage, projectedStage, projBFLow, projBFHigh, projBFMid, projLabel, timeline, projCopy, stageCopy, improving };
 }
 
+function getScanIntelligence(scanHistory = [], activePlan = null, profile = null) {
+  const latest = scanHistory.slice(-1)[0] || null;
+  const previous = scanHistory.slice(-2)[0] || null;
+  if (!latest) return null;
+  const latestBF = Number(latest.bodyFat ?? latest.bodyFatPct ?? 0);
+  const prevBF = Number(previous?.bodyFat ?? previous?.bodyFatPct ?? 0);
+  const latestLean = Number(latest.leanMass || 0);
+  const prevLean = Number(previous?.leanMass || 0);
+  const latestSym = Number(latest.symmetryScore || 0);
+  const prevSym = Number(previous?.symmetryScore || 0);
+  const bfDelta = previous ? Number((latestBF - prevBF).toFixed(1)) : 0;
+  const leanDelta = previous ? Number((latestLean - prevLean).toFixed(1)) : 0;
+  const symDelta = previous ? Number((latestSym - prevSym).toFixed(1)) : 0;
+  const phase = activePlan?.phase || profile?.goal || 'Maintain';
+  const proximityToTarget = activePlan?.targetBF != null && latestBF
+    ? Math.abs(latestBF - Number(activePlan.targetBF))
+    : null;
+  const plateau = previous ? Math.abs(bfDelta) < 0.2 && Math.abs(leanDelta) < 0.2 : false;
+  const muscleLossRisk = phase === 'Cut' && leanDelta < -0.6;
+  const recoveryRisk = muscleLossRisk || (phase === 'Cut' && bfDelta < -1.2);
+  const needsCorrection = latestSym > 0 && latestSym < 78;
+  const nearingTarget = proximityToTarget != null && proximityToTarget <= 1.2;
+  const trainingEmphasis = recoveryRisk
+    ? 'recovery'
+    : needsCorrection
+      ? 'correction'
+      : phase === 'Bulk' && !plateau
+        ? 'hypertrophy'
+        : 'preservation';
+
+  const asymmetries = Array.isArray(latest?.asymmetries) ? latest.asymmetries : [];
+  const symmetryActions = asymmetries.slice(0, 3).map((item) => {
+    const raw = String(item).toLowerCase();
+    if (raw.includes('shoulder')) return { area: 'Shoulders', action: 'Start unilateral dumbbell pressing on the weaker side first and add 1 corrective set.' };
+    if (raw.includes('chest')) return { area: 'Chest', action: 'Use single-arm cable presses and pause on the weaker side for 1 second at peak contraction.' };
+    if (raw.includes('arm') || raw.includes('bicep') || raw.includes('tricep')) return { area: 'Arms', action: 'Add 1 unilateral set to curls/extensions for the lagging arm with strict tempo.' };
+    if (raw.includes('quad') || raw.includes('leg')) return { area: 'Legs', action: 'Add Bulgarian split squats and single-leg leg press, beginning with the weaker side.' };
+    return { area: 'Core and posture', action: 'Add unilateral carries and anti-rotation core work to improve side-to-side control.' };
+  });
+
+  return {
+    latest,
+    previous,
+    bfDelta,
+    leanDelta,
+    symDelta,
+    plateau,
+    muscleLossRisk,
+    recoveryRisk,
+    needsCorrection,
+    nearingTarget,
+    trainingEmphasis,
+    cardioDelta: plateau ? 1 : recoveryRisk ? -1 : 0,
+    volumeDelta: recoveryRisk ? -1 : phase === 'Bulk' && !plateau ? 1 : 0,
+    symmetryActions,
+  };
+}
+
 function getActiveTargets(activePlan, profile) {
   // Always recalculate from calcTargets — never use stale stored plan macros
-  const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const latestScan = scanHistory.slice(-1)[0] || null;
   const fresh = calcTargets(profile, latestScan);
   const stored = activePlan?.dailyTargets || activePlan?.macros || {};
   // Preserve non-macro plan targets (steps, sleep, water) from plan if set
-  const targets = {
+  let targets = {
     ...fresh,
     steps:               stored.steps               || fresh.steps,
     sleepHours:          stored.sleepHours          || fresh.sleepHours,
@@ -516,6 +575,28 @@ function getActiveTargets(activePlan, profile) {
     trainingDaysPerWeek: stored.trainingDaysPerWeek || fresh.trainingDaysPerWeek,
     cardioDays:          stored.cardioDays          || fresh.cardioDays,
   };
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  if (intel) {
+    const phase = activePlan?.phase || profile?.goal || 'Maintain';
+    if (intel.muscleLossRisk) {
+      targets.calories += 120;
+      targets.protein = Math.round(Math.max(targets.protein, (Number(latestScan?.leanMass || 0) * 0.453592 * 2.4) || targets.protein));
+      targets.trainingDaysPerWeek = Math.max(3, targets.trainingDaysPerWeek - 1);
+      targets.cardioDays = Math.max(1, targets.cardioDays - 1);
+      targets.sleepHours = 8.5;
+    } else if (intel.plateau && phase === 'Cut') {
+      targets.calories -= 120;
+      targets.steps += 1200;
+      targets.cardioDays = Math.min(5, targets.cardioDays + 1);
+    }
+    if (intel.nearingTarget) {
+      targets.calories += 100;
+      targets.cardioDays = Math.max(1, targets.cardioDays - 1);
+    }
+    if (intel.recoveryRisk) {
+      targets.sleepHours = 8.5;
+    }
+  }
   return clampMacros(targets, profile) || { calories: 2000, protein: 150, carbs: 210, fat: 60, steps: 9000, sleepHours: 8, waterLiters: 3, trainingDaysPerWeek: 4, cardioDays: 2 };
 }
 
@@ -632,6 +713,32 @@ function sanitizeScanData(scan, profile) {
   };
 }
 
+function mergeScanHistories(localHistory = [], remoteHistory = []) {
+  const mergedByDate = new Map();
+  [...localHistory, ...remoteHistory].forEach((scan, idx) => {
+    const key = `${scan?.date || 'unknown'}-${idx}`;
+    const prior = mergedByDate.get(scan?.date);
+    if (!prior) {
+      mergedByDate.set(scan?.date, { ...scan, __key: key });
+      return;
+    }
+    const priorScore = Number(prior?.physiqueScore || prior?.score || 0);
+    const nextScore = Number(scan?.physiqueScore || scan?.score || 0);
+    const useNext = nextScore > 0 || (scan?.symmetryScore && !prior?.symmetryScore);
+    mergedByDate.set(scan?.date, useNext ? { ...prior, ...scan, __key: key } : prior);
+  });
+  return [...mergedByDate.values()]
+    .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime())
+    .map(({ __key, ...rest }) => rest);
+}
+
+function getReliableScore(scan) {
+  if (!scan) return null;
+  const candidates = [scan.physiqueScore, scan.score, scan.overallPhysiqueScore, scan.raw_result?.physiqueScore];
+  const valid = candidates.map(Number).find(n => Number.isFinite(n) && n > 0);
+  return valid != null ? Math.round(valid) : null;
+}
+
 /* ─── Content Generators — Zero-LLM ─────────────────────────────────────────
    All plan/mission/tip/insight generation is now deterministic.
    LLM is reserved ONLY for: physique scan (vision), meal suggestions,
@@ -706,7 +813,9 @@ async function generateMissions(profile, activePlan) {
 async function generateWorkoutPlan(profile, activePlan) {
   // Synchronous — no LLM call. Evidence-based split selection by training days.
   const trainDays = getActiveTargets(activePlan, profile)?.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  return buildWorkoutPlan(profile.goal, trainDays);
+  const scanHistory = LS.get(LS_KEYS.scanHistory, []);
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  return buildWorkoutPlan(profile.goal, trainDays, intel);
 }
 
 async function generateRecipeDetails(meal, profile) {
@@ -1728,9 +1837,9 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
         const calPrev = prevScan?.dailyTargets?.calories ?? null;
         const slpPrev = prevScan?.dailyTargets?.sleepHours ?? null;
         const adjustRows = [
-          { label: 'Protein',  dir: ptPrev  != null ? (dt.protein  > ptPrev  ? '↑' : '↓') : '↑', old: ptPrev,  now: dt.protein,   unit: 'g',   color: C.green },
-          { label: 'Calories', dir: calPrev != null ? (dt.calories > calPrev ? '↑' : '↓') : null, old: calPrev, now: dt.calories,  unit: 'kcal', color: C.orange },
-          { label: 'Sleep',    dir: slpPrev != null ? (dt.sleepHours > slpPrev ? '↑' : '↓') : '↑', old: slpPrev, now: dt.sleepHours ?? activePlan?.sleepHrs ?? 8, unit: 'hrs', color: C.blue },
+          { label: 'Protein',  dir: ptPrev  != null ? (dt.protein  > ptPrev  ? '↑' : '↓') : '↑', prev: ptPrev,  now: dt.protein,   unit: 'g',   color: C.green },
+          { label: 'Calories', dir: calPrev != null ? (dt.calories > calPrev ? '↑' : '↓') : null, prev: calPrev, now: dt.calories,  unit: 'kcal', color: C.orange },
+          { label: 'Sleep',    dir: slpPrev != null ? (dt.sleepHours > slpPrev ? '↑' : '↓') : '↑', prev: slpPrev, now: dt.sleepHours ?? activePlan?.sleepHrs ?? 8, unit: 'hrs', color: C.blue },
         ].filter(r => r.now != null);
 
         return (
@@ -1820,7 +1929,6 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
               <div style={{ padding: '14px 18px', borderBottom: `1px solid rgba(255,255,255,0.06)` }}>
                 <div style={{ fontSize: 9, color: C.dimmed, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 8 }}>Diagnosis</div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>⚡</span>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 3 }}>{diagTitle}</div>
                     {diagExpl && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{diagExpl}</div>}
@@ -1852,15 +1960,28 @@ function HomeTab({ profile, activePlan, setTab, showToast }) {
                         )}
                         <span style={{ fontSize: 14, color: C.white, fontWeight: 500 }}>{r.label}</span>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {r.old != null && (
-                          <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{r.old}{r.unit}</span>
-                        )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 15, fontWeight: 800, color: r.color }}>{r.now}{r.unit}</span>
+                        {r.prev != null && r.prev !== r.now && (
+                          <span style={{
+                            fontSize: 10,
+                            color: C.dimmed,
+                            border: `1px solid rgba(255,255,255,0.1)`,
+                            borderRadius: 99,
+                            padding: '2px 7px',
+                            letterSpacing: '.03em',
+                            textTransform: 'uppercase',
+                          }}>
+                            Updated
+                          </span>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
+                {prevScan && (
+                  <div style={{ fontSize: 11, color: C.dimmed, marginTop: 10 }}>Updated from last scan.</div>
+                )}
               </div>
             )}
 
@@ -3213,6 +3334,12 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
   const steps      = activePlan.steps || macros.steps || 8000;
   const scanHistory = LS.get(LS_KEYS.scanHistory, []);
   const latestScan  = scanHistory.slice(-1)[0] || null;
+  const intel = getScanIntelligence(scanHistory, activePlan, profile);
+  const symmetryFocus = intel?.symmetryActions?.length
+    ? intel.symmetryActions
+    : (latestScan?.symmetryScore && latestScan.symmetryScore < 82
+      ? [{ area: 'General symmetry', action: 'Keep unilateral press, row, split-squat, and single-arm carry volume matched side-to-side this week.' }]
+      : []);
 
   const FOCUS_CARDS = [
     { label: 'Protein',  value: `${macros.protein || 150}g daily`,                reason: 'preserve muscle' },
@@ -3504,6 +3631,29 @@ function PlanTab({ profile, activePlan, setTab, showToast }) {
             <SectionRow sectionKey="workouts" label="Workout plan" meta={`${trainDays}x/wk`} />
             {openSections.has('workouts') && (
               <div>
+                {symmetryFocus.length > 0 && (
+                  <div style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: `1px solid rgba(255,255,255,0.08)`,
+                    borderRadius: 12,
+                    padding: '12px 14px',
+                    marginBottom: 12,
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: C.muted, marginBottom: 8 }}>
+                      Symmetry Focus
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {symmetryFocus.map((item, idx) => (
+                        <div key={`${item.area}-${idx}`} style={{ display: 'flex', gap: 8 }}>
+                          <span style={{ color: C.green }}>•</span>
+                          <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+                            <span style={{ color: C.white, fontWeight: 600 }}>{item.area}:</span> {item.action}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* Pager nav */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                   <button
@@ -3665,7 +3815,7 @@ const TIER_COLORS = { Bronze: '#CD7F32', Silver: '#C0C0C0', Gold: C.gold, Platin
 function PhysiqueChart({ scans }) {
   if (!scans || scans.length < 2) return null;
   const sorted = [...scans].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const scores = sorted.map(s => s.physiqueScore || 50);
+  const scores = sorted.map(s => getReliableScore(s) || 50);
   const minS = Math.min(...scores) - 5;
   const maxS = Math.max(...scores) + 5;
   const W = 300, H = 72;
@@ -3880,7 +4030,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                 const prev = scanHistory[i - 1];
                 const bfΔ = prev ? Number((getBF(s) || 0) - (getBF(prev) || 0)) : null;
                 const lmΔ = prev ? Number((s.leanMass || 0) - (prev.leanMass || 0)) : null;
-                const scoreΔ = prev ? (s.physiqueScore || 0) - (prev.physiqueScore || 0) : null;
+                const scoreΔ = prev ? (getReliableScore(s) || 0) - (getReliableScore(prev) || 0) : null;
                 const isLatestScan = i === scanHistory.length - 1;
                 return (
                   <div key={i} className="bp" onClick={() => setSelectedScan({ scan: s, isLatest: isLatestScan })} style={{
@@ -3892,7 +4042,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
                       {s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.purple, background: C.purple + '22', padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Base</span>}
                       {isLatestScan && !s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.green, background: C.greenBg, padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Latest</span>}
                     </div>
-                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(s.physiqueScore)}</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(getReliableScore(s))}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
                     <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ color: C.muted }}>
@@ -4428,9 +4578,14 @@ Return ONLY this JSON (no markdown, no extra text):
         }, profile)
       : baseTargets;
 
+    const provisionalHistory = [...(LS.get(LS_KEYS.scanHistory, [])), { bodyFat: result.bodyFatPct, leanMass: result.leanMass, symmetryScore: result.symmetryScore, asymmetries: result.asymmetries, date: today }];
+    const intel = getScanIntelligence(provisionalHistory, LS.get(LS_KEYS.activePlan, null), profile);
+    const dynamicPhase = intel?.nearingTarget && profile.goal === 'Cut'
+      ? 'Maintain'
+      : (intel?.recoveryRisk && profile.goal === 'Bulk' ? 'Recomp' : profile.goal);
     const plan = {
-      phase:          profile.goal,
-      phaseName:      `${profile.goal} Phase`,
+      phase:          dynamicPhase,
+      phaseName:      `${dynamicPhase} Phase`,
       objective:      eng?.diagnosis?.primary?.recommended_action || '',
       week:           1,
       startDate:      today,
@@ -4444,13 +4599,14 @@ Return ONLY this JSON (no markdown, no extra text):
       bodyFat:        result.bodyFatPct,
       leanMass:       result.leanMass,
       startBF:        eng?.start_bf         ?? result.bodyFatPct,
-      targetBF:       eng?.target_bf        ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct),
+      targetBF:       eng?.target_bf        ?? (dynamicPhase === 'Cut' ? result.bodyFatPct - 4 : dynamicPhase === 'Bulk' ? result.bodyFatPct + 1 : result.bodyFatPct),
       weeklyMissions: result.weeklyMissions  || [],
       whyThisWorks:   result.whyThisWorks    || '',
       cardioDays:     m.cardioDays           || 2,
       engineDiagnosis: eng?.diagnosis        || null,
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
+      trainingEmphasis: intel?.trainingEmphasis || null,
     };
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
@@ -4460,9 +4616,9 @@ Return ONLY this JSON (no markdown, no extra text):
       bodyFat: result.bodyFatPct,
       bodyFatRange: result.bodyFatRange || null,
       leanMass: result.leanMass,
-      physiqueScore: result.physiqueScore,
+      physiqueScore: getReliableScore(result),
       symmetryScore: result.symmetryScore,
-      phase: profile.goal,
+      phase: dynamicPhase,
       confidence: result.confidence || 'medium',
       // Keep only weak group names — not full muscleGroups object (saves storage)
       weakestGroups: result.weakestGroups || (result.priorityAreas || []).slice(0, 3),
@@ -4504,7 +4660,7 @@ Return ONLY this JSON (no markdown, no extra text):
       <div style={{ position: 'relative', width: 100, height: 100 }}>
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.greenBg}` }} />
         <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `3px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>📸</div>
+        <div style={{ position: 'absolute', inset: 12, borderRadius: '50%', background: C.greenBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, letterSpacing: '.08em', color: C.green }}>SCAN</div>
       </div>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Analyzing your physique…</div>
@@ -4540,7 +4696,7 @@ Return ONLY this JSON (no markdown, no extra text):
         {consistencyWarnings.length > 0 && !warningsAccepted && (
           <Card style={{ background: `${C.gold}14`, border: `1px solid ${C.gold}55`, padding: '16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <span style={{ fontSize: 18 }}>⚠️</span>
+              <span style={{ fontSize: 11, color: C.gold, fontWeight: 700, letterSpacing: '.06em' }}>NOTICE</span>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.gold }}>Consistency Check</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -4586,7 +4742,6 @@ Return ONLY this JSON (no markdown, no extra text):
           return (
             <Card className="su" style={{ borderColor: color + '44' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: explanation ? 12 : 0 }}>
-                <span style={{ fontSize: 18 }}>🔬</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
@@ -4638,12 +4793,12 @@ Return ONLY this JSON (no markdown, no extra text):
                   <span style={{ fontSize: 11, fontWeight: 700, color: confColor, background: confColor + '22', padding: '4px 10px', borderRadius: 99, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
                     {conf} confidence
                   </span>
-                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(result.physiqueScore)}/100</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(getReliableScore(result))}/100</span>
                 </div>
               </div>
               {conf !== 'high' && (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: confColor + '12', borderRadius: 10, border: `1px solid ${confColor}33` }}>
-                  <span style={{ fontSize: 13 }}>ℹ️</span>
+                  <span style={{ fontSize: 11, color: confColor, fontWeight: 700 }}>INFO</span>
                   <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
                     {conf === 'medium'
                       ? 'Moderate confidence — a straight-on photo with good lighting narrows this range.'
@@ -4659,7 +4814,7 @@ Return ONLY this JSON (no markdown, no extra text):
         <Card className="su" style={{ animationDelay: '.03s' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <span style={{ background: C.greenBg, color: C.green, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}` }}>
-              {PHASE_META[ph.label]?.emoji || '🎯'} {ph.label || 'Maintain'}
+              {ph.label || 'Maintain'}
             </span>
             <StatusPill tone={predictedTrajectory.tone === 'good' ? 'good' : predictedTrajectory.tone === 'warn' ? 'warn' : 'neutral'} label={predictedTrajectory.label} />
           </div>
@@ -4683,38 +4838,22 @@ Return ONLY this JSON (no markdown, no extra text):
           )}
         </Card>
 
-        {/* 4 – ADJUST NOW (before → after targets) */}
+        {/* 4 – ADJUST NOW */}
         <div className="su" style={{ animationDelay: '.04s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>{prevScan ? 'ADJUST NOW' : 'Your Targets'}</div>
           {prevScan && prevScan.dailyTargets && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-              {[
-                { label: 'Calories', before: prevScan.dailyTargets.calories, after: dt.calories, unit: 'kcal', color: C.orange },
-                { label: 'Protein',  before: prevScan.dailyTargets.protein,  after: dt.protein,  unit: 'g',    color: C.blue },
-              ].map(t => (
-                <div key={t.label} style={{ background: C.cardElevated, borderRadius: 12, border: `1px solid ${C.border}`, padding: 12 }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{t.label}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 13, color: C.dimmed, textDecoration: 'line-through' }}>{t.before ?? '—'}</span>
-                    <span style={{ fontSize: 11, color: C.muted }}>→</span>
-                    <span style={{ fontSize: 19, fontWeight: 700, color: t.color }}>{t.after ?? '—'}</span>
-                  </div>
-                  <div style={{ fontSize: 10, color: C.dimmed, marginTop: 2 }}>{t.unit}</div>
-                </div>
-              ))}
-            </div>
+            <div style={{ fontSize: 11, color: C.dimmed, marginBottom: 10 }}>Updated from last scan based on your current trajectory.</div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             {[
-              { icon: '🔥', label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
-              { icon: '⚡', label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
-              { icon: '🚶', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
-              { icon: '🌙', label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
-              { icon: '💧', label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
-              { icon: '🏋️', label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
+              { label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
+              { label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
+              { label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
+              { label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
+              { label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
+              { label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
             ].map(t => (
               <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>{t.icon}</div>
                 <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
                 <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
                 <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
@@ -4760,7 +4899,7 @@ Return ONLY this JSON (no markdown, no extra text):
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
               { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+              { label: 'Score',     value: `${safeNum(getReliableScore(result))}/100`,             color: C.green },
               { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
               { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
             ].map(m => (
@@ -5161,7 +5300,7 @@ Return ONLY this JSON (no markdown, no extra text):
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-                  {s.physiqueScore > 0 ? s.physiqueScore : '—'}/100
+                  {getReliableScore(s) || '—'}/100
                 </div>
               </div>
             )})}
@@ -5206,7 +5345,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial' }) {
             {[
               { label: 'Body Fat', value: getBFDisplay(scan), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
               { label: 'Lean Mass', value: fmt.leanMass(scan.leanMass || 0, unitSystem), tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
-              { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
+              { label: 'Physique Score', value: `${getReliableScore(scan) || '—'}/100`, tone: C.white },
               { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
             ].map((m) => (
               <div key={m.label} style={{ background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }}>
@@ -5511,12 +5650,14 @@ export default function MassIQ() {
             const fallbackName = persistedName || cached?.name || null;
             if (fallbackName) loadedProfile = { ...loadedProfile, name: fallbackName };
           }
+          const cachedHistory = LS.get(LS_KEYS.scanHistory, []);
+          const mergedHistory = mergeScanHistories(cachedHistory, loadedScanHistory);
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
-          LS.set(LS_KEYS.scanHistory, loadedScanHistory);
+          LS.set(LS_KEYS.scanHistory, mergedHistory);
         }
       } catch (err) {
         console.error('hydrate account data failed', err);
