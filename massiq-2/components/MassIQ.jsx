@@ -4346,6 +4346,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied }) {
   const uploadRef = useRef(null);
 
   const [scanning,          setScanning]          = useState(false);
+  const [applying,          setApplying]          = useState(false);
   const [result,            setResult]            = useState(null);
   const [error,             setError]             = useState('');
   const [scanHistory,       setScanHistory]       = useState(() => LS.get(LS_KEYS.scanHistory, []));
@@ -4591,12 +4592,28 @@ Return ONLY this JSON (no markdown, no extra text):
         trainingDaysPerWeek: m.trainingDaysPerWeek || 4,
       },
     };
-    const history = [...existingHistory, entry];
+    // Save plan + stats to LS immediately (safe to be optimistic)
     LS.set(LS_KEYS.activePlan, plan);
     LS.set(LS_KEYS.stats, { calories: 0, protein: 0 });
-    LS.set(LS_KEYS.scanHistory, history);
-    setScanHistory(history);
-    onPlanApplied(plan, history);
+
+    // Do NOT touch scanHistory until the DB insert confirms — otherwise a failed
+    // insert leaves a ghost scan that disappears after logout.
+    setApplying(true);
+    setError('');
+    try {
+      console.info('[scan] applyPlan: awaiting DB persistence before updating scan history');
+      await onPlanApplied(plan, entry);
+      // DB confirmed — now read the freshly-stamped history back from LS
+      setScanHistory(LS.get(LS_KEYS.scanHistory, []));
+      console.info('[scan] applyPlan: scan persisted, history updated');
+    } catch (persistErr) {
+      console.error('[scan] applyPlan: DB persist failed', persistErr?.message);
+      setError('Your scan could not be saved to your account. Check your connection and try again.');
+      setApplying(false);
+      return; // Stay on scan tab so user can retry
+    }
+    setApplying(false);
+
     // Regenerate meal plan + workout plan with scan data in background
     generateMealPlan(profile, plan, result)
       .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
@@ -5187,7 +5204,9 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 10 – Apply This Plan → */}
-        <Btn onClick={applyPlan} style={{ width: '100%', marginTop: 4 }}>Apply This Plan →</Btn>
+        <Btn onClick={applyPlan} disabled={applying} style={{ width: '100%', marginTop: 4 }}>
+          {applying ? 'Saving to account…' : 'Apply This Plan →'}
+        </Btn>
         <Card className="su" style={{ animationDelay: '.11s' }}>
           <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Next decision</div>
           <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: 0 }}>{nextDecision}</p>
@@ -5632,11 +5651,28 @@ export default function MassIQ() {
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
-          // Only overwrite local scan history if DB has actual rows.
-          // If DB returns empty (e.g. RLS not yet configured), preserve local scans.
+          // DB is ground truth for which scans exist.
+          // Merge with local data to preserve rich fields (physiqueScore, symmetryScore, etc.)
+          // that the DB schema doesn't store.
+          const localHistory = LS.get(LS_KEYS.scanHistory, []);
           if (loadedScanHistory.length > 0) {
-            LS.set(LS_KEYS.scanHistory, loadedScanHistory);
-            setScanHistory(loadedScanHistory);
+            const merged = loadedScanHistory.map(dbScan => {
+              const localMatch = localHistory.find(ls => ls.dbId === dbScan.id || ls.dbId === String(dbScan.id));
+              if (localMatch) return { ...localMatch, id: dbScan.id, dbId: dbScan.id };
+              // No local match — use DB data and stamp dbId
+              return { ...dbScan, dbId: dbScan.id };
+            });
+            LS.set(LS_KEYS.scanHistory, merged);
+            setScanHistory(merged);
+            console.info('[sync] hydrate: merged', merged.length, 'scans from DB');
+          } else {
+            // DB returned 0 — clean up any stale unconfirmed local entries (no dbId)
+            const confirmedLocal = localHistory.filter(s => s.dbId);
+            if (confirmedLocal.length !== localHistory.length) {
+              console.warn('[sync] hydrate: removing', localHistory.length - confirmedLocal.length, 'unconfirmed local scan(s)');
+              LS.set(LS_KEYS.scanHistory, confirmedLocal);
+              setScanHistory(confirmedLocal);
+            }
           }
         }
       } catch (err) {
@@ -5650,7 +5686,7 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  const persistUserState = async (nextProfile, nextPlan, scanHistory = null) => {
+  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null) => {
     if (!session?.access_token) return;
     setSyncing(true);
 
@@ -5689,49 +5725,48 @@ export default function MassIQ() {
       }
 
       // ── Step 3: Scan — capture scanId ───────────────────────────────────
+      // newScanEntry is the single new scan object (no dbId yet).
+      // We insert it, stamp the returned DB id, then append to LS history.
+      // Errors are NOT swallowed — they propagate so the caller can show the user.
       let scanId = null;
-      const latestScan = Array.isArray(scanHistory) && scanHistory.length
-        ? scanHistory[scanHistory.length - 1] : null;
+      let savedScanEntry = null;
 
-      if (latestScan) {
-        if (latestScan.dbId) {
-          // Already persisted in a previous sync
-          scanId = latestScan.dbId;
+      if (newScanEntry) {
+        if (newScanEntry.dbId) {
+          // Already persisted in a previous sync (e.g. retry after partial failure)
+          scanId = newScanEntry.dbId;
+          savedScanEntry = newScanEntry;
           console.info('[sync] step3:createScan:skipped (already saved)', { scanId });
         } else {
-          try {
-            console.info('[sync] step3:createScan:start', {
-              bodyFat: latestScan.bodyFat,
-              leanMass: latestScan.leanMass,
-            });
-            const saved = await createScan(session.access_token, userId, latestScan);
-            scanId = saved?.id ?? null;
-            console.info('[sync] step3:createScan:ok', { scanId });
-            if (!scanId) {
-              console.error('[sync] step3:createScan: returned no id — projection will be skipped');
-            }
-            // Stamp dbId so we never double-insert this scan
-            const currentHistory = LS.get(LS_KEYS.scanHistory, []);
-            const stamped = currentHistory.map((s, i) =>
-              i === currentHistory.length - 1 ? { ...s, dbId: scanId } : s
-            );
-            LS.set(LS_KEYS.scanHistory, stamped);
-            setScanHistory(stamped);
-          } catch (scanErr) {
-            console.error('[sync] step3:createScan:error', scanErr?.message, scanErr);
-            // Silent — scan errors logged to console only
+          console.info('[sync] step3:createScan:start', {
+            bodyFat: newScanEntry.bodyFat,
+            leanMass: newScanEntry.leanMass,
+          });
+          // No try/catch here — let failures propagate to the outer catch
+          const saved = await createScan(session.access_token, userId, newScanEntry);
+          scanId = saved?.id ?? null;
+          console.info('[sync] step3:createScan:response', { scanId, raw: saved });
+          if (!scanId) {
+            throw new Error('[sync] step3:createScan: Supabase returned no id — scan not saved');
           }
+          // Stamp dbId and append confirmed entry to LS history + root state
+          savedScanEntry = { ...newScanEntry, dbId: scanId };
+          const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+          const newHistory = [...currentHistory, savedScanEntry];
+          LS.set(LS_KEYS.scanHistory, newHistory);
+          setScanHistory(newHistory);
+          console.info('[sync] step3:createScan:ok — history updated', { scanId, total: newHistory.length });
         }
       }
 
       // ── Step 4: Physique projection — requires both planId and scanId ───
-      const projectionAlreadySaved = latestScan?.projectionSaved ?? false;
-      if (planId && scanId && latestScan && !projectionAlreadySaved) {
+      const projectionAlreadySaved = savedScanEntry?.projectionSaved ?? false;
+      if (planId && scanId && savedScanEntry && !projectionAlreadySaved) {
         try {
           console.info('[sync] step4:createProjection:start', { planId, scanId });
           const proj = await createProjection(
             session.access_token, userId, scanId, planId,
-            nextPlan, latestScan, nextProfile,
+            nextPlan, savedScanEntry, nextProfile,
           );
           console.info('[sync] step4:createProjection:ok', { projectionId: proj?.id });
           // Mark so we don't re-insert on the next sync call
@@ -5745,12 +5780,15 @@ export default function MassIQ() {
           console.error('[sync] step4:createProjection:error', projErr?.message, projErr);
           // Non-critical — app functions fine without projection row
         }
-      } else if (latestScan && (!planId || !scanId)) {
+      } else if (newScanEntry && (!planId || !scanId)) {
         console.warn('[sync] step4:createProjection:skipped — missing planId or scanId', { planId, scanId });
       }
 
     } catch (err) {
       console.error('[sync] persistUserState:outer error', err?.message, err);
+      // Only re-throw when a scan was being saved — so applyPlan can surface the error.
+      // Profile/plan/unit-update calls (newScanEntry = null) log and continue.
+      if (newScanEntry) throw err;
     } finally {
       setSyncing(false);
     }
@@ -5875,7 +5913,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={(p, history) => { setActivePlan(p); persistUserState(profile, p, history); }} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} />;
         case 'profile':   return (
           <ProfileTab

@@ -375,16 +375,15 @@ export async function createScan(token, userId, scan) {
   console.info('[sync] createScan:response', rows);
   const raw = Array.isArray(rows) ? rows[0] : rows;
   if (!raw) {
-    console.warn('[sync] createScan: Supabase returned empty body — insert may have succeeded');
-    return null;
+    // Supabase returned 201 but empty body — means the row was inserted but
+    // `Prefer: return=representation` wasn't honoured (e.g. RLS policy blocks SELECT).
+    throw new Error('[scans] Row inserted but Supabase returned no data. Check RLS SELECT policy on scans table.');
   }
   const result = deserializeScan(raw);
   if (!result?.id) {
-    // Insert succeeded (HTTP 201) but id not parseable — log and return null so
-    // the caller continues without throwing (projection will be skipped).
-    console.warn('[sync] createScan: insert ok but id not returned', raw);
-    return null;
+    throw new Error(`[scans] Insert succeeded but no id in response: ${JSON.stringify(raw)}`);
   }
+  console.info('[sync] createScan:ok', { id: result.id, bodyFat: result.bodyFat, leanMass: result.leanMass });
   return result;
 }
 
