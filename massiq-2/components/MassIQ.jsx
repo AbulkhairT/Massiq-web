@@ -4570,6 +4570,30 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onReset, onLog
         </div>
       </Card>
 
+      {/* Legal ── */}
+      <Card style={{ padding: '4px 0' }}>
+        {[
+          { label: 'Privacy Policy', href: '/privacy' },
+          { label: 'Terms of Service', href: '/terms' },
+        ].map((item, i) => (
+          <a
+            key={item.label}
+            href={item.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '13px 16px',
+              borderBottom: i === 0 ? `1px solid ${C.border}` : 'none',
+              color: C.muted, fontSize: 14, fontWeight: 500, textDecoration: 'none',
+            }}
+          >
+            <span>{item.label}</span>
+            <Icon name="arrow-right" size={14} color={C.dimmed} strokeWidth={2} />
+          </a>
+        ))}
+      </Card>
+
       {/* 6 ── Reset ── */}
       <div style={{ paddingTop: 8, textAlign: 'center' }}>
         <button className="bp" onClick={onLogout} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '8px 0 14px' }}>
@@ -5533,177 +5557,102 @@ Return ONLY this JSON (no markdown, no extra text):
           const leanMassDisplay = result.leanMass > 0
             ? fmt.leanMass(result.leanMass, profile?.unitSystem) : null;
 
-          // Premium smooth-bezier body silhouette — no harsh outlines, organic curves
-          const BodySilhouette = ({ bfPct, isProjected }) => {
-            const bfC = Math.max(6, Math.min(42, bfPct));
-            const t   = Math.min(1, Math.max(0, (bfC - 6) / 36)); // 0=lean, 1=heavy
-            const cx  = 40;
-            // Key half-widths
-            const shW = 19 - t * 3;     // shoulder: 19 lean → 16 heavy
-            const trW = shW - 3;         // torso side just below shoulder
-            const waW = 9  + t * 11;    // waist: 9 lean → 20 heavy
-            const hiW = 13 + t * 8;     // hip: 13 lean → 21 heavy
-            const thW = 8  + t * 5;     // thigh: 8 lean → 13 heavy
-            const clW = 4.5 + t * 2;    // calf: 4.5 lean → 6.5 heavy
-            const lgG = 3;              // leg inner gap from center
-            const nkW = 5;              // neck half-width
-            // Y positions
-            const nkY = 31;  const shY = 37;  const arY = 54;
-            const waY = 92;  const hiY = 110; const crY = 124;
-            const knY = 160; const anY = 196; const ftY = 200;
-
-            const gradId = isProjected ? 'siProjG' : 'siCurrG';
-
-            // One continuous smooth bezier outline: neck → shoulders → torso → hips →
-            // left leg down → foot across → inner left leg up → crotch arch →
-            // inner right leg down → right foot → right outer leg up → close
-            const d = `
-              M ${cx - nkW} ${nkY}
-              C ${cx - nkW - 4} ${nkY + 2}  ${cx - shW - 2} ${shY - 4}  ${cx - shW} ${shY}
-              C ${cx - shW - 2} ${shY + 6}  ${cx - trW - 1} ${arY - 5}  ${cx - trW} ${arY}
-              C ${cx - trW} ${arY + 5}  ${cx - waW - 2} ${waY - 12}  ${cx - waW} ${waY}
-              C ${cx - waW - 1} ${waY + 7}  ${cx - hiW + 1} ${hiY - 7}  ${cx - hiW} ${hiY}
-              C ${cx - hiW - 1} ${hiY + 6}  ${cx - thW - 1} ${crY - 5}  ${cx - thW} ${crY}
-              C ${cx - thW - 1} ${crY + 8}  ${cx - thW} ${knY - 8}  ${cx - thW + 1} ${knY}
-              C ${cx - thW + 1} ${knY + 10}  ${cx - clW} ${knY + 14}  ${cx - clW} ${knY + 18}
-              L ${cx - clW} ${anY}
-              L ${cx - clW + 1} ${ftY}
-              L ${cx - lgG} ${ftY}
-              L ${cx - lgG} ${crY}
-              Q ${cx} ${crY + 7}  ${cx + lgG} ${crY}
-              L ${cx + lgG} ${ftY}
-              L ${cx + clW - 1} ${ftY}
-              L ${cx + clW} ${anY}
-              L ${cx + clW} ${knY + 18}
-              C ${cx + clW} ${knY + 14}  ${cx + thW - 1} ${knY + 10}  ${cx + thW - 1} ${knY}
-              C ${cx + thW} ${knY - 8}  ${cx + thW + 1} ${crY + 8}  ${cx + thW} ${crY}
-              C ${cx + thW + 1} ${crY - 5}  ${cx + hiW + 1} ${hiY + 6}  ${cx + hiW} ${hiY}
-              C ${cx + hiW - 1} ${hiY - 7}  ${cx + waW + 1} ${waY + 7}  ${cx + waW} ${waY}
-              C ${cx + waW + 2} ${waY - 12}  ${cx + trW + 1} ${arY + 5}  ${cx + trW} ${arY}
-              C ${cx + trW + 1} ${arY - 5}  ${cx + shW + 2} ${shY + 6}  ${cx + shW} ${shY}
-              C ${cx + shW + 2} ${shY - 4}  ${cx + nkW + 4} ${nkY + 2}  ${cx + nkW} ${nkY}
-              Z`;
-
-            return (
-              <svg viewBox="0 0 80 210" style={{ width: '100%', height: '100%' }}>
-                <defs>
-                  {isProjected ? (
-                    <linearGradient id="siProjG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="rgba(90,230,150,0.38)" />
-                      <stop offset="55%"  stopColor="rgba(52,209,123,0.26)" />
-                      <stop offset="100%" stopColor="rgba(28,155,84,0.16)" />
-                    </linearGradient>
-                  ) : (
-                    <linearGradient id="siCurrG" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="rgba(255,255,255,0.11)" />
-                      <stop offset="100%" stopColor="rgba(255,255,255,0.03)" />
-                    </linearGradient>
-                  )}
-                </defs>
-                {/* Head */}
-                <circle cx={cx} cy={13} r={9} fill={`url(#${gradId})`} />
-                {/* Neck */}
-                <rect x={cx - nkW} y={22} width={nkW * 2} height={10} rx={2} fill={`url(#${gradId})`} />
-                {/* Full body outline */}
-                <path d={d} fill={`url(#${gradId})`} />
-              </svg>
-            );
-          };
-
-          // Shorten stage labels for cleaner display
-          const SHORT = { 'Athletic & Defined': 'Athletic', 'Athletic & Toned': 'Athletic', 'Lean & Active': 'Lean', 'Healthy & Active': 'Active', 'Building Phase': 'Building', 'Heavy Bulk': 'Heavy' };
-          const shortLabel = (l) => SHORT[l] || l;
-
-          // One sharp summary line keyed to goal
-          const goalKey = (profile?.goal || '').toLowerCase();
-          const punchyCopy = goalKey === 'cut'
-            ? 'Stay consistent — you\'re trending toward a visibly leaner physique.'
+          // Projected Outcome card — clean data summary, no decorative silhouettes
+          const goalKey         = (profile?.goal || '').toLowerCase();
+          const projRangeLabel  = proj.projBFLow === proj.projBFHigh
+            ? `${proj.projBFMid}%`
+            : `${proj.projBFLow}–${proj.projBFHigh}%`;
+          const confColor = result.confidence === 'high' ? C.green
+            : result.confidence === 'low' ? C.red : C.gold;
+          const confBg = result.confidence === 'high' ? 'rgba(114,184,149,0.10)'
+            : result.confidence === 'low' ? 'rgba(201,92,92,0.10)' : 'rgba(196,168,50,0.10)';
+          const explanation = goalKey === 'cut'
+            ? `At your current pace, you are projected to move from ${curr.label} to ${proj.projLabel} over the next ${proj.timeline}.`
             : (goalKey === 'bulk' || goalKey === 'build')
-              ? 'Lean bulk in progress — muscle density builds as body fat stays controlled.'
+              ? `A lean bulk keeps body fat controlled while adding muscle mass. Your projected stage over ${proj.timeline} reflects that trajectory.`
               : goalKey === 'recomp'
-                ? 'Slow and sustainable — fat reduces, muscle improves, week by week.'
-                : 'Consistency locks this in. Your stage remains stable by design.';
+                ? `Body recomposition is gradual. Over ${proj.timeline}, consistent training and nutrition should shift your stage toward ${proj.projLabel}.`
+                : `Consistent effort over ${proj.timeline} is projected to maintain or refine your current physique stage.`;
 
           return (
             <div className="su" style={{
               animationDelay: '.065s',
-              background: 'linear-gradient(170deg, #0D1511 0%, #0A0F0C 100%)',
+              background: '#0F1410',
               border: '1px solid rgba(255,255,255,0.06)',
               borderRadius: 24,
-              padding: '26px 22px 22px',
+              padding: '22px 22px 20px',
             }}>
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
+              {/* Section label */}
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(114,184,149,0.45)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 18 }}>
+                Projected Outcome
+              </div>
+
+              {/* Current → Projected data row */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 28px 1fr', alignItems: 'flex-start', gap: 8, marginBottom: 18 }}>
+                {/* Current */}
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(52,209,123,0.4)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 6 }}>Physique Projection</div>
-                  <div style={{ fontSize: 21, fontWeight: 700, color: '#ECEEED', letterSpacing: '-.025em', lineHeight: 1.1 }}>Visual Trajectory</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Now</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: C.white, letterSpacing: '-.03em', lineHeight: 1 }}>{bf}%</div>
+                  <div style={{ fontSize: 12, color: C.dimmed, marginTop: 6, lineHeight: 1.35 }}>{curr.label}</div>
                 </div>
-                <div style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 99, padding: '5px 13px', marginTop: 2 }}>
-                  <span style={{ color: '#4D5C50', fontSize: 11, fontWeight: 500 }}>{proj.timeline}</span>
-                </div>
-              </div>
-
-              {/* Silhouettes — projected is taller and more opaque (the hero) */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', alignItems: 'flex-end', gap: 12, marginBottom: 16 }}>
-                {/* Current — muted, smaller */}
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, fontWeight: 600, color: '#2E3A30', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>Today</div>
-                  <div style={{ height: 160, opacity: 0.38 }}>
-                    <BodySilhouette bfPct={bf} isProjected={false} />
-                  </div>
-                </div>
-                {/* Projected — dominant, full size */}
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, fontWeight: 600, color: 'rgba(52,209,123,0.55)', textTransform: 'uppercase', letterSpacing: '.18em', marginBottom: 10 }}>In ~{proj.timeline}</div>
-                  <div style={{ height: 200 }}>
-                    <BodySilhouette bfPct={proj.projBFMid} isProjected={true} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Stage labels */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 22, paddingTop: 4 }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#505F52', letterSpacing: '-.01em' }}>{shortLabel(curr.label)}</div>
-                  <div style={{ fontSize: 11, color: '#3A4A3C', marginTop: 3 }}>{bf}%</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: '#34D17B', letterSpacing: '-.02em' }}>{shortLabel(proj.projLabel)}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(52,209,123,0.38)', marginTop: 3 }}>
-                    ~{proj.projBFLow === proj.projBFHigh ? `${proj.projBFMid}%` : `${proj.projBFLow}–${proj.projBFHigh}%`}
-                  </div>
+                {/* Arrow */}
+                <div style={{ paddingTop: 20, color: C.dimmed, fontSize: 14, textAlign: 'center' }}>→</div>
+                {/* Projected */}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(114,184,149,0.5)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Projected</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: C.green, letterSpacing: '-.03em', lineHeight: 1 }}>{projRangeLabel}</div>
+                  <div style={{ fontSize: 12, color: 'rgba(114,184,149,0.6)', marginTop: 6, lineHeight: 1.35 }}>{proj.projLabel}</div>
                 </div>
               </div>
 
               {/* Hairline */}
-              <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent)', marginBottom: 18 }} />
+              <div style={{ height: 1, background: 'rgba(255,255,255,0.04)', marginBottom: 16 }} />
 
-              {/* Punchy summary */}
-              <p style={{ color: '#4D5C50', fontSize: 13, lineHeight: 1.65, margin: '0 0 18px', fontStyle: 'italic' }}>{punchyCopy}</p>
+              {/* Chips */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+                <div style={{
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 99, padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <Icon name="clock" size={11} color={C.dimmed} strokeWidth={2} />
+                  <span style={{ fontSize: 11, color: C.dimmed, fontWeight: 500 }}>~{proj.timeline}</span>
+                </div>
+                {result.confidence && (
+                  <div style={{
+                    background: confBg, border: `1px solid ${confColor}44`,
+                    borderRadius: 99, padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <div style={{ width: 5, height: 5, borderRadius: '50%', background: confColor, flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, color: confColor, fontWeight: 500 }}>{result.confidence} confidence</span>
+                  </div>
+                )}
+              </div>
 
-              {/* Details toggle */}
+              {/* Explanation */}
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: '0 0 16px' }}>
+                {explanation}
+              </p>
+
+              {/* "Why this projection" toggle */}
               <button onClick={() => setShowPhysiqueDetails(o => !o)} style={{
                 display: 'flex', alignItems: 'center', gap: 5,
                 background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                color: '#2E3A30', fontSize: 12, fontWeight: 500,
+                color: C.dimmed, fontSize: 12, fontWeight: 500,
               }}>
-                <span>{showPhysiqueDetails ? 'Less' : 'Details'}</span>
+                <span>Why this projection</span>
                 <span style={{ display: 'inline-block', fontSize: 9, transform: showPhysiqueDetails ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>▾</span>
               </button>
 
               {showPhysiqueDetails && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                  {result.confidence && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                      <div style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: result.confidence === 'high' ? C.green : result.confidence === 'low' ? C.red : C.gold }} />
-                      <span style={{ color: '#3A4A3C', fontSize: 12 }}>{result.confidence} confidence</span>
-                    </div>
-                  )}
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <p style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.65, margin: 0 }}>
+                    This projection is derived from your current body fat percentage, stated training goal, and standard physiological progress rates for your phase. It represents a realistic range based on consistent effort — not a guaranteed outcome.
+                  </p>
                   {leanMassDisplay && (
-                    <div style={{ fontSize: 12, color: '#3A4A3C', marginBottom: 10 }}>Lean mass: {leanMassDisplay}</div>
+                    <div style={{ fontSize: 12, color: C.dimmed }}>Current lean mass estimate: {leanMassDisplay}</div>
                   )}
-                  <p style={{ color: '#252E27', fontSize: 11, lineHeight: 1.65, margin: 0 }}>
-                    Reference projection only — not an exact image of your future physique.
+                  <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', lineHeight: 1.6, margin: 0 }}>
+                    AI estimate only. Individual results vary. Consult a qualified professional for medical or nutritional advice.
                   </p>
                 </div>
               )}
@@ -5965,6 +5914,20 @@ Return ONLY this JSON (no markdown, no extra text):
         </>
       )}
 
+      {/* Privacy trust note */}
+      {!scanLocked && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10,
+          background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
+          borderRadius: 12, padding: '11px 14px',
+        }}>
+          <Icon name="lock" size={13} color={C.dimmed} strokeWidth={2} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span style={{ fontSize: 12, color: C.dimmed, lineHeight: 1.6 }}>
+            Your photos are private and securely stored. They are used only to generate your personal analysis and track progress. We never sell, share, or use your images for AI training.
+          </span>
+        </div>
+      )}
+
       {/* Scan History */}
       {scanHistory.length > 0 && (
         <div style={{ marginTop: 8 }}>
@@ -6208,6 +6171,16 @@ function AuthScreen({ onSubmit, onForgotPassword, loading, error, notice }) {
               <div style={{ marginTop: 12, borderRadius: 12, padding: '10px 12px', border: `1px solid ${error ? C.red + '66' : C.greenDim}`, background: error ? 'rgba(201,92,92,0.08)' : C.greenBg, fontSize: 12, color: error ? '#FFB4B7' : C.green }}>
                 {error || notice}
               </div>
+            )}
+
+            {/* Legal acknowledgment — signup only */}
+            {mode === 'signup' && (
+              <p style={{ fontSize: 11, color: C.dimmed, lineHeight: 1.6, marginTop: 14, textAlign: 'center' }}>
+                By creating an account, you agree to our{' '}
+                <a href="/terms" target="_blank" rel="noopener noreferrer" style={{ color: C.muted, textDecoration: 'underline' }}>Terms of Service</a>
+                {' '}and{' '}
+                <a href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: C.muted, textDecoration: 'underline' }}>Privacy Policy</a>.
+              </p>
             )}
 
             {/* Forgot password link — login only */}

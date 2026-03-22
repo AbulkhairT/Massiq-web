@@ -920,13 +920,13 @@ export default function LandingPage() {
             <div style={{ fontSize: 12, color: C.dim }}>The operating system for your physique.</div>
           </div>
           <div style={{ fontSize: 12, color: C.dim }}>
-            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="/privacy" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Privacy</a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Privacy Policy</a>
             {' · '}
-            <a href="#" style={{ color: C.dim, transition: 'color .15s' }}
+            <a href="/terms" style={{ color: C.dim, transition: 'color .15s' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = C.white}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Terms</a>
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = C.dim}>Terms of Service</a>
           </div>
         </div>
       </footer>
