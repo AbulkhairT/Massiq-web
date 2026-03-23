@@ -23,6 +23,7 @@ export default function BillingSuccessPage() {
     let cancelled = false;
 
     const waitForSession = async () => {
+      // Try initializeSession first; if stored session exists it will use it
       let session = await initializeSession().catch(() => null);
       if (session?.access_token) return session;
       for (let i = 0; i < 24; i++) {
@@ -35,12 +36,16 @@ export default function BillingSuccessPage() {
 
     const run = async () => {
       setStage('auth-loading');
+      if (typeof window !== 'undefined') {
+        console.info('[billing:success] page load', { origin: window.location.origin, hasBillingReturn: !!sessionStorage.getItem('massiq:billing-return') });
+      }
       const session = await waitForSession();
       const token = session?.access_token;
       const userId = session?.user?.id || session?.user_id;
 
       if (!token || !userId) {
         if (!cancelled) {
+          console.warn('[billing:success] no session after retries', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' });
           setStage('unauthenticated');
           try {
             sessionStorage.setItem('massiq:premium-return', '1');
@@ -63,6 +68,7 @@ export default function BillingSuccessPage() {
               sessionStorage.removeItem('massiq:billing-return');
             } catch {}
             setStage('active');
+            console.info('[billing:success] premium confirmed, redirecting to app', { userId });
             setTimeout(() => router.replace('/app?premium_activated=1'), 250);
           }
           return;

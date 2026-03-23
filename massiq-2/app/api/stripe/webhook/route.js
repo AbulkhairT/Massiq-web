@@ -184,7 +184,6 @@ export async function POST(req) {
     });
   } catch (e) {
     console.error('[stripe:webhook] billing_events insert failed (non-fatal):', e?.message);
-    // Continue processing — do not fail webhook for audit table issues
   }
 
   // Silently ack unhandled events — don't fail
@@ -207,25 +206,36 @@ export async function POST(req) {
         || await resolveUserId(sub);
 
       if (!userId) {
-        console.error('[stripe:webhook] Could not resolve user_id for session:', checkoutSession.id);
+        console.error('[stripe:webhook] Could not resolve user_id for session', {
+          session_id: checkoutSession.id,
+          customer: checkoutSession.customer,
+          has_sub_meta: !!sub.metadata?.user_id,
+          has_session_meta: !!checkoutSession.metadata?.user_id,
+        });
         return NextResponse.json({ received: true }); // Ack — avoid Stripe retries
       }
 
-      await upsertSubscription(buildSubscriptionRow(sub, userId));
-      console.info('[stripe:webhook] checkout.session.completed synced for user:', userId);
+      const row = buildSubscriptionRow(sub, userId);
+      await upsertSubscription(row);
+      console.info('[stripe:webhook] checkout.session.completed synced', { user_id: userId, status: row.status });
 
     } else {
       // customer.subscription.{created,updated,deleted}
       const sub    = event.data.object;
-      const userId = await resolveUserId(sub);
+      const userId = sub.metadata?.user_id || await resolveUserId(sub);
 
       if (!userId) {
-        console.error('[stripe:webhook] Could not resolve user_id for subscription:', sub.id);
+        console.error('[stripe:webhook] Could not resolve user_id for subscription', {
+          sub_id: sub.id,
+          customer: sub.customer,
+          has_meta: !!sub.metadata?.user_id,
+        });
         return NextResponse.json({ received: true });
       }
 
-      await upsertSubscription(buildSubscriptionRow(sub, userId));
-      console.info(`[stripe:webhook] ${event.type} synced for user:`, userId);
+      const row = buildSubscriptionRow(sub, userId);
+      await upsertSubscription(row);
+      console.info(`[stripe:webhook] ${event.type} synced`, { user_id: userId, status: row.status });
     }
   } catch (err) {
     console.error('[stripe:webhook] Handler error:', err.message);

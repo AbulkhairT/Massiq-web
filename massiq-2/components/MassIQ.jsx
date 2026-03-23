@@ -6739,6 +6739,7 @@ export default function MassIQ() {
               || (typeof window !== 'undefined' && window.location?.search?.includes('premium_activated=1'));
           } catch {}
           if (needsRetry) {
+            console.info('[auth:boot] premium/billing return — retrying session hydration');
             for (let i = 0; i < 12 && !s?.access_token; i++) {
               await new Promise(r => setTimeout(r, 600));
               s = await initializeSession();
@@ -6746,6 +6747,11 @@ export default function MassIQ() {
           }
         }
         if (!mounted) return;
+        if (s?.access_token) {
+          console.info('[auth:boot] session restored', { userId: s?.user?.id || s?.user_id });
+        } else {
+          console.info('[auth:boot] no session');
+        }
         setSession(s);
       } catch (err) {
         if (!mounted) return;

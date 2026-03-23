@@ -60,8 +60,9 @@ export async function POST(req) {
   }
   // ────────────────────────────────────────────────────────────────────────
 
-  // Use client's current origin for return URLs when provided — ensures Stripe redirects
-  // back to the same origin where the session lives (fixes logout on return when domain differs).
+  // Use client's current origin for return URLs — CRITICAL for session persistence.
+  // Stripe redirects back here; localStorage is origin-scoped. If we redirect to a different
+  // origin (e.g. www vs apex), the user's session won't exist → perceived logout.
   let baseUrl = appUrl;
   try {
     const body = await req.json().catch(() => ({}));
@@ -69,14 +70,22 @@ export async function POST(req) {
     if (origin && typeof origin === 'string') {
       const u = new URL(origin);
       const appHost = new URL(appUrl).hostname;
-      const sameHost = u.hostname === appHost;
-      const isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname.endsWith('.localhost');
-      const isVercelPreview = appHost.endsWith('.vercel.app') && u.hostname.endsWith('.vercel.app');
-      if (sameHost || isLocal || isVercelPreview) {
+      const oHost = u.hostname;
+      const sameHost = oHost === appHost;
+      const wwwVariant = oHost === `www.${appHost}` || appHost === `www.${oHost}`;
+      const isLocal = oHost === 'localhost' || oHost === '127.0.0.1' || oHost.endsWith('.localhost');
+      const bothVercel = appHost.endsWith('.vercel.app') && oHost.endsWith('.vercel.app');
+      const sameRoot = bothVercel || oHost.endsWith(`.${appHost}`) || appHost.endsWith(`.${oHost}`);
+      if (sameHost || wwwVariant || isLocal || sameRoot) {
         baseUrl = origin.replace(/\/$/, '');
+        console.info('[stripe:checkout] success_url origin from client', { baseUrl, appUrl });
       }
     }
   } catch {}
+
+  const successUrl = `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = `${baseUrl}/billing/cancel`;
+  console.info('[stripe:checkout] session URLs', { success: successUrl, cancel: cancelUrl, userId });
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
@@ -101,8 +110,8 @@ export async function POST(req) {
       mode:                 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       allow_promotion_codes: true,
-      success_url: `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url:  `${baseUrl}/billing/cancel`,
+      success_url: successUrl,
+      cancel_url:  cancelUrl,
       metadata:    { user_id: userId },
       subscription_data: {
         metadata: { user_id: userId },
