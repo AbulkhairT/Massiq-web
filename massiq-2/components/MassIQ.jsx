@@ -1724,13 +1724,15 @@ function Paywall({ userId, accessToken, onClose, persistGate }) {
 
     try {
       setPrepStep('Redirecting to checkout...');
+      const returnOrigin = typeof window !== 'undefined' ? window.location.origin : undefined;
+      console.info('[checkout] starting', { return_origin: returnOrigin, href: typeof window !== 'undefined' ? window.location.href : '' });
       const res = await fetch('/api/stripe/checkout', {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',
           'Authorization': `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ return_origin: typeof window !== 'undefined' ? window.location.origin : undefined }),
+        body: JSON.stringify({ return_origin: returnOrigin }),
       });
       const { url, error: apiErr } = await res.json();
       if (apiErr) throw new Error(apiErr);
@@ -6729,20 +6731,25 @@ export default function MassIQ() {
     let mounted = true;
     const boot = async () => {
       try {
+        const origin = typeof window !== 'undefined' ? window.location.origin : '';
+        const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
+        const hasCheckoutReturn = qs.includes('checkout_success=1');
+        const storedRaw = typeof window !== 'undefined' ? (() => { try { return !!localStorage.getItem('massiq:auth:session'); } catch { return false; } })() : false;
+        console.info('[auth:boot] start', { origin, has_checkout_success: hasCheckoutReturn, has_stored_session: storedRaw });
+
         let s = await initializeSession();
         if (!s?.access_token) {
           let needsRetry = false;
           try {
-            const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
             needsRetry = sessionStorage.getItem('massiq:billing-return') === '1'
               || sessionStorage.getItem('massiq:premium-return') === '1'
               || qs.includes('premium_activated=1')
-              || qs.includes('checkout_success=1');
+              || hasCheckoutReturn;
           } catch {}
           if (needsRetry) {
-            console.info('[auth:boot] premium/billing return — retrying session hydration');
-            for (let i = 0; i < 12 && !s?.access_token; i++) {
-              await new Promise(r => setTimeout(r, 600));
+            console.info('[auth:boot] checkout return — retrying session (24x500ms)');
+            for (let i = 0; i < 24 && !s?.access_token; i++) {
+              await new Promise(r => setTimeout(r, 500));
               s = await initializeSession();
             }
           }
@@ -6751,7 +6758,7 @@ export default function MassIQ() {
         if (s?.access_token) {
           console.info('[auth:boot] session restored', { userId: s?.user?.id || s?.user_id });
         } else {
-          console.info('[auth:boot] no session');
+          console.info('[auth:boot] no session', { had_checkout_return: hasCheckoutReturn });
         }
         setSession(s);
       } catch (err) {
@@ -6764,6 +6771,14 @@ export default function MassIQ() {
     boot();
     return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    if (!authReady || session?.access_token) return;
+    const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
+    if (qs.includes('checkout_success=1')) {
+      setAuthNotice('Payment complete. Sign in with the same account to activate premium.');
+    }
+  }, [authReady, session?.access_token]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -7365,6 +7380,10 @@ export default function MassIQ() {
   }
 
   if (!session?.access_token) {
+    const hadCheckout = typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1');
+    if (hadCheckout) {
+      console.warn('[auth] showing login despite checkout_success — session not restored', { origin: typeof window !== 'undefined' ? window.location.origin : '' });
+    }
     return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
   }
 

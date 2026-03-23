@@ -391,9 +391,10 @@ export async function initializeSession() {
       console.warn('[auth] Token refresh failed but token not yet expired — using existing session');
       return session;
     }
-    // Token is expired AND refresh failed — session is truly unrecoverable
-    console.warn('[auth] Token expired and refresh failed — clearing session');
-    clearStoredSession();
+    // Token is expired AND refresh failed. Do NOT clear — refresh may have been transient
+    // (network blip, rate limit). Clearing would log the user out on Stripe return.
+    // Retries can try again; only refreshSession clears on definitive token errors.
+    console.warn('[auth] Token expired and refresh failed — not clearing (retry may succeed)');
     return null;
   }
   return session;

@@ -61,25 +61,33 @@ export async function POST(req) {
   // ────────────────────────────────────────────────────────────────────────
 
   // Use client's current origin for return URLs — CRITICAL for session persistence.
-  // Stripe redirects back here; localStorage is origin-scoped. If we redirect to a different
-  // origin (e.g. www vs apex), the user's session won't exist → perceived logout.
+  // localStorage is origin-scoped; mismatch = perceived logout.
   let baseUrl = appUrl;
+  const appHost = (() => { try { return new URL(appUrl).hostname; } catch { return ''; } })();
+  const isValidOrigin = (o) => {
+    if (!o || typeof o !== 'string') return false;
+    try {
+      const u = new URL(o);
+      const oHost = u.hostname;
+      return oHost === appHost
+        || oHost === `www.${appHost}` || appHost === `www.${oHost}`
+        || oHost === 'localhost' || oHost === '127.0.0.1' || oHost.endsWith('.localhost')
+        || (appHost.endsWith('.vercel.app') && oHost.endsWith('.vercel.app'));
+    } catch { return false; }
+  };
+
   try {
     const body = await req.json().catch(() => ({}));
-    const origin = body?.return_origin;
-    if (origin && typeof origin === 'string') {
-      const u = new URL(origin);
-      const appHost = new URL(appUrl).hostname;
-      const oHost = u.hostname;
-      const sameHost = oHost === appHost;
-      const wwwVariant = oHost === `www.${appHost}` || appHost === `www.${oHost}`;
-      const isLocal = oHost === 'localhost' || oHost === '127.0.0.1' || oHost.endsWith('.localhost');
-      const bothVercel = appHost.endsWith('.vercel.app') && oHost.endsWith('.vercel.app');
-      const sameRoot = bothVercel || oHost.endsWith(`.${appHost}`) || appHost.endsWith(`.${oHost}`);
-      if (sameHost || wwwVariant || isLocal || sameRoot) {
-        baseUrl = origin.replace(/\/$/, '');
-        console.info('[stripe:checkout] success_url origin from client', { baseUrl, appUrl });
-      }
+    let origin = body?.return_origin;
+    if (!origin) {
+      const ref = req.headers.get('referer');
+      try { if (ref) origin = new URL(ref).origin; } catch {}
+    }
+    if (origin && isValidOrigin(origin)) {
+      baseUrl = String(origin).replace(/\/$/, '');
+      console.info('[stripe:checkout] success_url origin', { baseUrl, appUrl });
+    } else {
+      console.warn('[stripe:checkout] origin rejected', { origin: origin || 'none', appUrl });
     }
   } catch {}
 
