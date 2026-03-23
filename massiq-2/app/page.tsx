@@ -722,7 +722,7 @@ export default function LandingPage() {
                 body: 'Snap a photo of your meal and MassIQ estimates calories, protein, carbs, and fat — keeping your nutrition aligned with your body scan targets.',
               },
               {
-                icon: 'chart', tag: 'Progress Tracking', delay: 'd2',
+                icon: 'chart-bar', tag: 'Progress Tracking', delay: 'd2',
                 title: 'See how your body changes',
                 body: 'Track body fat, symmetry, and muscle development across scans — and see exactly what\u2019s improving over time.',
               },
