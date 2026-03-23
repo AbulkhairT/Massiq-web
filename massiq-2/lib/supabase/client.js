@@ -341,13 +341,22 @@ export async function refreshSession(refreshToken) {
     storeSession(data);
     return data;
   } catch (err) {
-    // Stale/revoked refresh token — clear it so the user sees a clean login form
+    // Only clear stored session for definitive refresh-token errors.
+    // Transient network failures or rate limits should NOT log the user out.
     const msg = String(err?.message || '').toLowerCase();
-    if (msg.includes('refresh token') || msg.includes('invalid') || msg.includes('not found')) {
+    const isDefinitiveTokenError =
+      (msg.includes('refresh token') && (msg.includes('revoked') || msg.includes('expired') || msg.includes('not found'))) ||
+      msg.includes('user not found') ||
+      msg.includes('user banned');
+    if (isDefinitiveTokenError) {
+      console.warn('[auth] Refresh token permanently invalid — clearing session');
       clearStoredSession();
       return null;
     }
-    throw err;
+    // For transient errors, return null but do NOT clear the session.
+    // initializeSession will decide whether to use the existing token.
+    console.warn('[auth] Refresh failed (transient) — not clearing session:', msg);
+    return null;
   }
 }
 
@@ -367,8 +376,25 @@ export async function initializeSession() {
   if (!session?.access_token) return null;
   const expiresAt = Number(session.expires_at || 0);
   const now = Math.floor(Date.now() / 1000);
-  if (expiresAt && expiresAt - now < 90 && session.refresh_token) {
-    return refreshSession(session.refresh_token);
+  const isExpired = expiresAt && expiresAt <= now;
+  const isNearExpiry = expiresAt && expiresAt - now < 90;
+
+  if ((isExpired || isNearExpiry) && session.refresh_token) {
+    try {
+      const refreshed = await refreshSession(session.refresh_token);
+      if (refreshed?.access_token) return refreshed;
+    } catch {}
+    // Refresh failed — if the token hasn't actually expired yet, use it as-is
+    // rather than logging the user out. This prevents false logouts during
+    // Stripe return when the refresh endpoint is temporarily unreachable.
+    if (!isExpired) {
+      console.warn('[auth] Token refresh failed but token not yet expired — using existing session');
+      return session;
+    }
+    // Token is expired AND refresh failed — session is truly unrecoverable
+    console.warn('[auth] Token expired and refresh failed — clearing session');
+    clearStoredSession();
+    return null;
   }
   return session;
 }
