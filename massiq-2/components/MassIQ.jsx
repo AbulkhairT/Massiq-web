@@ -6704,6 +6704,9 @@ export default function MassIQ() {
   const [entitlements,  setEntitlements]  = useState(null);
   const [paywallOpen,   setPaywallOpen]   = useState(false);
   const [checkoutActivating, setCheckoutActivating] = useState(false);
+  const [checkoutReturnSessionPending, setCheckoutReturnSessionPending] = useState(() =>
+    typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')
+  );
   const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
@@ -6738,6 +6741,12 @@ export default function MassIQ() {
         console.info('[auth:boot] start', { origin, has_checkout_success: hasCheckoutReturn, has_stored_session: storedRaw });
 
         let s = await initializeSession();
+        const storedAfterFirst = getStoredSession();
+        console.info('[auth:boot] first initializeSession', {
+          hasSession: !!s?.access_token,
+          hasStored: !!storedAfterFirst,
+          hasCheckoutReturn: hasCheckoutReturn,
+        });
         if (!s?.access_token) {
           let needsRetry = false;
           try {
@@ -6748,9 +6757,12 @@ export default function MassIQ() {
           } catch {}
           if (needsRetry) {
             console.info('[auth:boot] checkout return — retrying session (24x500ms)');
-            for (let i = 0; i < 24 && !s?.access_token; i++) {
+            for (let i = 0; i < 24 && !s?.access_token && mounted; i++) {
               await new Promise(r => setTimeout(r, 500));
               s = await initializeSession();
+              if (!s?.access_token && (i === 0 || i === 5 || i === 11 || i === 23)) {
+                console.info('[auth:boot] retry', { i: i + 1, hasStored: !!getStoredSession() });
+              }
             }
           }
         }
@@ -6758,7 +6770,10 @@ export default function MassIQ() {
         if (s?.access_token) {
           console.info('[auth:boot] session restored', { userId: s?.user?.id || s?.user_id });
         } else {
-          console.info('[auth:boot] no session', { had_checkout_return: hasCheckoutReturn });
+          console.info('[auth:boot] no session after retries', {
+            had_checkout_return: hasCheckoutReturn,
+            hasStoredSession: !!getStoredSession(),
+          });
         }
         setSession(s);
       } catch (err) {
@@ -6772,12 +6787,46 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, []);
 
+  // ── Extended session retry for checkout return ─────────────────────────────
+  // When user returns from Stripe with checkout_success=1 but no session yet,
+  // keep retrying initializeSession before ever showing login. Show "Restoring
+  // session..." until either session appears or retry window is exhausted.
   useEffect(() => {
     if (!authReady || session?.access_token) return;
     const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
-    if (qs.includes('checkout_success=1')) {
-      setAuthNotice('Payment complete. Sign in with the same account to activate premium.');
-    }
+    if (!qs.includes('checkout_success=1')) return;
+
+    let cancelled = false;
+    setCheckoutReturnSessionPending(true);
+    const log = (msg, data = {}) => {
+      if (!cancelled) console.info('[auth:checkout-return]', msg, data);
+    };
+    log('starting extended retry — no session after boot', {
+      url: typeof window !== 'undefined' ? window.location.href : '',
+      origin: typeof window !== 'undefined' ? window.location.origin : '',
+      hasStored: !!getStoredSession(),
+    });
+
+    const run = async () => {
+      for (let i = 0; i < 30 && !cancelled; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        if (cancelled) return;
+        const s = await initializeSession();
+        if (s?.access_token) {
+          log('session restored on extended retry', { attempt: i + 1, userId: s?.user?.id });
+          setSession(s);
+          setCheckoutReturnSessionPending(false);
+          return;
+        }
+        log('retry no session', { attempt: i + 1, hasStored: !!getStoredSession() });
+      }
+      if (!cancelled) {
+        log('exhausted extended retries — will show login');
+        setCheckoutReturnSessionPending(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; setCheckoutReturnSessionPending(false); };
   }, [authReady, session?.access_token]);
 
   useEffect(() => {
@@ -7379,11 +7428,31 @@ export default function MassIQ() {
     );
   }
 
+  // Session restore in progress after checkout return — do NOT show login until exhausted
+  if (checkoutReturnSessionPending) {
+    return (
+      <div style={{ background: C.bg, minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
+        <div style={{ width: 56, height: 56, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.white }}>Restoring session...</div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
   if (!session?.access_token) {
-    const hadCheckout = typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1');
-    if (hadCheckout) {
-      console.warn('[auth] showing login despite checkout_success — session not restored', { origin: typeof window !== 'undefined' ? window.location.origin : '' });
-    }
+    const url = typeof window !== 'undefined' ? window.location.href : '';
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const hasCheckoutSuccess = url.includes('checkout_success=1');
+    const stored = getStoredSession();
+    console.info('[auth:login-render] showing login', {
+      url,
+      origin,
+      checkout_success: hasCheckoutSuccess,
+      authReady,
+      ready,
+      hasStoredSession: !!stored,
+      storedSessionKeys: stored ? Object.keys(stored).filter(k => k !== 'access_token' && k !== 'refresh_token') : [],
+    });
     return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
   }
 

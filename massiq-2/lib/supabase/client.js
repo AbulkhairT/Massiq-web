@@ -373,7 +373,15 @@ export async function signOut(token) {
 
 export async function initializeSession() {
   const session = getStoredSession();
-  if (!session?.access_token) return null;
+  if (!session?.access_token) {
+    if (typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')) {
+      try {
+        const raw = localStorage.getItem(AUTH_KEY);
+        console.info('[auth:initSession] no usable session', { hasRawKey: !!raw, rawLength: raw?.length ?? 0 });
+      } catch {}
+    }
+    return null;
+  }
   const expiresAt = Number(session.expires_at || 0);
   const now = Math.floor(Date.now() / 1000);
   const isExpired = expiresAt && expiresAt <= now;
@@ -383,7 +391,11 @@ export async function initializeSession() {
     try {
       const refreshed = await refreshSession(session.refresh_token);
       if (refreshed?.access_token) return refreshed;
-    } catch {}
+    } catch (err) {
+      if (typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')) {
+        console.warn('[auth:initSession] refresh threw', { msg: err?.message });
+      }
+    }
     // Refresh failed — if the token hasn't actually expired yet, use it as-is
     // rather than logging the user out. This prevents false logouts during
     // Stripe return when the refresh endpoint is temporarily unreachable.
@@ -394,7 +406,11 @@ export async function initializeSession() {
     // Token is expired AND refresh failed. Do NOT clear — refresh may have been transient
     // (network blip, rate limit). Clearing would log the user out on Stripe return.
     // Retries can try again; only refreshSession clears on definitive token errors.
-    console.warn('[auth] Token expired and refresh failed — not clearing (retry may succeed)');
+    if (typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')) {
+      console.warn('[auth:initSession] expired+refresh failed, returning null (retry may succeed)');
+    } else {
+      console.warn('[auth] Token expired and refresh failed — not clearing (retry may succeed)');
+    }
     return null;
   }
   return session;
