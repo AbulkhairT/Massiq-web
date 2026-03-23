@@ -6961,16 +6961,6 @@ export default function MassIQ() {
         window.history.replaceState({}, '', window.location.pathname);
         try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
         if (!cancelled) setCheckoutActivating(true);
-        const userId = session.user?.id;
-        if (userId) {
-          fetch('/api/stripe/verify-session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-            body: JSON.stringify({ session_id: sessionId }),
-          }).then(res => res.json()).then(data => {
-            if (!cancelled) console.info('[premium-poll] verify-session result', { ok: data?.ok, subscription_status: data?.subscription_status });
-          }).catch(() => {});
-        }
       }
       if (hasPremiumActivated) window.history.replaceState({}, '', window.location.pathname);
 
@@ -6987,9 +6977,25 @@ export default function MassIQ() {
         return;
       }
 
-      console.info('[premium-poll] detected checkout return — polling subscription');
-      let attempts = 0;
+      console.info('[premium-poll] detected checkout return — calling verify-session then polling');
       const poll = async () => {
+        const sessionId = params.get('session_id');
+        if (sessionId) {
+          try {
+            const verifyRes = await fetch('/api/stripe/verify-session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+              body: JSON.stringify({ session_id: sessionId }),
+            });
+            const verifyData = await verifyRes.json();
+            if (!cancelled) console.info('[premium-poll] verify-session', { ok: verifyData?.ok, status: verifyData?.subscription_status, error: verifyData?.error });
+            if (verifyData?.error && !cancelled) setToast('Could not verify payment. Please refresh or contact support.');
+          } catch (e) {
+            if (!cancelled) setToast('Could not verify payment. Retrying...');
+          }
+        }
+
+        let attempts = 0;
         while (attempts < 12 && !cancelled) {
           attempts++;
           try {
@@ -7008,7 +7014,7 @@ export default function MassIQ() {
                   }
                 } catch {}
                 try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
-                if (!cancelled) setCheckoutActivating(false);
+                setCheckoutActivating(false);
                 console.info('[premium-poll] subscription activated', { status: sub.status, attempt: attempts });
               }
               return;
@@ -7017,7 +7023,10 @@ export default function MassIQ() {
           if (attempts < 12) await new Promise(r => setTimeout(r, 2500));
         }
         try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
-        if (!cancelled) setCheckoutActivating(false);
+        if (!cancelled) {
+          setCheckoutActivating(false);
+          setToast('Premium is still syncing. If you just paid, refresh in a minute or contact support.');
+        }
         console.warn('[premium-poll] subscription not confirmed after 12 attempts');
       };
       poll();

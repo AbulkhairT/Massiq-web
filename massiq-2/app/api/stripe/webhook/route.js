@@ -10,10 +10,16 @@ const HANDLED_EVENTS = new Set([
   'customer.subscription.deleted',
 ]);
 
-/**
- * Check if we've already processed this event (idempotency).
- * Requires migration 010 (stripe_event_id column). Without it, returns false.
- */
+function maskUrl(url) {
+  if (!url || typeof url !== 'string') return 'null';
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.hostname}${u.pathname ? '[path]' : ''}`;
+  } catch {
+    return '[invalid]';
+  }
+}
+
 async function isEventProcessed(stripeEventId) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -31,14 +37,10 @@ async function isEventProcessed(stripeEventId) {
   }
 }
 
-/**
- * Insert billing event. Uses stripe_event_id for idempotency (after migration 010).
- * Falls back to event_type + data only for pre-migration schema.
- */
 async function insertBillingEvent(stripeEventId, eventType, payload, userId = null) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) throw new Error('Missing Supabase config for billing_events');
+  if (!supabaseUrl || !serviceKey) throw new Error('Missing Supabase config');
 
   const row = {
     stripe_event_id: stripeEventId,
@@ -79,6 +81,10 @@ async function insertBillingEvent(stripeEventId, eventType, payload, userId = nu
   }
 }
 
+/**
+ * Upsert subscription: SELECT by user_id, then PATCH or POST.
+ * More reliable than on_conflict when PostgREST behavior varies.
+ */
 async function upsertSubscription(row) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -86,13 +92,19 @@ async function upsertSubscription(row) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL missing');
   }
 
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+  };
+
   const incomingStatus = String(row.status || '').toLowerCase();
   const incomingIncomplete = incomingStatus === 'incomplete' || incomingStatus === 'incomplete_expired';
 
   if (incomingIncomplete) {
     const checkRes = await fetch(
       `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=status,stripe_subscription_id&limit=1`,
-      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+      { headers }
     );
     const existing = await checkRes.json().catch(() => []);
     const canonical = Array.isArray(existing) && existing[0];
@@ -100,28 +112,61 @@ async function upsertSubscription(row) {
     const differentSub = canonical?.stripe_subscription_id && row.stripe_subscription_id
       && canonical.stripe_subscription_id !== row.stripe_subscription_id;
     if (canonicalActive && differentSub) {
-      console.log('[stripe:webhook] Ignoring incomplete shadow subscription for active user', { user_id: row.user_id });
+      console.info('[stripe:webhook] Ignoring incomplete shadow subscription', { user_id: row.user_id });
       return null;
     }
   }
 
-  const res = await fetch(`${supabaseUrl}/rest/v1/subscriptions?on_conflict=user_id`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: serviceKey,
-      Authorization: `Bearer ${serviceKey}`,
-      Prefer: 'resolution=merge-duplicates,return=representation',
-    },
-    body: JSON.stringify(row),
-  });
+  const selectRes = await fetch(
+    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=id&limit=1`,
+    { headers }
+  );
+  const existingRows = await selectRes.json().catch(() => []);
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Supabase subscription upsert failed (${res.status}): ${text}`);
+  let res;
+  if (Array.isArray(existingRows) && existingRows.length > 0) {
+    const existingId = existingRows[0]?.id;
+    res = await fetch(`${supabaseUrl}/rest/v1/subscriptions?id=eq.${existingId}`, {
+      method: 'PATCH',
+      headers: { ...headers, Prefer: 'return=representation' },
+      body: JSON.stringify({
+        stripe_customer_id: row.stripe_customer_id,
+        stripe_subscription_id: row.stripe_subscription_id,
+        status: row.status,
+        price_id: row.price_id,
+        current_period_start: row.current_period_start,
+        current_period_end: row.current_period_end,
+        cancel_at_period_end: row.cancel_at_period_end,
+        updated_at: row.updated_at,
+      }),
+    });
+  } else {
+    res = await fetch(`${supabaseUrl}/rest/v1/subscriptions`, {
+      method: 'POST',
+      headers: { ...headers, Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
   }
 
-  return res.json().catch(() => null);
+  const resText = await res.text().catch(() => '');
+  if (!res.ok) {
+    console.error('[stripe:webhook] Supabase upsert failed', {
+      status: res.status,
+      user_id: row.user_id,
+      stripe_subscription_id: row.stripe_subscription_id,
+      response: resText.slice(0, 500),
+    });
+    throw new Error(`Supabase subscription write failed (${res.status}): ${resText}`);
+  }
+
+  const result = resText ? JSON.parse(resText) : null;
+  console.info('[stripe:webhook] subscription upsert success', {
+    user_id: row.user_id,
+    status: row.status,
+    stripe_subscription_id: row.stripe_subscription_id,
+    method: existingRows?.length ? 'PATCH' : 'POST',
+  });
+  return result;
 }
 
 async function resolveUserId(subscription) {
@@ -145,9 +190,10 @@ async function resolveUserId(subscription) {
 }
 
 function buildSubscriptionRow(sub, userId) {
+  const customerId = typeof sub.customer === 'string' ? sub.customer : (sub.customer?.id ?? null);
   return {
     user_id: userId,
-    stripe_customer_id: typeof sub.customer === 'string' ? sub.customer : null,
+    stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
     status: sub.status,
     price_id: sub.items?.data?.[0]?.price?.id || null,
@@ -163,17 +209,24 @@ function buildSubscriptionRow(sub, userId) {
 }
 
 export async function GET() {
-  return NextResponse.json({ ok: true, route: '/api/stripe/webhook' });
+  return NextResponse.json({
+    ok: true,
+    route: '/api/stripe/webhook',
+    supabase_url_masked: maskUrl(process.env.NEXT_PUBLIC_SUPABASE_URL),
+  });
 }
 
 export async function POST(req) {
-  console.log('[stripe:webhook] POST received');
+  console.info('[stripe:webhook] POST received', {
+    supabase_masked: maskUrl(process.env.NEXT_PUBLIC_SUPABASE_URL),
+    has_service_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  });
 
   const secretKey = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!secretKey || !webhookSecret) {
-    console.error('[stripe:webhook] Missing env: STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET');
+    console.error('[stripe:webhook] Missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET');
     return NextResponse.json({ error: 'Stripe env vars missing' }, { status: 500 });
   }
 
@@ -195,12 +248,15 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  console.log('[stripe:webhook] Webhook event:', event.type, event.id);
+  console.info('[stripe:webhook] event', {
+    type: event.type,
+    id: event.id,
+    data_object_id: event.data?.object?.id,
+  });
 
-  // Idempotency: skip if already processed
   const alreadyProcessed = await isEventProcessed(event.id);
   if (alreadyProcessed) {
-    console.log('[stripe:webhook] Event already processed (idempotent), skipping', event.id);
+    console.info('[stripe:webhook] already processed (idempotent)', event.id);
     return NextResponse.json({ received: true });
   }
 
@@ -212,59 +268,55 @@ export async function POST(req) {
     data: event.data,
   };
 
-  // Extract user_id early for billing_events (from metadata when available)
   let userId = null;
   const obj = event.data?.object;
   if (obj) {
-    userId = obj.metadata?.user_id || null;
+    userId = obj.metadata?.user_id ?? obj.client_reference_id ?? null;
   }
 
-  // 1. Insert billing_events FIRST (audit + idempotency guard)
+  // Billing events: non-blocking — never fail webhook for audit table issues
   try {
     await insertBillingEvent(event.id, event.type, payload, userId);
   } catch (e) {
-    if (e?.message?.includes('duplicate') || e?.message?.includes('unique')) {
-      console.log('[stripe:webhook] Duplicate event (concurrent), skipping', event.id);
-      return NextResponse.json({ received: true });
-    }
-    console.error('[stripe:webhook] billing_events insert failed:', e?.message);
-    return NextResponse.json({ error: 'Audit insert failed' }, { status: 500 });
+    console.error('[stripe:webhook] billing_events insert failed (non-blocking):', e?.message);
   }
 
-  // 2. Process subscription events
+  // Process subscription — this is the critical path
   try {
     if (event.type === 'checkout.session.completed') {
       const checkoutSession = event.data.object;
       const subscriptionId = checkoutSession.subscription;
-      userId = checkoutSession.metadata?.user_id || checkoutSession.client_reference_id || null;
+      userId = checkoutSession.metadata?.user_id ?? checkoutSession.client_reference_id ?? null;
 
       console.info('[stripe:webhook] checkout.session.completed', {
         session_id: checkoutSession.id,
         stripe_customer_id: checkoutSession.customer,
         stripe_subscription_id: subscriptionId,
-        user_id_from_metadata: checkoutSession.metadata?.user_id,
-        user_id_from_client_ref: checkoutSession.client_reference_id,
+        metadata_user_id: checkoutSession.metadata?.user_id,
+        client_reference_id: checkoutSession.client_reference_id,
+        mapped_user_id: userId,
       });
 
-      if (subscriptionId) {
-        const sub = await stripe.subscriptions.retrieve(subscriptionId);
-        userId = userId || sub.metadata?.user_id || (await resolveUserId(sub));
-
-        if (userId) {
-          const row = buildSubscriptionRow(sub, userId);
-          const result = await upsertSubscription(row);
-          console.info('[stripe:webhook] subscription upsert ok', {
-            user_id: userId,
-            status: row.status,
-            stripe_subscription_id: row.stripe_subscription_id,
-          });
-        } else {
-          console.error('[stripe:webhook] Could not resolve user_id', {
-            session_id: checkoutSession.id,
-            customer: checkoutSession.customer,
-          });
-        }
+      if (!subscriptionId) {
+        console.warn('[stripe:webhook] No subscription id in checkout session', checkoutSession.id);
+        return NextResponse.json({ received: true });
       }
+
+      const sub = await stripe.subscriptions.retrieve(subscriptionId);
+      userId = userId || sub.metadata?.user_id || (await resolveUserId(sub));
+
+      if (!userId) {
+        console.error('[stripe:webhook] Cannot resolve user_id — subscription NOT written', {
+          session_id: checkoutSession.id,
+          customer: checkoutSession.customer,
+        });
+        return NextResponse.json({ received: true });
+      }
+
+      const row = buildSubscriptionRow(sub, userId);
+      console.info('[stripe:webhook] upsert payload', { user_id: userId, status: row.status, stripe_sub_id: row.stripe_subscription_id });
+      await upsertSubscription(row);
+
     } else if (HANDLED_EVENTS.has(event.type) && event.type.startsWith('customer.subscription.')) {
       const sub = event.data.object;
       userId = sub.metadata?.user_id || (await resolveUserId(sub));
@@ -273,22 +325,18 @@ export async function POST(req) {
         stripe_subscription_id: sub.id,
         stripe_customer_id: sub.customer,
         status: sub.status,
-        user_id: userId,
+        mapped_user_id: userId,
       });
 
       if (userId) {
         const row = buildSubscriptionRow(sub, userId);
         await upsertSubscription(row);
-        console.info(`[stripe:webhook] subscription upsert ok`, {
-          user_id: userId,
-          status: row.status,
-        });
       } else {
-        console.error('[stripe:webhook] Could not resolve user_id', { sub_id: sub.id, customer: sub.customer });
+        console.error('[stripe:webhook] Cannot resolve user_id for subscription', { sub_id: sub.id, customer: sub.customer });
       }
     }
   } catch (err) {
-    console.error('[stripe:webhook] Handler error:', err.message);
+    console.error('[stripe:webhook] Handler error:', err?.message, err?.stack);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 

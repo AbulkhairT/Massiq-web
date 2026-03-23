@@ -86,12 +86,6 @@ export async function POST(req) {
   // Return directly to /app so user lands in authenticated app; checkout_success triggers sync
   const successUrl = `${baseUrl}/app?checkout_success=1&session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = `${baseUrl}/app`;
-  console.info('[stripe:checkout] session created', {
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    user_id: userId,
-    base_from: baseUrl === appUrl ? 'NEXT_PUBLIC_APP_URL' : 'return_origin',
-  });
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
@@ -128,6 +122,15 @@ export async function POST(req) {
       sessionParams.customer = existingCustomerId;
     }
     const session = await stripe.checkout.sessions.create(sessionParams);
+
+    console.info('[stripe:checkout] session created', {
+      session_id: session.id,
+      user_id: userId,
+      client_reference_id: sessionParams.client_reference_id,
+      metadata_user_id: sessionParams.metadata?.user_id,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
 
     return NextResponse.json({ url: session.url });
   } catch (err) {
