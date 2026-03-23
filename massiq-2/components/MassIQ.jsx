@@ -5653,24 +5653,14 @@ Return ONLY this JSON (no markdown, no extra text):
       : predictedTrajectory.tone === 'warn'
         ? 'Apply plan with adjustment and review again in 2–3 weeks.'
         : 'Apply plan and continue current phase until next checkpoint.';
-    const trajectoryView = premium ? predictedTrajectory : getTrajectoryStatus([], profile.goal);
+    // FREE users see full current scan analysis — entitlement diff is history/persistence only
+    const trajectoryView = predictedTrajectory;
     const shortSummary = (() => {
       const base = String(result.bodyFatSummary || result.diagnosis || '').trim();
-      if (!base) return 'Scan complete. Upgrade to unlock full analysis, plan, and progress tracking.';
+      if (!base) return 'Scan complete.';
       const parts = base.split('.').map(s => s.trim()).filter(Boolean).slice(0, 2);
       return parts.length ? `${parts.join('. ')}.` : base;
     })();
-    const lockedBlock = (
-      <div style={{ marginTop: 6, padding: '12px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Unlock full analysis, plan, and progress tracking</span>
-        </div>
-        <button className="bp" onClick={() => setTab('profile')} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 12, fontWeight: 700, color: C.green }}>
-          Upgrade to Premium
-        </button>
-      </div>
-    );
 
     return (
       <div className="screen" style={{ gap: 18 }}>
@@ -5726,32 +5716,6 @@ Return ONLY this JSON (no markdown, no extra text):
           const severity = diag?.severity;
           const signals  = diag && Array.isArray(diag.supporting_signals) ? diag.supporting_signals : [];
           const explanation = result.limitingFactorExplanation || diag?.primary_issue;
-
-          if (!premium) {
-            return (
-              <Card className="su" style={{ borderColor: color + '44' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Icon name="stethoscope" size={18} color={color} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 2 }}>Primary Limiting Factor</div>
-                    <div style={{ fontSize: 15, fontWeight: 700 }}>{label}</div>
-                  </div>
-                  {severity && (
-                    <span style={{ fontSize: 10, fontWeight: 700, color, background: color + '22', padding: '3px 10px', borderRadius: 99, textTransform: 'capitalize', flexShrink: 0 }}>{severity}</span>
-                  )}
-                </div>
-                <div style={{ marginTop: 12, padding: '12px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Unlock Full Analysis</span>
-                  </div>
-                  <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, margin: 0 }}>
-                    Premium reveals the detailed explanation, supporting signals, and actionable fix for this limiting factor.
-                  </p>
-                </div>
-              </Card>
-            );
-          }
 
           return (
             <Card className="su" style={{ borderColor: color + '44' }}>
@@ -5833,40 +5797,32 @@ Return ONLY this JSON (no markdown, no extra text):
             </span>
             <StatusPill tone={trajectoryView.tone === 'good' ? 'good' : trajectoryView.tone === 'warn' ? 'warn' : 'neutral'} label={trajectoryView.label} />
           </div>
-          {premium ? (
-            <>
-              {result.bodyFatSummary && (
-                <div style={{ marginBottom: result.muscleSummary ? 12 : 0 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Body Composition</div>
-                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
-                </div>
-              )}
-              {result.muscleSummary && (
-                <div style={{ paddingTop: result.bodyFatSummary ? 10 : 0, borderTop: result.bodyFatSummary ? `1px solid ${C.border}` : 'none' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Muscle Development</div>
-                  <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
-                </div>
-              )}
-              {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
-                <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
-              )}
-              {trajectoryView.note && (
-                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{trajectoryView.note}</p>
-              )}
-            </>
-          ) : (
-            <>
-              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>
-                {shortSummary}
-              </p>
-            </>
-          )}
+          <>
+            {result.bodyFatSummary && (
+              <div style={{ marginBottom: result.muscleSummary ? 12 : 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Body Composition</div>
+                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.bodyFatSummary}</p>
+              </div>
+            )}
+            {result.muscleSummary && (
+              <div style={{ paddingTop: result.bodyFatSummary ? 10 : 0, borderTop: result.bodyFatSummary ? `1px solid ${C.border}` : 'none' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 4 }}>Muscle Development</div>
+                <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.65, margin: 0 }}>{result.muscleSummary}</p>
+              </div>
+            )}
+            {!result.bodyFatSummary && !result.muscleSummary && result.diagnosis && (
+              <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, margin: 0 }}>{result.diagnosis}</p>
+            )}
+            {trajectoryView.note && (
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, margin: '10px 0 0', paddingTop: 10, borderTop: `1px solid ${C.border}` }}>{trajectoryView.note}</p>
+            )}
+          </>
         </Card>
 
         {/* 4 – ADJUST NOW (before → after targets) */}
         <div className="su" style={{ animationDelay: '.04s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>{prevScan ? 'ADJUST NOW' : 'Your Targets'}</div>
-          {premium && prevScan && prevScan.dailyTargets && (
+          {prevScan && prevScan.dailyTargets && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
               {[
                 { label: 'Calories', before: prevScan.dailyTargets.calories, after: dt.calories, unit: 'kcal', color: C.orange },
@@ -5884,35 +5840,28 @@ Return ONLY this JSON (no markdown, no extra text):
               ))}
             </div>
           )}
-          {premium ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              {[
-                { icon: 'flame',     label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
-                { icon: 'bolt',      label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
-                { icon: 'footsteps', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
-                { icon: 'moon',      label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
-                { icon: 'droplet',   label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
-                { icon: 'dumbbell',  label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
-              ].map(t => (
-                <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Icon name={t.icon} size={14} color={t.color} strokeWidth={1.75} />
-                  </div>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
-                  <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
-                  <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            {[
+              { icon: 'flame',     label: 'Calories', value: dt.calories,            unit: 'kcal', color: C.orange },
+              { icon: 'bolt',      label: 'Protein',  value: dt.protein,             unit: 'g',    color: C.blue },
+              { icon: 'footsteps', label: 'Steps',    value: dt.steps,               unit: '/day', color: C.green },
+              { icon: 'moon',      label: 'Sleep',    value: dt.sleepHours,          unit: 'hrs',  color: C.purple },
+              { icon: 'droplet',   label: 'Water',    value: dt.waterLiters,         unit: 'L',    color: '#4AD4FF' },
+              { icon: 'dumbbell',  label: 'Training', value: dt.trainingDaysPerWeek, unit: 'x/wk', color: C.red },
+            ].map(t => (
+              <div key={t.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '12px 12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ width: 26, height: 26, borderRadius: 7, background: `${t.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon name={t.icon} size={14} color={t.color} strokeWidth={1.75} />
                 </div>
-              ))}
-            </div>
-          ) : lockedBlock}
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>{t.label}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>{t.value ?? '—'}</div>
+                <div style={{ fontSize: 10, color: C.dimmed }}>{t.unit}</div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* 5 – Muscle group assessment — PREMIUM ONLY */}
-        {!premium ? (
-          <PremiumGate feature={FEATURES.FULL_SCAN_DETAILS} subscription={subscription} onUpgrade={() => {}}>
-            {null}
-          </PremiumGate>
-        ) : (
+        {/* 5 – Muscle group assessment */}
         <Card className="su" style={{ animationDelay: '.05s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Muscle Assessment</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -5942,46 +5891,27 @@ Return ONLY this JSON (no markdown, no extra text):
             </div>
           )}
         </Card>
-        )}
 
-        {/* 6 – Detailed metrics — FREE: core metrics only, PREMIUM: full grid */}
+        {/* 6 – Detailed metrics */}
         <div className="su" style={{ animationDelay: '.06s' }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Physique Metrics</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {(premium
-              ? [
-                  { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-                  { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
-                  { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
-                  { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
-                ]
-              : [
-                  { label: 'Body Fat',      value: `${safeNum(result.bodyFatPct, 1)}%`, color: C.orange },
-                  { label: 'Physique Score', value: `${safeNum(result.physiqueScore)}/100`, color: C.green },
-                  { label: 'Lean Mass',     value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-                ]
-            ).map(m => (
+            {[
+              { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
+              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+              { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
+              { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
+            ].map(m => (
               <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: 16, textAlign: 'center' }}>
                 <div style={{ fontSize: 24, fontWeight: 800, color: m.color }}>{m.value}</div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.06em' }}>{m.label}</div>
               </div>
             ))}
           </div>
-            {!premium && (
-              <div style={{ marginTop: 10, padding: '10px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)`, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
-                <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Symmetry and full breakdown are Premium</span>
-              </div>
-            )}
         </div>
 
-        {/* 6.5 – Physique Projection — PREMIUM ONLY */}
+        {/* 6.5 – Physique Projection */}
         {(() => {
-          if (!premium) return (
-            <PremiumGate feature={FEATURES.PROJECTIONS} subscription={subscription} onUpgrade={() => {}}>
-              {null}
-            </PremiumGate>
-          );
           const bf  = Number(result.bodyFatPct || 0);
           if (!bf) return null;
           const gen  = profile?.gender || 'Male';
@@ -6094,7 +6024,7 @@ Return ONLY this JSON (no markdown, no extra text):
         })()}
 
         {/* 7 – Training focus */}
-        {premium && (result.trainingFocus || result.priorityAreas?.length > 0) && (
+        {(result.trainingFocus || result.priorityAreas?.length > 0) && (
           <Card className="su" style={{ animationDelay: '.07s' }}>
             <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Training Focus</div>
             {result.trainingFocus && typeof result.trainingFocus === 'string' && (
@@ -6116,7 +6046,7 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 8 – Weekly missions */}
-        {premium && result.weeklyMissions?.length > 0 && (
+        {result.weeklyMissions?.length > 0 && (
           <Card className="su" style={{ animationDelay: '.08s' }}>
             <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Weekly Missions</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -6131,7 +6061,7 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 8.5 – Photo Reliability */}
-        {premium && result.photoQuality && (
+        {result.photoQuality && (
           <Card className="su" style={{ animationDelay: '.085s' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
               <Icon name="camera" size={16} color={C.muted} />
@@ -6169,7 +6099,6 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 9 – "How we calculate this" expandable */}
-        {premium && (
         <div className="su" style={{ animationDelay: '.09s' }}>
           <button className="bp" onClick={() => setShowCalcDetails(o => !o)} style={{
             width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -6179,7 +6108,7 @@ Return ONLY this JSON (no markdown, no extra text):
             <span>How we calculate this</span>
             <span style={{ color: C.muted, fontSize: 13, display: 'inline-block', transition: 'transform .2s', transform: showCalcDetails ? 'rotate(180deg)' : 'none' }}>▾</span>
           </button>
-          {showCalcDetails && premium && (
+          {showCalcDetails && (
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderTop: 'none', borderRadius: '0 0 14px 14px', padding: '14px 16px' }}>
               {[
                 { label: 'Body Fat %',     desc: 'AI visual estimate from your photo using muscle separation, skin fold appearance, and vascularity cues. Comparable to the skinfold method ±3–4%.' },
@@ -6197,10 +6126,9 @@ Return ONLY this JSON (no markdown, no extra text):
             </div>
           )}
         </div>
-        )}
 
         {/* Asymmetries — shown only when flagged */}
-        {premium && result.asymmetries?.length > 0 && (
+        {result.asymmetries?.length > 0 && (
           <Card className="su" style={{ animationDelay: '.10s', background: `${C.gold}12`, border: `1px solid ${C.gold}33` }}>
             <div style={{ fontWeight: 700, marginBottom: 8, color: C.gold, fontSize: 13 }}>Balance note</div>
             <ul style={{ paddingLeft: 18, margin: 0 }}>
@@ -6804,11 +6732,15 @@ export default function MassIQ() {
       try {
         let s = await initializeSession();
         if (!s?.access_token) {
-          let billingReturn = false;
-          try { billingReturn = sessionStorage.getItem('massiq:billing-return') === '1'; } catch {}
-          if (billingReturn) {
-            for (let i = 0; i < 8 && !s?.access_token; i++) {
-              await new Promise(r => setTimeout(r, 500));
+          let needsRetry = false;
+          try {
+            needsRetry = sessionStorage.getItem('massiq:billing-return') === '1'
+              || sessionStorage.getItem('massiq:premium-return') === '1'
+              || (typeof window !== 'undefined' && window.location?.search?.includes('premium_activated=1'));
+          } catch {}
+          if (needsRetry) {
+            for (let i = 0; i < 12 && !s?.access_token; i++) {
+              await new Promise(r => setTimeout(r, 600));
               s = await initializeSession();
             }
           }

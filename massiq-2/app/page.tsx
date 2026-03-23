@@ -472,7 +472,7 @@ export default function LandingPage() {
       <div className="proof-strip">
         <div className="proof-inner">
           {[
-            { stat: 'Public Beta',      sub: 'Free early access'                  },
+            { stat: 'Public Beta',      sub: 'AI physique analysis'               },
             { stat: 'AI-Powered',       sub: 'Vision + physiology engine'         },
             { stat: 'Body + Food Scan', sub: 'Physique analysis + meal tracking'  },
           ].map((p, i) => (
@@ -881,7 +881,7 @@ export default function LandingPage() {
             <p style={{ fontSize: 15, color: C.muted, lineHeight: 1.7, maxWidth: 520, margin: '0 auto 28px' }}>
               MassIQ is in public beta. Physique analysis uses AI vision and established
               physiological formulas — results are as accurate as current technology allows,
-              but individual variation means estimates may not be exact. Early access is free.
+              but individual variation means estimates may not be exact.
             </p>
             <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap' }}>
               {['No fake transformations', 'No generic plans', 'No guesswork'].map(point => (

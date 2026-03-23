@@ -25,8 +25,8 @@ export default function BillingSuccessPage() {
     const waitForSession = async () => {
       let session = await initializeSession().catch(() => null);
       if (session?.access_token) return session;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 400));
+      for (let i = 0; i < 24; i++) {
+        await new Promise(r => setTimeout(r, 500));
         session = await initializeSession().catch(() => null);
         if (session?.access_token) return session;
       }
@@ -46,7 +46,6 @@ export default function BillingSuccessPage() {
             sessionStorage.setItem('massiq:premium-return', '1');
             sessionStorage.removeItem('massiq:billing-return');
           } catch {}
-          setTimeout(() => router.replace('/app?premium_activated=1'), 500);
         }
         return;
       }
@@ -143,20 +142,20 @@ export default function BillingSuccessPage() {
         {stage === 'unauthenticated' && (
           <>
             <div style={{ fontSize: 22, fontWeight: 800, color: C.white, marginBottom: 10 }}>
-              Finishing your return...
+              Payment successful
             </div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 28 }}>
-              Taking you back to the app to complete premium activation.
+              Sign in with the same account you used to purchase. Premium will activate once you&apos;re back in the app.
             </div>
             <button
-              onClick={() => router.replace('/app')}
+              onClick={() => router.replace('/app?premium_activated=1')}
               style={{
                 background: C.green, color: '#0A0D0A', border: 'none',
                 padding: '14px 32px', borderRadius: 99, fontSize: 15, fontWeight: 800,
                 cursor: 'pointer', width: '100%',
               }}
             >
-              Back to app
+              Continue to sign in
             </button>
           </>
         )}
