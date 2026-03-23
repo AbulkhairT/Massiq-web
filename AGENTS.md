@@ -33,7 +33,7 @@ A `.env.local` file is needed in `massiq-2/`. The app degrades gracefully:
 The Supabase client code must match the actual database schema. Known alignment issues:
 - `plans` table: `target_bf` and `start_bf` columns require migration `004_plans_target_bf.sql`. Code gracefully omits these fields and computes them from scan data.
 - `profiles` table: `name` column does not exist — stripped on write. `unit_system` column EXISTS — included in read/write.
-- `user_entitlements` table: requires migration `003_entitlements_and_trigger.sql`. Migration `005_food_scan_entitlements.sql` adds `free_food_scans_used` and `allocate_food_scan` RPC for server-side food scan limits. Code handles 404 gracefully (non-fatal).
+- `user_entitlements` table: requires migration `003_entitlements_and_trigger.sql`. Migration `005_food_scan_entitlements.sql` adds `free_food_scans_used` and `allocate_food_scan` RPC. Migration `008_food_scan_events.sql` adds `food_scan_events` table and `food_scans_used_today`/`food_scans_remaining_today` RPCs. Code handles 404 gracefully (non-fatal).
 - `subscriptions.stripe_subscription_id`: may lack a UNIQUE constraint. Webhook uses two-step SELECT→PATCH/INSERT instead of `on_conflict` upsert.
 
 ### Premium/Stripe flow
