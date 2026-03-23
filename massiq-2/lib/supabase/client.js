@@ -692,26 +692,27 @@ function hammingDistance(h1, h2) {
 // ─── subscriptions ───────────────────────────────────────────────────────────
 
 /**
- * Fetch the user's subscription row from public.subscriptions.
- * Returns null if no subscription exists or if the request fails.
- * Read-only: no client writes to this table (webhook-only).
+ * Fetch the user's current subscription from public.subscriptions.
+ * Premium access is ONLY granted for status in ['active', 'trialing'].
+ * Returns null if no subscription exists, request fails, or only incomplete/stale rows.
  */
 export async function getSubscription(token, userId) {
   if (!token || !userId) return null;
   try {
-    // Fetch the 5 most-recently-updated rows and prefer an active/trialing one.
-    // Without ordering, a stale 'incomplete' row created first can shadow a later
-    // 'active' row when limit=1 is applied.
+    // Fetch multiple rows — prefer active/trialing; never treat incomplete as premium.
     const rows = await supabaseFetch(
-      `/rest/v1/subscriptions?user_id=eq.${userId}&select=id,user_id,status,stripe_customer_id,stripe_subscription_id,price_id,current_period_start,current_period_end,cancel_at_period_end,created_at,updated_at&order=updated_at.desc&limit=1`,
+      `/rest/v1/subscriptions?user_id=eq.${userId}&select=id,user_id,status,stripe_customer_id,stripe_subscription_id,price_id,current_period_start,current_period_end,cancel_at_period_end,created_at,updated_at&order=updated_at.desc&limit=10`,
       { method: 'GET', headers: authHeaders(token) },
     );
     if (!Array.isArray(rows) || rows.length === 0) return null;
-    // Prefer an active or trialing row; fall back to the most-recently-updated row.
-    const best = rows.find(r => r.status === 'active' || r.status === 'trialing') || rows[0];
-    return best;
+    // Prefer active/trialing; fall back to most recent only for display (canceled/past_due).
+    // Do NOT return incomplete — it is not premium and should not be shown as "the" subscription.
+    const best = rows.find(r => r.status === 'active' || r.status === 'trialing');
+    if (best) return best;
+    // For display: use most recent if it's a "relevant" non-incomplete state
+    const fallback = rows.find(r => !['incomplete', 'incomplete_expired'].includes(r.status));
+    return fallback || null;
   } catch (err) {
-    // Non-fatal: subscriptions table may not exist yet in dev
     console.warn('[subscription] getSubscription failed (non-fatal):', err?.message);
     return null;
   }

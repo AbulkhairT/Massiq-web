@@ -80,8 +80,11 @@ export async function POST(req) {
     const body = await req.json().catch(() => ({}));
     let origin = body?.return_origin;
     if (!origin) {
-      const ref = req.headers.get('referer');
-      try { if (ref) origin = new URL(ref).origin; } catch {}
+      origin = req.headers.get('origin');
+      if (!origin) {
+        const ref = req.headers.get('referer');
+        try { if (ref) origin = new URL(ref).origin; } catch {}
+      }
     }
     if (origin && isValidOrigin(origin)) {
       baseUrl = String(origin).replace(/\/$/, '');

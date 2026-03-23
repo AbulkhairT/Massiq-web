@@ -6704,9 +6704,7 @@ export default function MassIQ() {
   const [entitlements,  setEntitlements]  = useState(null);
   const [paywallOpen,   setPaywallOpen]   = useState(false);
   const [checkoutActivating, setCheckoutActivating] = useState(false);
-  const [checkoutReturnSessionPending, setCheckoutReturnSessionPending] = useState(() =>
-    typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')
-  );
+  const [checkoutRetryExhausted, setCheckoutRetryExhausted] = useState(false);
   const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
@@ -6755,13 +6753,15 @@ export default function MassIQ() {
               || qs.includes('premium_activated=1')
               || hasCheckoutReturn;
           } catch {}
+          const maxAttempts = hasCheckoutReturn ? 60 : 24;
           if (needsRetry) {
-            console.info('[auth:boot] checkout return — retrying session (24x500ms)');
-            for (let i = 0; i < 24 && !s?.access_token && mounted; i++) {
+            console.info('[auth:boot] retrying session', { maxAttempts, intervalMs: 500, hasCheckoutReturn });
+            for (let i = 0; i < maxAttempts && !s?.access_token && mounted; i++) {
               await new Promise(r => setTimeout(r, 500));
               s = await initializeSession();
-              if (!s?.access_token && (i === 0 || i === 5 || i === 11 || i === 23)) {
-                console.info('[auth:boot] retry', { i: i + 1, hasStored: !!getStoredSession() });
+              if (!s?.access_token && (i === 0 || i === 14 || i === 29 || i === maxAttempts - 1)) {
+                const stored = getStoredSession();
+                console.info('[auth:boot] retry', { attempt: i + 1, hasStored: !!stored, hasRawKey: typeof localStorage !== 'undefined' ? !!localStorage.getItem('massiq:auth:session') : null });
               }
             }
           }
@@ -6788,16 +6788,15 @@ export default function MassIQ() {
   }, []);
 
   // ── Extended session retry for checkout return ─────────────────────────────
-  // When user returns from Stripe with checkout_success=1 but no session yet,
-  // keep retrying initializeSession before ever showing login. Show "Restoring
-  // session..." until either session appears or retry window is exhausted.
+  // When checkout_success=1 and no session after boot, keep retrying. Do NOT
+  // show login until retry window is exhausted (checkoutRetryExhausted=true).
   useEffect(() => {
     if (!authReady || session?.access_token) return;
     const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
     if (!qs.includes('checkout_success=1')) return;
 
     let cancelled = false;
-    setCheckoutReturnSessionPending(true);
+    const MAX = 30;
     const log = (msg, data = {}) => {
       if (!cancelled) console.info('[auth:checkout-return]', msg, data);
     };
@@ -6805,28 +6804,31 @@ export default function MassIQ() {
       url: typeof window !== 'undefined' ? window.location.href : '',
       origin: typeof window !== 'undefined' ? window.location.origin : '',
       hasStored: !!getStoredSession(),
+      maxAttempts: MAX,
+      intervalMs: 500,
     });
 
     const run = async () => {
-      for (let i = 0; i < 30 && !cancelled; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+      for (let i = 0; i < MAX && !cancelled; i++) {
+        await new Promise(r => setTimeout(r, 500));
         if (cancelled) return;
         const s = await initializeSession();
         if (s?.access_token) {
           log('session restored on extended retry', { attempt: i + 1, userId: s?.user?.id });
           setSession(s);
-          setCheckoutReturnSessionPending(false);
           return;
         }
-        log('retry no session', { attempt: i + 1, hasStored: !!getStoredSession() });
+        if (i === 0 || i === 14 || i === MAX - 1) {
+          log('retry no session', { attempt: i + 1, hasStored: !!getStoredSession() });
+        }
       }
       if (!cancelled) {
-        log('exhausted extended retries — will show login');
-        setCheckoutReturnSessionPending(false);
+        log('exhausted extended retries — will allow login', { totalAttempts: MAX });
+        setCheckoutRetryExhausted(true);
       }
     };
     run();
-    return () => { cancelled = true; setCheckoutReturnSessionPending(false); };
+    return () => { cancelled = true; };
   }, [authReady, session?.access_token]);
 
   useEffect(() => {
@@ -7416,8 +7418,12 @@ export default function MassIQ() {
 
   const showToast = (msg) => setToast(msg);
 
-  if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+  // 1. Auth not ready — show loading. Never use boot null as final auth state.
+  if (!authReady) {
+    return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+  }
 
+  // 2. Premium activation in progress (user has session, polling subscription)
   if (checkoutActivating) {
     return (
       <div style={{ background: C.bg, minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
@@ -7428,33 +7434,37 @@ export default function MassIQ() {
     );
   }
 
-  // Session restore in progress after checkout return — do NOT show login until exhausted
-  if (checkoutReturnSessionPending) {
-    return (
-      <div style={{ background: C.bg, minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
-        <div style={{ width: 56, height: 56, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
-        <div style={{ fontSize: 22, fontWeight: 800, color: C.white }}>Restoring session...</div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-  }
-
+  // 3. No session — NEVER show login when checkout_success until retries exhausted
   if (!session?.access_token) {
-    const url = typeof window !== 'undefined' ? window.location.href : '';
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const hasCheckoutSuccess = url.includes('checkout_success=1');
+    const hasCheckoutSuccess = typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1');
     const stored = getStoredSession();
-    console.info('[auth:login-render] showing login', {
-      url,
-      origin,
+    const shouldShowRestoring = hasCheckoutSuccess && !checkoutRetryExhausted;
+
+    if (shouldShowRestoring) {
+      return (
+        <div style={{ background: C.bg, minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
+          <div style={{ width: 56, height: 56, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.white }}>Restoring session...</div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      );
+    }
+
+    // Only reach here when: no session AND (no checkout_success OR retries exhausted)
+    console.info('[auth:login-render] showing login — exact condition', {
       checkout_success: hasCheckoutSuccess,
       authReady,
-      ready,
+      checkoutRetryExhausted,
+      getSession_result: !!session,
       hasStoredSession: !!stored,
-      storedSessionKeys: stored ? Object.keys(stored).filter(k => k !== 'access_token' && k !== 'refresh_token') : [],
+      url: typeof window !== 'undefined' ? window.location.href : '',
+      origin: typeof window !== 'undefined' ? window.location.origin : '',
     });
     return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
   }
+
+  // 4. Still loading profile/data
+  if (!ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
   console.info('[route:decision]', {
