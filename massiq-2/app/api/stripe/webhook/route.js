@@ -3,7 +3,6 @@ import Stripe from 'stripe';
 
 export const runtime = 'nodejs';
 
-// Webhook events we handle
 const HANDLED_EVENTS = new Set([
   'checkout.session.completed',
   'customer.subscription.created',
@@ -12,37 +11,77 @@ const HANDLED_EVENTS = new Set([
 ]);
 
 /**
- * Insert billing event for audit. Every received webhook event is persisted.
- * Throws on failure so we do not silently skip; caller may choose to log and continue.
+ * Check if we've already processed this event (idempotency).
+ * Requires migration 010 (stripe_event_id column). Without it, returns false.
  */
-async function insertBillingEvent(eventType, data) {
+async function isEventProcessed(stripeEventId) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) throw new Error('Missing Supabase config for billing_events');
-  const res = await fetch(`${supabaseUrl}/rest/v1/billing_events`, {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      apikey:          serviceKey,
-      Authorization:   `Bearer ${serviceKey}`,
-      Prefer:          'return=minimal',
-    },
-    body: JSON.stringify({ event_type: eventType, data: data ?? null }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`billing_events insert failed (${res.status}): ${text}`);
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return false;
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/billing_events?stripe_event_id=eq.${encodeURIComponent(stripeEventId)}&select=id&limit=1`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+    );
+    if (!res.ok) return false;
+    const rows = await res.json().catch(() => []);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
   }
 }
 
 /**
- * Upsert the canonical (single) subscription row per user_id.
- * Uses ON CONFLICT (user_id) DO UPDATE — one row per user.
+ * Insert billing event. Uses stripe_event_id for idempotency (after migration 010).
+ * Falls back to event_type + data only for pre-migration schema.
  */
+async function insertBillingEvent(stripeEventId, eventType, payload, userId = null) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) throw new Error('Missing Supabase config for billing_events');
+
+  const row = {
+    stripe_event_id: stripeEventId,
+    event_type: eventType,
+    data: payload,
+    user_id: userId || null,
+  };
+
+  let res = await fetch(`${supabaseUrl}/rest/v1/billing_events`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(row),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    if (res.status === 400 && (text.includes('stripe_event_id') || text.includes('column'))) {
+      res = await fetch(`${supabaseUrl}/rest/v1/billing_events`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: serviceKey,
+          Authorization: `Bearer ${serviceKey}`,
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ event_type: eventType, data: payload }),
+      });
+    }
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`billing_events insert failed (${res.status}): ${errText}`);
+    }
+  }
+}
+
 async function upsertSubscription(row) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL missing');
   }
@@ -61,21 +100,19 @@ async function upsertSubscription(row) {
     const differentSub = canonical?.stripe_subscription_id && row.stripe_subscription_id
       && canonical.stripe_subscription_id !== row.stripe_subscription_id;
     if (canonicalActive && differentSub) {
-      console.info('[stripe:webhook] Ignoring incomplete shadow subscription for active user', { user_id: row.user_id });
+      console.log('[stripe:webhook] Ignoring incomplete shadow subscription for active user', { user_id: row.user_id });
       return null;
     }
   }
 
-  const headers = {
-    'Content-Type':  'application/json',
-    apikey:          serviceKey,
-    Authorization:   `Bearer ${serviceKey}`,
-    Prefer:          'resolution=merge-duplicates,return=representation',
-  };
-
   const res = await fetch(`${supabaseUrl}/rest/v1/subscriptions?on_conflict=user_id`, {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Prefer: 'resolution=merge-duplicates,return=representation',
+    },
     body: JSON.stringify(row),
   });
 
@@ -87,27 +124,18 @@ async function upsertSubscription(row) {
   return res.json().catch(() => null);
 }
 
-/**
- * Resolve user_id from subscription metadata, or fall back to looking up
- * an existing subscriptions row by stripe_customer_id.
- */
 async function resolveUserId(subscription) {
   const fromMeta = subscription.metadata?.user_id;
   if (fromMeta) return fromMeta;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) return null;
 
   try {
     const res = await fetch(
-      `${supabaseUrl}/rest/v1/subscriptions?stripe_customer_id=eq.${subscription.customer}&select=user_id,updated_at&order=updated_at.desc&limit=1`,
-      {
-        headers: {
-          apikey:        serviceKey,
-          Authorization: `Bearer ${serviceKey}`,
-        },
-      }
+      `${supabaseUrl}/rest/v1/subscriptions?stripe_customer_id=eq.${subscription.customer}&select=user_id&order=updated_at.desc&limit=1`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
     );
     const rows = await res.json().catch(() => []);
     return Array.isArray(rows) && rows[0]?.user_id ? rows[0].user_id : null;
@@ -118,37 +146,30 @@ async function resolveUserId(subscription) {
 
 function buildSubscriptionRow(sub, userId) {
   return {
-    user_id:                userId,
-    stripe_customer_id:     typeof sub.customer === 'string' ? sub.customer : null,
+    user_id: userId,
+    stripe_customer_id: typeof sub.customer === 'string' ? sub.customer : null,
     stripe_subscription_id: sub.id,
-    status:                 sub.status,
-    price_id:               sub.items?.data?.[0]?.price?.id || null,
-    current_period_start:   sub.current_period_start
+    status: sub.status,
+    price_id: sub.items?.data?.[0]?.price?.id || null,
+    current_period_start: sub.current_period_start
       ? new Date(sub.current_period_start * 1000).toISOString()
       : null,
-    current_period_end:     sub.current_period_end
-      ? new Date(sub.current_period_end   * 1000).toISOString()
+    current_period_end: sub.current_period_end
+      ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
-    cancel_at_period_end:   sub.cancel_at_period_end ?? false,
-    updated_at:             new Date().toISOString(),
+    cancel_at_period_end: sub.cancel_at_period_end ?? false,
+    updated_at: new Date().toISOString(),
   };
 }
 
-/**
- * POST /api/stripe/webhook
- *
- * Verifies the Stripe signature and syncs subscription state into Supabase.
- * This is the ONLY place premium entitlement is granted — never from the client.
- */
-/** GET /api/stripe/webhook — health-check so the route is never a 404 */
 export async function GET() {
   return NextResponse.json({ ok: true, route: '/api/stripe/webhook' });
 }
 
 export async function POST(req) {
-  console.info('[stripe:webhook] POST received — processing...');
+  console.log('[stripe:webhook] POST received');
 
-  const secretKey     = process.env.STRIPE_SECRET_KEY;
+  const secretKey = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!secretKey || !webhookSecret) {
@@ -156,10 +177,13 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Stripe env vars missing' }, { status: 500 });
   }
 
-  const sig  = req.headers.get('stripe-signature');
+  const sig = req.headers.get('stripe-signature');
   const body = await req.text();
 
-  console.info('[stripe:webhook] sig present:', !!sig, 'body length:', body.length);
+  if (!sig) {
+    console.error('[stripe:webhook] No stripe-signature header');
+    return NextResponse.json({ error: 'Missing signature' }, { status: 400 });
+  }
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
@@ -171,75 +195,74 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  // Persist EVERY received event into billing_events for audit trail
-  try {
-    await insertBillingEvent(event.type, {
-      id: event.id,
-      livemode: event.livemode,
-      created: event.created,
-      data_object_id: event.data?.object?.id,
-      data_object: typeof event.data?.object === 'object'
-        ? { id: event.data.object.id, customer: event.data.object.customer, status: event.data.object.status }
-        : null,
-    });
-  } catch (e) {
-    console.error('[stripe:webhook] billing_events insert failed (non-fatal):', e?.message);
-  }
+  console.log('[stripe:webhook] Webhook event:', event.type, event.id);
 
-  // Silently ack unhandled events — don't fail
-  if (!HANDLED_EVENTS.has(event.type)) {
+  // Idempotency: skip if already processed
+  const alreadyProcessed = await isEventProcessed(event.id);
+  if (alreadyProcessed) {
+    console.log('[stripe:webhook] Event already processed (idempotent), skipping', event.id);
     return NextResponse.json({ received: true });
   }
 
-  console.info(`[stripe:webhook] Processing event: ${event.type} (${event.id})`);
+  const payload = {
+    id: event.id,
+    type: event.type,
+    livemode: event.livemode,
+    created: event.created,
+    data: event.data,
+  };
 
+  // Extract user_id early for billing_events (from metadata when available)
+  let userId = null;
+  const obj = event.data?.object;
+  if (obj) {
+    userId = obj.metadata?.user_id || null;
+  }
+
+  // 1. Insert billing_events FIRST (audit + idempotency guard)
+  try {
+    await insertBillingEvent(event.id, event.type, payload, userId);
+  } catch (e) {
+    if (e?.message?.includes('duplicate') || e?.message?.includes('unique')) {
+      console.log('[stripe:webhook] Duplicate event (concurrent), skipping', event.id);
+      return NextResponse.json({ received: true });
+    }
+    console.error('[stripe:webhook] billing_events insert failed:', e?.message);
+    return NextResponse.json({ error: 'Audit insert failed' }, { status: 500 });
+  }
+
+  // 2. Process subscription events
   try {
     if (event.type === 'checkout.session.completed') {
       const checkoutSession = event.data.object;
-      const subscriptionId  = checkoutSession.subscription;
-      if (!subscriptionId) return NextResponse.json({ received: true });
+      const subscriptionId = checkoutSession.subscription;
 
-      // Fetch the full subscription object
-      const sub    = await stripe.subscriptions.retrieve(subscriptionId);
-      const userId = sub.metadata?.user_id
-        || checkoutSession.metadata?.user_id
-        || await resolveUserId(sub);
+      if (subscriptionId) {
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        userId = sub.metadata?.user_id || checkoutSession.metadata?.user_id || (await resolveUserId(sub));
 
-      if (!userId) {
-        console.error('[stripe:webhook] Could not resolve user_id for session', {
-          session_id: checkoutSession.id,
-          customer: checkoutSession.customer,
-          has_sub_meta: !!sub.metadata?.user_id,
-          has_session_meta: !!checkoutSession.metadata?.user_id,
-        });
-        return NextResponse.json({ received: true }); // Ack — avoid Stripe retries
+        if (userId) {
+          const row = buildSubscriptionRow(sub, userId);
+          await upsertSubscription(row);
+          console.log('[stripe:webhook] checkout.session.completed synced', { user_id: userId, status: row.status });
+        } else {
+          console.error('[stripe:webhook] Could not resolve user_id for checkout session', checkoutSession.id);
+        }
       }
+    } else if (HANDLED_EVENTS.has(event.type) && event.type.startsWith('customer.subscription.')) {
+      const sub = event.data.object;
+      userId = sub.metadata?.user_id || (await resolveUserId(sub));
 
-      const row = buildSubscriptionRow(sub, userId);
-      await upsertSubscription(row);
-      console.info('[stripe:webhook] checkout.session.completed synced', { user_id: userId, status: row.status });
-
-    } else {
-      // customer.subscription.{created,updated,deleted}
-      const sub    = event.data.object;
-      const userId = sub.metadata?.user_id || await resolveUserId(sub);
-
-      if (!userId) {
-        console.error('[stripe:webhook] Could not resolve user_id for subscription', {
-          sub_id: sub.id,
-          customer: sub.customer,
-          has_meta: !!sub.metadata?.user_id,
-        });
-        return NextResponse.json({ received: true });
+      if (userId) {
+        const row = buildSubscriptionRow(sub, userId);
+        await upsertSubscription(row);
+        console.log(`[stripe:webhook] ${event.type} synced`, { user_id: userId, status: row.status });
+      } else {
+        console.error('[stripe:webhook] Could not resolve user_id for subscription', sub.id);
       }
-
-      const row = buildSubscriptionRow(sub, userId);
-      await upsertSubscription(row);
-      console.info(`[stripe:webhook] ${event.type} synced`, { user_id: userId, status: row.status });
     }
   } catch (err) {
     console.error('[stripe:webhook] Handler error:', err.message);
-    // Return 500 so Stripe retries the event
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 
