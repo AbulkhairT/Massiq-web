@@ -1,0 +1,10 @@
+.next/
+node_modules/
+out/
+build/
+.DS_Store
+*.pem
+.env*
+npm-debug.log*
+yarn-debug.log*
+*.tsbuildinfo
