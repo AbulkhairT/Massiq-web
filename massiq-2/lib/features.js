@@ -35,10 +35,53 @@ const FREE_FEATURES = new Set([
 ]);
 
 /**
- * Free users get this many completed (non-duplicate) scans.
+ * Free users get this many completed (non-duplicate) body scans.
  * Premium users have no limit.
  */
 export const FREE_SCAN_LIMIT = 2;
+
+/**
+ * Free users get this many food scans per day.
+ * Premium users have no daily limit.
+ */
+export const FREE_FOOD_SCAN_DAILY_LIMIT = 3;
+
+/**
+ * Returns the number of food scans used today (UTC date key).
+ */
+export function getFoodScansUsedToday() {
+  try {
+    const key = `massiq:food-scans:${new Date().toISOString().slice(0, 10)}`;
+    return Number(localStorage.getItem(key) || 0);
+  } catch { return 0; }
+}
+
+/**
+ * Increments the food scan counter for today.
+ */
+export function incrementFoodScanCount() {
+  try {
+    const key = `massiq:food-scans:${new Date().toISOString().slice(0, 10)}`;
+    const current = Number(localStorage.getItem(key) || 0);
+    localStorage.setItem(key, String(current + 1));
+  } catch {}
+}
+
+/**
+ * Returns true if the user can perform a food scan right now.
+ */
+export function canFoodScan(subscription) {
+  if (isPremiumActive(subscription)) return true;
+  return getFoodScansUsedToday() < FREE_FOOD_SCAN_DAILY_LIMIT;
+}
+
+/**
+ * Returns the number of free food scans remaining today.
+ */
+export function foodScansRemainingToday(subscription) {
+  if (isPremiumActive(subscription)) return Infinity;
+  return Math.max(0, FREE_FOOD_SCAN_DAILY_LIMIT - getFoodScansUsedToday());
+}
 
 /**
  * Returns true when the subscription is in an active or trialing state.

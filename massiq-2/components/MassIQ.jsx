@@ -29,7 +29,7 @@ import {
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
-import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT } from '../lib/features';
+import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT, canFoodScan, foodScansRemainingToday, incrementFoodScanCount, FREE_FOOD_SCAN_DAILY_LIMIT } from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -1920,7 +1920,12 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
   /* Food scan */
   const handleScanFile = (file) => {
     if (!file) return;
+    if (!canFoodScan(subscription)) {
+      showToast?.(`Daily food scan limit reached (${FREE_FOOD_SCAN_DAILY_LIMIT}/day). Upgrade for unlimited.`);
+      return;
+    }
     setScanning(true);
+    incrementFoodScanCount();
     const reader = new FileReader();
     reader.onload = async (e) => {
       const base64 = e.target.result.split(',')[1];
@@ -5342,15 +5347,23 @@ Return ONLY this JSON (no markdown, no extra text):
       plan,
     );
 
-    // Build scan_context: adaptation + scoring breakdown + image hash (for DB dedup audit)
+    // Build scan_context: adaptation + scoring breakdown + image hash + premium analysis
     const scanContext = {
       adaptation:       { decision: adaptation.decision, rationale: adaptation.rationale, adjustment: adaptation.adjustment || null },
       comparison:       adaptation.comparison || null,
       scoring_breakdown: result.scoringBreakdown || null,
       scoring_version:  result.scoringVersion   || null,
       ffmi:             result.ffmi             || null,
-      image_hash:       result.imageHash        || null,       // SHA-256 of original photo
+      image_hash:       result.imageHash        || null,
       perceptual_hash:  result.perceptualHash   || null,
+      premium_analysis: {
+        body_fat_summary:  result.bodyFatSummary   || null,
+        muscle_summary:    result.muscleSummary     || null,
+        muscle_groups:     result.muscleGroups      || null,
+        balance_note:      result.balanceNote       || null,
+        diagnosis:         result.diagnosis         || null,
+        strengths:         result.strengths         || null,
+      },
     };
 
     const entry = {

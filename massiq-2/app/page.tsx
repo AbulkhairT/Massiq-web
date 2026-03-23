@@ -446,8 +446,8 @@ export default function LandingPage() {
             <p className="fu d2 hero-sub">
               MassIQ scans your body, diagnoses what&apos;s actually
               happening, and gives you a precise plan — then updates
-              every time you scan again. Not a calorie counter.
-              Not a step tracker. A system.
+              every time you scan again. Snap your meals to track
+              calories. Not a step tracker. A system.
             </p>
 
             <div className="fu d3 hero-ctas">
@@ -472,9 +472,9 @@ export default function LandingPage() {
       <div className="proof-strip">
         <div className="proof-inner">
           {[
-            { stat: 'Public Beta',      sub: 'Free early access'               },
-            { stat: 'AI-Powered',       sub: 'Vision + physiology engine'      },
-            { stat: 'Body Scan + Plan', sub: 'Full system, not just tracking'  },
+            { stat: 'Public Beta',      sub: 'Free early access'                  },
+            { stat: 'AI-Powered',       sub: 'Vision + physiology engine'         },
+            { stat: 'Body + Food Scan', sub: 'Physique analysis + meal tracking'  },
           ].map((p, i) => (
             <>
               {i > 0 && <div key={`div-${i}`} className="proof-divider" />}
@@ -715,6 +715,11 @@ export default function LandingPage() {
                 icon: 'rotate', tag: 'Phase Shift', delay: 'd3',
                 title: 'Time to stop cutting',
                 body: 'You\'ve reached 13.1% body fat — your target. Continuing the cut risks lean mass loss. MassIQ is shifting you to a recomposition phase.',
+              },
+              {
+                icon: 'bowl', tag: 'Food Scan', delay: 'd1',
+                title: 'Track meals from a photo',
+                body: 'Snap a photo of your food and MassIQ estimates calories, protein, carbs, and fat. Keeps your nutrition aligned with your body scan targets — no manual logging.',
               },
             ].map(card => (
               <div key={card.title} className={`fu ${card.delay}`} style={{

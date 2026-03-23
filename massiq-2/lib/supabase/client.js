@@ -240,6 +240,7 @@ function serializeScan(userId, scan) {
 function deserializeScan(row) {
   const ma  = row?.muscle_assessment || {};
   const ctx = row?.scan_context      || {};
+  const pa  = ctx?.premium_analysis  || {};
   return {
     id:                          row?.id,
     dbId:                        row?.id,
@@ -271,6 +272,13 @@ function deserializeScan(row) {
     scoringBreakdown:            ctx?.scoring_breakdown            || null,
     imageHash:                   ctx?.image_hash                   || null,
     perceptualHash:              ctx?.perceptual_hash              || null,
+    // Premium analysis (persisted for revisiting scan details)
+    bodyFatSummary:              pa?.body_fat_summary              || null,
+    muscleSummary:               pa?.muscle_summary                || null,
+    muscleGroups:                pa?.muscle_groups                 || null,
+    balanceNote:                 pa?.balance_note                  || null,
+    diagnosis:                   pa?.diagnosis                     || null,
+    strengths:                   pa?.strengths                     || null,
   };
 }
 
