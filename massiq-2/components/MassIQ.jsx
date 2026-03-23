@@ -1862,49 +1862,25 @@ function PremiumGate({ feature, subscription, onUpgrade, children }) {
 }
 
 // persistGate — a React ref whose .current holds the Promise from the initial
-// onboarding profile write. The Paywall awaits it before opening Stripe so that
+// onboarding profile write. The Paywall awaits it before navigating to Stripe so
 // the DB write completes before checkout starts (leaving no incomplete profile).
-// onPremiumActivated — called with the subscription row when premium is confirmed.
-//   The parent uses this to update subscription state and close the paywall.
+// onPremiumActivated — called when the app detects premium on return from checkout.
 function Paywall({ userId, accessToken, onClose, persistGate, onPremiumActivated }) {
-  // phase: 'idle' | 'loading' | 'pending' | 'activated' | 'error'
-  const [phase, setPhase] = useState('idle');
-  const [error, setError] = useState('');
-  const pollRef = useRef(null);
-
-  // Always clean up the polling interval when the component unmounts
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
-
-  const stopPolling = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-  };
-
-  const checkPremiumNow = async () => {
-    if (!accessToken || !userId) return;
-    try {
-      const sub = await getSubscription(accessToken, userId);
-      if (sub?.status === 'active' || sub?.status === 'trialing') {
-        stopPolling();
-        setPhase('activated');
-        onPremiumActivated?.(sub);
-        // Give user a moment to see the success state, then close
-        setTimeout(onClose, 1800);
-      }
-    } catch { /* ignore transient poll errors */ }
-  };
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
 
   const handleUpgrade = async () => {
     if (!userId || !accessToken) {
       setError('Please sign in to continue.');
       return;
     }
-    setPhase('loading');
+    setLoading(true);
     setError('');
 
-    // ── Persist gate ─────────────────────────────────────────────────────────
-    // Wait for any in-flight onboarding profile write to finish.
+    // ── Persist gate ──────────────────────────────────────────────────────────
+    // If an onboarding profile write is still in flight, wait for it to finish
+    // before navigating to Stripe. This prevents the browser from cancelling the
+    // in-flight write, which would leave an incomplete profile in the DB.
     const pendingSync = persistGate?.current;
     if (pendingSync) {
       console.info('[paywall] awaiting onboarding profile sync before checkout…');
@@ -1915,7 +1891,7 @@ function Paywall({ userId, accessToken, onClose, persistGate, onPremiumActivated
       } catch (syncErr) {
         console.error('[paywall] profile sync failed — blocking checkout', syncErr);
         setError('Your profile could not be saved. Check your connection and try again before upgrading.');
-        setPhase('idle');
+        setLoading(false);
         return;
       }
     }
@@ -1925,27 +1901,18 @@ function Paywall({ userId, accessToken, onClose, persistGate, onPremiumActivated
       const res = await fetch('/api/stripe/checkout', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({}),
+        body:    JSON.stringify({}),
       });
       const { url, error: apiErr } = await res.json();
       if (apiErr) throw new Error(apiErr);
-      if (url) {
-        // Open Stripe in a new tab — the current app tab stays alive and authenticated.
-        // This prevents session loss from cross-domain navigation on mobile Safari / incognito.
-        window.open(url, '_blank', 'noopener');
-        setPhase('pending');
-        // Poll for webhook confirmation every 3 seconds, stop after 3 minutes
-        pollRef.current = setInterval(checkPremiumNow, 3000);
-        setTimeout(() => {
-          stopPolling();
-          // If still pending after timeout, reset to idle so user can retry
-          setPhase(prev => prev === 'pending' ? 'idle' : prev);
-        }, 180000);
-      }
+      // Navigate in the same tab. Stripe will redirect back to /billing/success
+      // which handles session restoration and subscription polling safely.
+      if (url) window.location.href = url;
     } catch (err) {
       setError(err.message || 'Could not start checkout. Please try again.');
-      setPhase('idle');
+      setLoading(false);
     }
+    // Note: don't setLoading(false) on success — the tab navigates away.
   };
 
   return (
@@ -1961,161 +1928,100 @@ function Paywall({ userId, accessToken, onClose, persistGate, onPremiumActivated
         padding: '28px 24px max(28px, env(safe-area-inset-bottom))',
         maxHeight: '92dvh', overflowY: 'auto',
       }}>
-
-        {/* ── PENDING state: checkout is open in a new tab ─────────────────── */}
-        {phase === 'pending' && (
-          <div style={{ textAlign: 'center', padding: '12px 0 8px' }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 16 }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 6 }}>
               MassIQ Premium
             </div>
-            <div style={{
-              width: 52, height: 52, borderRadius: '50%', background: 'rgba(114,184,149,0.12)',
-              border: '1px solid rgba(114,184,149,0.25)', margin: '0 auto 18px',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <Icon name="clock" size={22} color={C.green} strokeWidth={1.8} />
+            <div style={{ fontSize: 26, fontWeight: 900, color: C.white, lineHeight: 1.15 }}>
+              Your scan data<br />should drive decisions.
             </div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 8 }}>
-              Complete your purchase in the opened tab
-            </div>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
-              We'll unlock premium here automatically once payment is confirmed.
-            </div>
-            <button
-              onClick={checkPremiumNow}
-              className="bp"
-              style={{
-                width: '100%', background: C.green, color: '#0A0D0A',
-                border: 'none', padding: '14px', borderRadius: 99,
-                fontSize: 15, fontWeight: 700, cursor: 'pointer', marginBottom: 10,
-              }}
-            >
-              I completed my purchase
-            </button>
-            <button
-              onClick={() => { stopPolling(); setPhase('idle'); }}
-              className="bp"
-              style={{ background: 'none', border: 'none', color: C.dimmed, fontSize: 13, cursor: 'pointer', padding: '8px' }}
-            >
-              Go back
-            </button>
           </div>
-        )}
+          <button
+            onClick={onClose}
+            className="bp"
+            style={{
+              width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.06)',
+              border: '1px solid rgba(255,255,255,0.1)', color: C.muted, fontSize: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            }}
+          >×</button>
+        </div>
 
-        {/* ── ACTIVATED state: premium confirmed ───────────────────────────── */}
-        {phase === 'activated' && (
-          <div style={{ textAlign: 'center', padding: '24px 0' }}>
-            <div style={{
-              width: 52, height: 52, borderRadius: '50%', background: 'rgba(114,184,149,0.15)',
-              border: `1px solid ${C.green}`, margin: '0 auto 16px',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+        {/* Subheadline */}
+        <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
+          Free shows you where you are. Premium tells you exactly what to do next — and updates your plan as you progress.
+        </div>
+
+        {/* 3 core outcome blocks */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 28 }}>
+          {[
+            {
+              icon: 'rotate',
+              label: 'Unlimited food scans',
+              desc: 'No daily limits. Scan any meal, any time. Track your nutrition exactly the way you eat.',
+            },
+            {
+              icon: 'clock',
+              label: 'Know how many weeks to your goal',
+              desc: 'Premium calculates your timeline to target body fat based on your actual pace — not generic estimates.',
+            },
+            {
+              icon: 'bolt',
+              label: 'See exactly what changed and why',
+              desc: "Scan-to-scan comparison with precise deltas. Understand whether you're progressing, plateauing, or need a correction.",
+            },
+          ].map(b => (
+            <div key={b.label} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 14,
+              background: 'rgba(114,184,149,0.05)', border: '1px solid rgba(114,184,149,0.12)',
+              borderRadius: 16, padding: '14px 16px',
             }}>
-              <Icon name="check" size={22} color={C.green} strokeWidth={2.2} />
-            </div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: C.green, marginBottom: 6 }}>Premium activated!</div>
-            <div style={{ fontSize: 13, color: C.muted }}>Unlocking your features…</div>
-          </div>
-        )}
-
-        {/* ── IDLE / LOADING state: normal upgrade flow ─────────────────────── */}
-        {(phase === 'idle' || phase === 'loading') && (
-          <>
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon name={b.icon} size={17} color={C.green} strokeWidth={1.8} />
+              </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.green, textTransform: 'uppercase', marginBottom: 6 }}>
-                  MassIQ Premium
-                </div>
-                <div style={{ fontSize: 26, fontWeight: 900, color: C.white, lineHeight: 1.15 }}>
-                  Your scan data<br />should drive decisions.
-                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 4, lineHeight: 1.3 }}>{b.label}</div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{b.desc}</div>
               </div>
-              <button
-                onClick={onClose}
-                className="bp"
-                style={{
-                  width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.06)',
-                  border: '1px solid rgba(255,255,255,0.1)', color: C.muted, fontSize: 18,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                }}
-              >×</button>
             </div>
+          ))}
+        </div>
 
-            {/* Subheadline */}
-            <div style={{ fontSize: 15, color: C.muted, lineHeight: 1.6, marginBottom: 24 }}>
-              Free shows you where you are. Premium tells you exactly what to do next — and updates your plan as you progress.
-            </div>
-
-            {/* 3 core outcome blocks */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 28 }}>
-              {[
-                {
-                  icon: 'rotate',
-                  label: 'Macros that adapt after every scan',
-                  desc: 'Stop guessing. After each scan, your calorie and protein targets update automatically based on what your body actually shows.',
-                },
-                {
-                  icon: 'clock',
-                  label: 'Know how many weeks to your goal',
-                  desc: 'Premium calculates your timeline to target body fat based on your actual pace — not generic estimates.',
-                },
-                {
-                  icon: 'bolt',
-                  label: 'See exactly what changed and why',
-                  desc: "Scan-to-scan comparison with precise deltas. Understand whether you're progressing, plateauing, or need a correction.",
-                },
-              ].map(b => (
-                <div key={b.label} style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 14,
-                  background: 'rgba(114,184,149,0.05)', border: '1px solid rgba(114,184,149,0.12)',
-                  borderRadius: 16, padding: '14px 16px',
-                }}>
-                  <div style={{
-                    width: 36, height: 36, borderRadius: 10, background: 'rgba(114,184,149,0.12)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                  }}>
-                    <Icon name={b.icon} size={17} color={C.green} strokeWidth={1.8} />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: C.white, marginBottom: 4, lineHeight: 1.3 }}>{b.label}</div>
-                    <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{b.desc}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* CTA */}
-            {error && (
-              <div style={{ fontSize: 12, color: '#FFB4B7', marginBottom: 12, padding: '10px 12px', background: 'rgba(255,90,95,0.08)', borderRadius: 10 }}>
-                {error}
-              </div>
-            )}
-            <button
-              onClick={handleUpgrade}
-              disabled={phase === 'loading'}
-              style={{
-                width: '100%', background: phase === 'loading' ? 'rgba(114,184,149,0.5)' : C.green,
-                color: '#0A0D0A', border: 'none', padding: '16px', borderRadius: 99,
-                fontSize: 16, fontWeight: 800, cursor: phase === 'loading' ? 'default' : 'pointer', marginBottom: 12,
-              }}
-            >
-              {phase === 'loading' ? 'Opening checkout…' : 'Upgrade to Premium'}
-            </button>
-            <button
-              onClick={onClose}
-              className="bp"
-              style={{
-                width: '100%', background: 'none', border: 'none', cursor: 'pointer',
-                fontSize: 14, color: C.dimmed, padding: '8px', marginBottom: 8,
-              }}
-            >
-              Continue with free
-            </button>
-            <div style={{ textAlign: 'center', fontSize: 11, color: C.dimmed }}>
-              Cancel anytime · No hidden charges
-            </div>
-          </>
+        {/* CTA */}
+        {error && (
+          <div style={{ fontSize: 12, color: '#FFB4B7', marginBottom: 12, padding: '10px 12px', background: 'rgba(255,90,95,0.08)', borderRadius: 10 }}>
+            {error}
+          </div>
         )}
+        <button
+          onClick={handleUpgrade}
+          disabled={loading}
+          style={{
+            width: '100%', background: loading ? 'rgba(114,184,149,0.5)' : C.green,
+            color: '#0A0D0A', border: 'none', padding: '16px', borderRadius: 99,
+            fontSize: 16, fontWeight: 800, cursor: loading ? 'default' : 'pointer', marginBottom: 12,
+          }}
+        >
+          {loading ? 'Opening checkout…' : 'Upgrade to Premium'}
+        </button>
+        <button
+          onClick={onClose}
+          className="bp"
+          style={{
+            width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 14, color: C.dimmed, padding: '8px', marginBottom: 8,
+          }}
+        >
+          Continue with free
+        </button>
+        <div style={{ textAlign: 'center', fontSize: 11, color: C.dimmed }}>
+          Cancel anytime · No hidden charges
+        </div>
       </div>
     </div>
   );
@@ -2204,7 +2110,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
           body: JSON.stringify({
             messages: [{ role: 'user', content: [
               { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
-              { type: 'text', text: `Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}` },
+              { type: 'text', text: `If this image does not show food or a drink, return ONLY: {"isFood":false}. Otherwise identify the food and return ONLY valid JSON: {"isFood":true,"name":"...","calories":0,"protein":0,"carbs":0,"fat":0}` },
             ]}],
             max_tokens: 150,
           }),
@@ -2213,8 +2119,14 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         const { text, error: apiErr } = await res.json();
         if (apiErr) throw new Error(apiErr);
         const match = text.match(/\{[\s\S]*\}/);
-        if (match) setScanResult(JSON.parse(match[0]));
-        else throw new Error('No JSON in response');
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.isFood === false) {
+            showToast?.('Oops, you need to scan a food.');
+          } else {
+            setScanResult(parsed);
+          }
+        } else throw new Error('No JSON in response');
       } catch (err) {
         console.error('Food scan error:', err);
         showToast?.('Scan failed — try again');
@@ -2991,7 +2903,7 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, userId, o
               role: 'user',
               content: [
                 { type: 'image', source: { type: 'base64', media_type: file.type || 'image/jpeg', data: base64 } },
-                { type: 'text', text: `Identify this food and return ONLY valid JSON: {"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their ${profile?.goal||'fitness'} goal"}` },
+                { type: 'text', text: `If this image does not show food or a drink, return ONLY: {"isFood":false}. Otherwise identify the food and return ONLY valid JSON: {"isFood":true,"name":"...","calories":0,"protein":0,"carbs":0,"fat":0,"comment":"one personalized sentence about this meal for their ${profile?.goal||'fitness'} goal"}` },
               ],
             }],
             max_tokens: 200,
@@ -3003,11 +2915,15 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, userId, o
         const match = text.match(/\{[\s\S]*\}/);
         if (match) {
           const raw = JSON.parse(match[0]);
-          const d = sanitizeMeal(raw, macros, profile);
-          setForm({ name: d?.name || 'Food', calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
-          setComment(raw?.comment || '');
-          // Mark that this form result came from a successful photo scan
-          photoScannedRef.current = true;
+          if (raw.isFood === false) {
+            showToast?.('Oops, you need to scan a food.');
+          } else {
+            const d = sanitizeMeal(raw, macros, profile);
+            setForm({ name: d?.name || 'Food', calories: String(d?.calories || ''), protein: String(d?.protein || ''), carbs: String(d?.carbs || ''), fat: String(d?.fat || '') });
+            setComment(raw?.comment || '');
+            // Mark that this form result came from a successful photo scan
+            photoScannedRef.current = true;
+          }
         }
       } catch (err) {
         console.error('Photo analysis error:', err);
@@ -6869,7 +6785,16 @@ export default function MassIQ() {
         setSession(s);
       } catch (err) {
         if (!mounted) return;
-        setAuthError(err.message || 'Could not restore session.');
+        // If this is a transient network/server error (not a genuine auth failure),
+        // fall back to the stored session so the user isn't logged out unnecessarily.
+        const storedFallback = getStoredSession();
+        const isAuthFailure = /invalid|not found|refresh token|expired/i.test(String(err?.message));
+        if (storedFallback?.access_token && !isAuthFailure) {
+          console.warn('[boot] session refresh failed (transient) — using cached session', err?.message);
+          setSession(storedFallback);
+        } else {
+          setAuthError(err.message || 'Could not restore session.');
+        }
       } finally {
         if (mounted) setAuthReady(true);
       }
