@@ -98,27 +98,30 @@ async function upsertSubscription(row) {
     Authorization: `Bearer ${serviceKey}`,
   };
 
+  // Never let incomplete overwrite active/trialing — prevents duplicate-click and abandoned-checkout poisoning
   const incomingStatus = String(row.status || '').toLowerCase();
   const incomingIncomplete = incomingStatus === 'incomplete' || incomingStatus === 'incomplete_expired';
 
   if (incomingIncomplete) {
     const checkRes = await fetch(
-      `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=status,stripe_subscription_id&limit=1`,
+      `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=status,stripe_subscription_id&order=updated_at.desc&limit=1`,
       { headers }
     );
     const existing = await checkRes.json().catch(() => []);
     const canonical = Array.isArray(existing) && existing[0];
     const canonicalActive = canonical && ['active', 'trialing'].includes(String(canonical.status || '').toLowerCase());
-    const differentSub = canonical?.stripe_subscription_id && row.stripe_subscription_id
-      && canonical.stripe_subscription_id !== row.stripe_subscription_id;
-    if (canonicalActive && differentSub) {
-      console.info('[stripe:webhook] Ignoring incomplete shadow subscription', { user_id: row.user_id });
+    if (canonicalActive) {
+      console.info('[stripe:webhook] Ignoring incomplete — user already has active/trialing', {
+        user_id: row.user_id,
+        existing_status: canonical.status,
+        incoming_stripe_sub_id: row.stripe_subscription_id,
+      });
       return null;
     }
   }
 
   const selectRes = await fetch(
-    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=id&limit=1`,
+    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=id,status&order=updated_at.desc&limit=1`,
     { headers }
   );
   const existingRows = await selectRes.json().catch(() => []);
@@ -164,7 +167,8 @@ async function upsertSubscription(row) {
     user_id: row.user_id,
     status: row.status,
     stripe_subscription_id: row.stripe_subscription_id,
-    method: existingRows?.length ? 'PATCH' : 'POST',
+    method: Array.isArray(existingRows) && existingRows.length > 0 ? 'PATCH' : 'POST',
+    db_response_id: result?.[0]?.id ?? result?.id ?? null,
   });
   return result;
 }
@@ -248,10 +252,16 @@ export async function POST(req) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  console.info('[stripe:webhook] event', {
-    type: event.type,
-    id: event.id,
-    data_object_id: event.data?.object?.id,
+  const obj = event.data?.object;
+  console.info('[stripe:webhook] event received', {
+    event_type: event.type,
+    event_id: event.id,
+    data_object_id: obj?.id,
+    subscription_id: obj?.subscription ?? (event.type?.startsWith('customer.subscription.') ? obj?.id : null),
+    customer_id: obj?.customer ?? null,
+    metadata_user_id: obj?.metadata?.user_id ?? null,
+    client_reference_id: obj?.client_reference_id ?? null,
+    status: obj?.status ?? null,
   });
 
   const alreadyProcessed = await isEventProcessed(event.id);
@@ -269,7 +279,6 @@ export async function POST(req) {
   };
 
   let userId = null;
-  const obj = event.data?.object;
   if (obj) {
     userId = obj.metadata?.user_id ?? obj.client_reference_id ?? null;
   }

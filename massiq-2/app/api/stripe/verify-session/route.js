@@ -25,7 +25,7 @@ async function upsertSubscription(supabaseUrl, serviceKey, row) {
   };
 
   const selectRes = await fetch(
-    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=id&limit=1`,
+    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${row.user_id}&select=id,status&order=updated_at.desc&limit=1`,
     { headers }
   );
   const existingRows = await selectRes.json().catch(() => []);
@@ -160,13 +160,20 @@ export async function POST(req) {
         };
 
         console.info('[stripe:verify-session] upserting subscription', {
+          session_id: sessionId,
           user_id: userId,
           status: row.status,
           stripe_sub_id: row.stripe_subscription_id,
+          stripe_customer_id: row.stripe_customer_id,
         });
 
         const result = await upsertSubscription(supabaseUrl, serviceKey, row);
-        console.info('[stripe:verify-session] upsert success', { user_id: userId });
+        console.info('[stripe:verify-session] upsert success', {
+          user_id: userId,
+          status: row.status,
+          premium_decision: 'granted',
+          db_result_id: Array.isArray(result) ? result[0]?.id : result?.id,
+        });
       }
     }
 
@@ -175,6 +182,7 @@ export async function POST(req) {
       user_id: userId,
       payment_status: checkoutSession.payment_status,
       subscription_status: subscriptionStatus,
+      premium_decision: ['active', 'trialing'].includes(subscriptionStatus || '') ? 'granted' : 'not_granted',
     });
 
     return NextResponse.json({

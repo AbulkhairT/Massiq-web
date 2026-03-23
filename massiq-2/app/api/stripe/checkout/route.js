@@ -76,8 +76,9 @@ export async function POST(req) {
     } catch { return false; }
   };
 
+  let body = {};
   try {
-    const body = await req.json().catch(() => ({}));
+    body = await req.json().catch(() => ({}));
     let origin = body?.return_origin;
     if (!origin) {
       origin = req.headers.get('origin');
@@ -135,12 +136,13 @@ export async function POST(req) {
     const session = await stripe.checkout.sessions.create(sessionParams);
 
     console.info('[stripe:checkout] session created', {
-      session_id: session.id,
       user_id: userId,
       client_reference_id: sessionParams.client_reference_id,
       metadata_user_id: sessionParams.metadata?.user_id,
+      return_origin: body?.return_origin ?? req.headers.get('origin') ?? req.headers.get('referer') ?? 'none',
       success_url: successUrl,
       cancel_url: cancelUrl,
+      session_id: session.id,
     });
 
     return NextResponse.json({ url: session.url });

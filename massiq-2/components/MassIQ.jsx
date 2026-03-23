@@ -6900,7 +6900,12 @@ export default function MassIQ() {
         try {
           const sub = await getSubscription(session.access_token, userId);
           if (mounted) setSubscription(sub);
-          console.info('[sync] subscription:ok', { status: sub?.status || 'none' });
+          const premium = sub && ['active', 'trialing'].includes(sub.status);
+          console.info('[sync] subscription:ok', {
+            status: sub?.status || 'none',
+            stripe_sub_id: sub?.stripe_subscription_id ?? null,
+            premium_decision: premium ? 'granted' : 'not_granted',
+          });
         } catch {
           // Non-fatal: free tier assumed
         }
