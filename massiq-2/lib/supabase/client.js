@@ -388,13 +388,16 @@ export async function initializeSession() {
   const isNearExpiry = expiresAt && expiresAt - now < 90;
 
   if ((isExpired || isNearExpiry) && session.refresh_token) {
-    try {
-      const refreshed = await refreshSession(session.refresh_token);
-      if (refreshed?.access_token) return refreshed;
-    } catch (err) {
-      if (typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')) {
-        console.warn('[auth:initSession] refresh threw', { msg: err?.message });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const refreshed = await refreshSession(session.refresh_token);
+        if (refreshed?.access_token) return refreshed;
+      } catch (err) {
+        if (typeof window !== 'undefined' && window.location?.search?.includes('checkout_success=1')) {
+          console.warn('[auth:initSession] refresh attempt', { attempt: attempt + 1, msg: err?.message });
+        }
       }
+      if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
     }
     // Refresh failed — if the token hasn't actually expired yet, use it as-is
     // rather than logging the user out. This prevents false logouts during

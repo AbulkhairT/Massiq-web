@@ -103,10 +103,18 @@ This document summarizes the audit and fixes applied to the premium purchase flo
 5. `!ready` → loading
 6. App content
 
-### Retry windows
-- Boot: 60×500ms (~30s) for checkout return
-- Extended effect: 30×500ms (~15s)
-- Total: ~45s before login can render
+### Exact line causing login render
+**Line ~7480:** `return <AuthScreen ... />` — reached when `!session?.access_token` AND `(!hasCheckoutSuccess || checkoutRetryExhausted)`.
+
+### Retry windows (extended)
+- Boot: 90×500ms (~45s) for checkout return
+- Extended effect: 300×1000ms (~5 min), 5 min hard cap
+- Total: up to ~5.5 min before login can render
+
+### Fixes applied
+- `initializeSession`: retry refresh once (wait 1.5s) on failure
+- Store `massiq:checkout-origin` at checkout start; log `origin_mismatch` on return
+- If origin mismatch when showing login: notice explaining URL difference
 
 ### Session clearing audit
 - `clearStoredSession` only in `refreshSession` (definitive token errors) and `signOut`

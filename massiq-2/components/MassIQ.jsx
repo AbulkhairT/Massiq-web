@@ -1737,7 +1737,10 @@ function Paywall({ userId, accessToken, onClose, persistGate }) {
       const { url, error: apiErr } = await res.json();
       if (apiErr) throw new Error(apiErr);
       if (!url) { setLoading(false); return; }
-      try { sessionStorage.setItem('massiq:billing-return', '1'); } catch {}
+      try {
+        sessionStorage.setItem('massiq:billing-return', '1');
+        localStorage.setItem('massiq:checkout-origin', returnOrigin || window.location.origin);
+      } catch {}
       window.location.href = url;
       return;
     } catch (err) {
@@ -6753,13 +6756,13 @@ export default function MassIQ() {
               || qs.includes('premium_activated=1')
               || hasCheckoutReturn;
           } catch {}
-          const maxAttempts = hasCheckoutReturn ? 60 : 24;
+          const maxAttempts = hasCheckoutReturn ? 90 : 24;
           if (needsRetry) {
             console.info('[auth:boot] retrying session', { maxAttempts, intervalMs: 500, hasCheckoutReturn });
             for (let i = 0; i < maxAttempts && !s?.access_token && mounted; i++) {
               await new Promise(r => setTimeout(r, 500));
               s = await initializeSession();
-              if (!s?.access_token && (i === 0 || i === 14 || i === 29 || i === maxAttempts - 1)) {
+              if (!s?.access_token && (i === 0 || i === 29 || i === 59 || i === maxAttempts - 1)) {
                 const stored = getStoredSession();
                 console.info('[auth:boot] retry', { attempt: i + 1, hasStored: !!stored, hasRawKey: typeof localStorage !== 'undefined' ? !!localStorage.getItem('massiq:auth:session') : null });
               }
@@ -6789,42 +6792,63 @@ export default function MassIQ() {
 
   // ── Extended session retry for checkout return ─────────────────────────────
   // When checkout_success=1 and no session after boot, keep retrying. Do NOT
-  // show login until retry window is exhausted (checkoutRetryExhausted=true).
+  // show login until session is definitively unrecoverable (no stored session)
+  // or 5 min hard cap. While stored session exists, keep retrying — refresh may succeed.
   useEffect(() => {
     if (!authReady || session?.access_token) return;
     const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
     if (!qs.includes('checkout_success=1')) return;
 
     let cancelled = false;
-    const MAX = 30;
+    const MAX_ATTEMPTS = 300;
+    const INTERVAL_MS = 1000;
+    const HARD_CAP_MS = 5 * 60 * 1000;
+    const startTime = Date.now();
     const log = (msg, data = {}) => {
       if (!cancelled) console.info('[auth:checkout-return]', msg, data);
     };
+    const returnOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const checkoutOrigin = typeof window !== 'undefined' ? localStorage.getItem('massiq:checkout-origin') : null;
+    const originMismatch = checkoutOrigin && returnOrigin && checkoutOrigin !== returnOrigin;
     log('starting extended retry — no session after boot', {
       url: typeof window !== 'undefined' ? window.location.href : '',
-      origin: typeof window !== 'undefined' ? window.location.origin : '',
+      origin: returnOrigin,
+      checkout_origin_stored: checkoutOrigin,
+      origin_mismatch: originMismatch,
       hasStored: !!getStoredSession(),
-      maxAttempts: MAX,
-      intervalMs: 500,
+      maxAttempts: MAX_ATTEMPTS,
+      intervalMs: INTERVAL_MS,
+      hardCapMs: HARD_CAP_MS,
     });
 
     const run = async () => {
-      for (let i = 0; i < MAX && !cancelled; i++) {
-        await new Promise(r => setTimeout(r, 500));
+      for (let i = 0; i < MAX_ATTEMPTS && !cancelled; i++) {
+        await new Promise(r => setTimeout(r, INTERVAL_MS));
         if (cancelled) return;
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= HARD_CAP_MS) {
+          log('hard cap reached — will allow login', { elapsedMs: elapsed });
+          setCheckoutRetryExhausted(true);
+          return;
+        }
         const s = await initializeSession();
         if (s?.access_token) {
           log('session restored on extended retry', { attempt: i + 1, userId: s?.user?.id });
           setSession(s);
           return;
         }
-        if (i === 0 || i === 14 || i === MAX - 1) {
-          log('retry no session', { attempt: i + 1, hasStored: !!getStoredSession() });
+        const hasStored = !!getStoredSession();
+        if (i === 0 || i === 29 || i === 59 || i === MAX_ATTEMPTS - 1) {
+          log('retry no session', { attempt: i + 1, hasStored, elapsedMs: elapsed });
         }
-      }
-      if (!cancelled) {
-        log('exhausted extended retries — will allow login', { totalAttempts: MAX });
-        setCheckoutRetryExhausted(true);
+        if (i === MAX_ATTEMPTS - 1) {
+          if (!hasStored) {
+            log('exhausted and no stored session — definitively unrecoverable', { totalAttempts: MAX_ATTEMPTS });
+          } else {
+            log('exhausted but stored session exists — hard cap will apply', { totalAttempts: MAX_ATTEMPTS });
+          }
+          setCheckoutRetryExhausted(true);
+        }
       }
     };
     run();
@@ -7456,6 +7480,9 @@ export default function MassIQ() {
     }
 
     // Only reach here when: no session AND (no checkout_success OR retries exhausted)
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const checkoutOrigin = typeof window !== 'undefined' ? localStorage.getItem('massiq:checkout-origin') : null;
+    const originMismatch = !!(checkoutOrigin && origin && checkoutOrigin !== origin);
     console.info('[auth:login-render] showing login — exact condition', {
       checkout_success: hasCheckoutSuccess,
       authReady,
@@ -7463,9 +7490,14 @@ export default function MassIQ() {
       getSession_result: !!session,
       hasStoredSession: !!stored,
       url: typeof window !== 'undefined' ? window.location.href : '',
-      origin: typeof window !== 'undefined' ? window.location.origin : '',
+      origin,
+      checkout_origin_stored: checkoutOrigin,
+      origin_mismatch: originMismatch,
     });
-    return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
+    const loginNotice = hasCheckoutSuccess && originMismatch
+      ? 'You may have returned to a different URL. Sign in to activate premium.'
+      : authNotice;
+    return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={loginNotice} />;
   }
 
   // 4. Still loading profile/data
