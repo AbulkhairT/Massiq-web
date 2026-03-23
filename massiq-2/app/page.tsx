@@ -916,10 +916,6 @@ export default function LandingPage() {
               <a href="/app" className="btn-primary" style={{ fontSize: 16, padding: '18px 40px' }}>
                 Run Your First Scan →
               </a>
-              <div style={{ fontSize: 13, color: C.dim }}>Free to start · No credit card · Public Beta</div>
-              <div style={{ fontSize: 11, color: C.dim, maxWidth: 360, lineHeight: 1.6, textAlign: 'center', marginTop: 4 }}>
-                Results are as accurate as current AI technology allows. Body composition estimates may vary. Always consult a qualified professional for medical decisions.
-              </div>
             </div>
           </div>
         </div>

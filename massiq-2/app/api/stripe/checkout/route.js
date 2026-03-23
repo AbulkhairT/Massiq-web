@@ -83,9 +83,15 @@ export async function POST(req) {
     }
   } catch {}
 
-  const successUrl = `${baseUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
-  const cancelUrl = `${baseUrl}/billing/cancel`;
-  console.info('[stripe:checkout] session URLs', { success: successUrl, cancel: cancelUrl, userId });
+  // Return directly to /app so user lands in authenticated app; checkout_success triggers sync
+  const successUrl = `${baseUrl}/app?checkout_success=1&session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = `${baseUrl}/app`;
+  console.info('[stripe:checkout] session created', {
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    user_id: userId,
+    base_from: baseUrl === appUrl ? 'NEXT_PUBLIC_APP_URL' : 'return_origin',
+  });
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
@@ -112,8 +118,9 @@ export async function POST(req) {
       allow_promotion_codes: true,
       success_url: successUrl,
       cancel_url:  cancelUrl,
-      metadata:    { user_id: userId },
-      subscription_data: {
+      client_reference_id:  userId,
+      metadata:             { user_id: userId },
+      subscription_data:    {
         metadata: { user_id: userId },
       },
     };

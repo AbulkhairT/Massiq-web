@@ -236,29 +236,55 @@ export async function POST(req) {
     if (event.type === 'checkout.session.completed') {
       const checkoutSession = event.data.object;
       const subscriptionId = checkoutSession.subscription;
+      userId = checkoutSession.metadata?.user_id || checkoutSession.client_reference_id || null;
+
+      console.info('[stripe:webhook] checkout.session.completed', {
+        session_id: checkoutSession.id,
+        stripe_customer_id: checkoutSession.customer,
+        stripe_subscription_id: subscriptionId,
+        user_id_from_metadata: checkoutSession.metadata?.user_id,
+        user_id_from_client_ref: checkoutSession.client_reference_id,
+      });
 
       if (subscriptionId) {
         const sub = await stripe.subscriptions.retrieve(subscriptionId);
-        userId = sub.metadata?.user_id || checkoutSession.metadata?.user_id || (await resolveUserId(sub));
+        userId = userId || sub.metadata?.user_id || (await resolveUserId(sub));
 
         if (userId) {
           const row = buildSubscriptionRow(sub, userId);
-          await upsertSubscription(row);
-          console.log('[stripe:webhook] checkout.session.completed synced', { user_id: userId, status: row.status });
+          const result = await upsertSubscription(row);
+          console.info('[stripe:webhook] subscription upsert ok', {
+            user_id: userId,
+            status: row.status,
+            stripe_subscription_id: row.stripe_subscription_id,
+          });
         } else {
-          console.error('[stripe:webhook] Could not resolve user_id for checkout session', checkoutSession.id);
+          console.error('[stripe:webhook] Could not resolve user_id', {
+            session_id: checkoutSession.id,
+            customer: checkoutSession.customer,
+          });
         }
       }
     } else if (HANDLED_EVENTS.has(event.type) && event.type.startsWith('customer.subscription.')) {
       const sub = event.data.object;
       userId = sub.metadata?.user_id || (await resolveUserId(sub));
 
+      console.info(`[stripe:webhook] ${event.type}`, {
+        stripe_subscription_id: sub.id,
+        stripe_customer_id: sub.customer,
+        status: sub.status,
+        user_id: userId,
+      });
+
       if (userId) {
         const row = buildSubscriptionRow(sub, userId);
         await upsertSubscription(row);
-        console.log(`[stripe:webhook] ${event.type} synced`, { user_id: userId, status: row.status });
+        console.info(`[stripe:webhook] subscription upsert ok`, {
+          user_id: userId,
+          status: row.status,
+        });
       } else {
-        console.error('[stripe:webhook] Could not resolve user_id for subscription', sub.id);
+        console.error('[stripe:webhook] Could not resolve user_id', { sub_id: sub.id, customer: sub.customer });
       }
     }
   } catch (err) {

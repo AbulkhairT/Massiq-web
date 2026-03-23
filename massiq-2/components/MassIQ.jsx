@@ -6701,8 +6701,7 @@ export default function MassIQ() {
   const [subscription,  setSubscription]  = useState(null);
   const [entitlements,  setEntitlements]  = useState(null);
   const [paywallOpen,   setPaywallOpen]   = useState(false);
-  // Holds the Promise from the initial onboarding profile+plan write so the
-  // Paywall can gate checkout on it completing. null = no pending onboarding sync.
+  const [checkoutActivating, setCheckoutActivating] = useState(false);
   const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
@@ -6734,9 +6733,11 @@ export default function MassIQ() {
         if (!s?.access_token) {
           let needsRetry = false;
           try {
+            const qs = typeof window !== 'undefined' ? window.location?.search || '' : '';
             needsRetry = sessionStorage.getItem('massiq:billing-return') === '1'
               || sessionStorage.getItem('massiq:premium-return') === '1'
-              || (typeof window !== 'undefined' && window.location?.search?.includes('premium_activated=1'));
+              || qs.includes('premium_activated=1')
+              || qs.includes('checkout_success=1');
           } catch {}
           if (needsRetry) {
             console.info('[auth:boot] premium/billing return — retrying session hydration');
@@ -6940,37 +6941,53 @@ export default function MassIQ() {
     return () => { mounted = false; };
   }, [authReady, session?.access_token]);
 
-  // ── Premium return polling ────────────────────────────────────────────────
-  // When the user returns from Stripe success, a sessionStorage flag is set.
-  // After the user logs in (session becomes available), poll subscription status
-  // until it becomes active (webhook may take seconds to process).
-  // Uses sessionStorage instead of URL param so it survives login form submission.
-  // Dependencies: only [ready, session?.access_token] — NOT subscription, to avoid
-  // premature flag consumption during hydration.
+  // ── Premium return / checkout success ─────────────────────────────────────
+  // When user returns from Stripe: checkout_success=1&session_id=... in URL.
+  // 1. Call backend to verify session
+  // 2. Set massiq:premium-return so we poll subscription
+  // 3. Poll until subscription is active (webhook may be delayed)
   useEffect(() => {
     if (!ready || !session?.access_token) return;
 
     let cancelled = false;
     try {
-      const hasSsFlag = sessionStorage.getItem('massiq:premium-return');
       const params = new URLSearchParams(window.location.search);
-      const hasUrlFlag = params.get('premium_activated');
+      const checkoutSuccess = params.get('checkout_success');
+      const sessionId = params.get('session_id');
+      const hasSsFlag = sessionStorage.getItem('massiq:premium-return');
+      const hasPremiumActivated = params.get('premium_activated');
 
-      if (!hasSsFlag && !hasUrlFlag) return;
+      if (checkoutSuccess && sessionId) {
+        window.history.replaceState({}, '', window.location.pathname);
+        try { sessionStorage.setItem('massiq:premium-return', '1'); } catch {}
+        if (!cancelled) setCheckoutActivating(true);
+        const userId = session.user?.id;
+        if (userId) {
+          fetch('/api/stripe/verify-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+            body: JSON.stringify({ session_id: sessionId }),
+          }).then(res => res.json()).then(data => {
+            if (!cancelled) console.info('[premium-poll] verify-session result', { ok: data?.ok, subscription_status: data?.subscription_status });
+          }).catch(() => {});
+        }
+      }
+      if (hasPremiumActivated) window.history.replaceState({}, '', window.location.pathname);
 
-      // Clear URL param but keep sessionStorage flag until polling succeeds
-      if (hasUrlFlag) window.history.replaceState({}, '', window.location.pathname);
+      const shouldPoll = hasSsFlag || checkoutSuccess || hasPremiumActivated;
+      if (!shouldPoll) return;
 
+      if (!cancelled) setCheckoutActivating(true);
       const userId = session.user?.id;
       if (!userId) return;
 
-      // Skip if already premium (check current state without subscription in deps)
       if (isPremiumActive(subscription)) {
         try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+        if (!cancelled) setCheckoutActivating(false);
         return;
       }
 
-      console.info('[premium-poll] detected premium return — polling subscription status');
+      console.info('[premium-poll] detected checkout return — polling subscription');
       let attempts = 0;
       const poll = async () => {
         while (attempts < 12 && !cancelled) {
@@ -6991,6 +7008,7 @@ export default function MassIQ() {
                   }
                 } catch {}
                 try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+                if (!cancelled) setCheckoutActivating(false);
                 console.info('[premium-poll] subscription activated', { status: sub.status, attempt: attempts });
               }
               return;
@@ -6998,8 +7016,8 @@ export default function MassIQ() {
           } catch {}
           if (attempts < 12) await new Promise(r => setTimeout(r, 2500));
         }
-        // Polling exhausted — clear flag so we don't loop forever
         try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+        if (!cancelled) setCheckoutActivating(false);
         console.warn('[premium-poll] subscription not confirmed after 12 attempts');
       };
       poll();
@@ -7326,6 +7344,16 @@ export default function MassIQ() {
   const showToast = (msg) => setToast(msg);
 
   if (!authReady || !ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
+
+  if (checkoutActivating) {
+    return (
+      <div style={{ background: C.bg, minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 24 }}>
+        <div style={{ width: 56, height: 56, borderRadius: '50%', border: `2px solid ${C.green}`, borderTopColor: 'transparent', animation: 'spin .9s linear infinite' }} />
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.white }}>Activating premium...</div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
 
   if (!session?.access_token) {
     return <AuthScreen onSubmit={handleAuthSubmit} onForgotPassword={handlePasswordReset} loading={authBusy} error={authError} notice={authNotice} />;
