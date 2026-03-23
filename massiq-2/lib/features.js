@@ -44,7 +44,7 @@ export const FREE_SCAN_LIMIT = 2;
  * Free users get this many food scans per day.
  * Premium users have no daily limit.
  */
-export const FREE_FOOD_SCAN_DAILY_LIMIT = 3;
+export const FREE_FOOD_SCAN_DAILY_LIMIT = 2;
 
 /**
  * Returns the number of food scans used today (UTC date key).

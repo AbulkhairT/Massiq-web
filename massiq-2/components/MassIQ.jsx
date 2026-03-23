@@ -2416,24 +2416,62 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         onChange={e => handleScanFile(e.target.files?.[0])}
       />
 
-      {/* ══ 4. PRIMARY ACTION — floating Scan button ═══════════════════════ */}
-      <button
-        className="bp"
-        onClick={() => fileRef.current?.click()}
-        disabled={scanning}
-        style={{
-          position: 'fixed', bottom: 88, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 50, height: 50, paddingInline: 28, borderRadius: 25,
-          background: scanning ? C.greenDim : C.green, border: 'none',
-          color: '#0A0D0A', fontSize: 14, fontWeight: 700,
-          display: 'flex', alignItems: 'center', gap: 7,
-          cursor: scanning ? 'default' : 'pointer',
-          whiteSpace: 'nowrap', opacity: scanning ? 0.7 : 1,
-        }}
-      >
-        <span style={{ fontSize: 16, lineHeight: 1 }}>⊙</span>
-        {scanning ? 'Scanning…' : 'Scan'}
-      </button>
+      {/* ══ 4. PRIMARY ACTION — floating Scan button + usage indicator ═══ */}
+      {(() => {
+        const foodRemaining = foodScansRemainingToday(subscription);
+        const foodUsed      = getFoodScansUsedToday();
+        const premium       = isPremiumActive(subscription);
+        const limitHit      = !premium && foodRemaining <= 0;
+        return (
+          <>
+            {!premium && !limitHit && foodUsed > 0 && (
+              <div style={{
+                position: 'fixed', bottom: 144, left: '50%', transform: 'translateX(-50%)',
+                zIndex: 49, fontSize: 11, color: C.muted, background: 'rgba(10,13,10,0.85)',
+                backdropFilter: 'blur(8px)', padding: '4px 14px', borderRadius: 99,
+                border: `1px solid ${C.border}`, whiteSpace: 'nowrap',
+              }}>
+                {foodUsed} / {FREE_FOOD_SCAN_DAILY_LIMIT} food scans today
+              </div>
+            )}
+            {limitHit && (
+              <div style={{
+                position: 'fixed', bottom: 144, left: '50%', transform: 'translateX(-50%)',
+                zIndex: 49, display: 'flex', alignItems: 'center', gap: 8,
+                background: 'rgba(10,13,10,0.92)', backdropFilter: 'blur(8px)',
+                padding: '6px 16px', borderRadius: 99,
+                border: `1px solid rgba(114,184,149,0.25)`, whiteSpace: 'nowrap',
+              }}>
+                <span style={{ fontSize: 11, color: C.muted }}>Daily limit reached</span>
+                <button className="bp" onClick={onUpgrade} style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 700, color: C.green, padding: 0,
+                }}>Upgrade →</button>
+              </div>
+            )}
+            <button
+              className="bp"
+              onClick={() => {
+                if (limitHit) { onUpgrade(); return; }
+                fileRef.current?.click();
+              }}
+              disabled={scanning}
+              style={{
+                position: 'fixed', bottom: 88, left: '50%', transform: 'translateX(-50%)',
+                zIndex: 50, height: 50, paddingInline: 28, borderRadius: 25,
+                background: scanning ? C.greenDim : limitHit ? C.dimmed : C.green, border: 'none',
+                color: limitHit ? C.muted : '#0A0D0A', fontSize: 14, fontWeight: 700,
+                display: 'flex', alignItems: 'center', gap: 7,
+                cursor: scanning ? 'default' : 'pointer',
+                whiteSpace: 'nowrap', opacity: scanning ? 0.7 : 1,
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>⊙</span>
+              {scanning ? 'Scanning…' : limitHit ? 'Limit reached' : 'Scan'}
+            </button>
+          </>
+        );
+      })()}
 
       {/* Scan result confirm sheet */}
       {scanResult && (

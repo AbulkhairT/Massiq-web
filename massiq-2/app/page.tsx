@@ -718,8 +718,18 @@ export default function LandingPage() {
               },
               {
                 icon: 'bowl', tag: 'Food Scan', delay: 'd1',
-                title: 'Track meals from a photo',
-                body: 'Snap a photo of your food and MassIQ estimates calories, protein, carbs, and fat. Keeps your nutrition aligned with your body scan targets — no manual logging.',
+                title: 'Scan food. Get instant macros.',
+                body: 'Snap a photo of your meal and MassIQ estimates calories, protein, carbs, and fat — keeping your nutrition aligned with your body scan targets.',
+              },
+              {
+                icon: 'chart', tag: 'Progress Tracking', delay: 'd2',
+                title: 'See how your body changes',
+                body: 'Track body fat, symmetry, and muscle development across scans — and see exactly what\u2019s improving over time.',
+              },
+              {
+                icon: 'brain', tag: 'Continuous Intelligence', delay: 'd3',
+                title: 'Built to evolve with you',
+                body: 'Your plan adapts after every scan — adjusting nutrition and training as your body changes.',
               },
             ].map(card => (
               <div key={card.title} className={`fu ${card.delay}`} style={{
