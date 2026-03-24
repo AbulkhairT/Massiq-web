@@ -1587,11 +1587,18 @@ export async function probeMinimalDecisionEngineRun(token, userId, scanId, planI
 }
 
 export async function createDecisionEngineRun(token, userId, payload) {
+  const rawTrigger = payload.triggerType;
+  if (rawTrigger == null || String(rawTrigger).trim() === '') {
+    throw personalizationTableError('decision_engine_runs', 'triggerType is required', null);
+  }
+  const safeTriggerType = String(rawTrigger).trim() || 'unknown';
+
   const baseRow = {
     user_id: userId,
     scan_id: payload.scanId || null,
     plan_id: payload.planId || null,
     engine_version: payload.engineVersion || '2.0.0',
+    trigger_type: safeTriggerType,
     input_summary: payload.inputSummary || {},
     output_json: payload.outputJson || {},
   };
@@ -1608,7 +1615,8 @@ export async function createDecisionEngineRun(token, userId, payload) {
     scan_id_null: baseRow.scan_id == null,
     plan_id_null: baseRow.plan_id == null,
     engine_version: baseRow.engine_version,
-    trigger_type: payload.triggerType ?? null,
+    trigger_type: safeTriggerType,
+    trigger_type_raw: rawTrigger,
     input_summary_defined: payload.inputSummary !== undefined,
     output_json_defined: payload.outputJson !== undefined,
   });
@@ -1626,10 +1634,14 @@ export async function createDecisionEngineRun(token, userId, payload) {
     return out;
   };
 
-  console.info('[db:decision-engine-run] write start', { user_id: userId, scan_id: baseRow.scan_id });
+  console.info('[db:decision-engine-run] write start', {
+    user_id: userId,
+    scan_id: baseRow.scan_id,
+    trigger_type: safeTriggerType,
+  });
   try {
     const out = await postRow(baseRow);
-    console.info('[db:decision-engine-run] ok', { id: out.id });
+    console.info('[db:decision-engine-run] ok', { id: out.id, trigger_type: safeTriggerType });
     return out;
   } catch (err) {
     logPostgrestFailure('[db:decision-engine-run] insert FAILED', err, baseRow);
@@ -1648,6 +1660,7 @@ export async function createDecisionEngineRun(token, userId, payload) {
         scan_id: baseRow.scan_id,
         plan_id: baseRow.plan_id,
         engine_version: baseRow.engine_version,
+        trigger_type: baseRow.trigger_type,
         output_json: mergedOutput,
       };
       console.warn('[db:decision-engine-run] schema mismatch — retrying without input_summary', {
