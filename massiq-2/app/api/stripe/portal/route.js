@@ -44,23 +44,32 @@ async function getCustomerIdForUser(userId) {
  *
  * Creates a Stripe Customer Portal session so users can manage billing,
  * update payment methods, and cancel subscriptions self-serve.
- * Requires { customerId } in the request body.
+ *
+ * Security:
+ *   - Requires valid Bearer token (Supabase JWT)
+ *   - Verifies requested customerId belongs to the authenticated user
+ *     by comparing against stripe_customer_id in public.subscriptions
  */
 export async function POST(req) {
   // ── Auth gate ────────────────────────────────────────────────────────────
   const userId = await verifyAuth(req);
-  if (!userId) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 });
+  if (!userId) {
+    const hasToken = !!(req.headers.get('authorization') || '').trim();
+    console.warn('[stripe:portal] auth:failed', { reason: hasToken ? 'invalid_token' : 'no_token' });
+    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 });
+  }
+  console.info('[stripe:portal] auth:ok', { user_id: userId });
   // ────────────────────────────────────────────────────────────────────────
 
   const secretKey = process.env.STRIPE_SECRET_KEY;
   const appUrl    = process.env.NEXT_PUBLIC_APP_URL;
 
   if (!secretKey) {
-    console.error('[stripe:portal] STRIPE_SECRET_KEY missing');
+    console.error('[stripe:portal] config:missing STRIPE_SECRET_KEY');
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
   }
   if (!appUrl) {
-    console.error('[stripe:portal] NEXT_PUBLIC_APP_URL missing');
+    console.error('[stripe:portal] config:missing NEXT_PUBLIC_APP_URL');
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
   }
 
@@ -77,7 +86,11 @@ export async function POST(req) {
   // ── Ownership check: verify customerId belongs to the authenticated user ──
   const storedCustomerId = await getCustomerIdForUser(userId);
   if (!storedCustomerId || storedCustomerId !== customerId) {
-    console.warn('[stripe:portal] customerId mismatch for user:', userId);
+    console.warn('[stripe:portal] ownership:mismatch', {
+      user_id: userId,
+      requested_customer_id: customerId,
+      stored_customer_id: storedCustomerId || 'none',
+    });
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
   // ────────────────────────────────────────────────────────────────────────
@@ -89,10 +102,10 @@ export async function POST(req) {
       customer:   customerId,
       return_url: `${appUrl}/app`,
     });
-    console.info('[stripe:portal] Portal session created for customer:', customerId);
+    console.info('[stripe:portal] session:created', { user_id: userId, customer_id: customerId });
     return NextResponse.json({ url: session.url });
   } catch (err) {
-    console.error('[stripe:portal] Failed to create portal session:', err.message);
+    console.error('[stripe:portal] session:failed', { user_id: userId, customer_id: customerId, reason: err.message });
     return NextResponse.json({ error: err.message || 'Could not open billing portal' }, { status: 500 });
   }
 }

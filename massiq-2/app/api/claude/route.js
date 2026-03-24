@@ -30,22 +30,23 @@ async function verifyAuth(req) {
 }
 
 // ── Model selection ─────────────────────────────────────────────────────────
-// Text-only requests (meal suggestions, recipe details, meal swaps) use Haiku
-// which is ~12x cheaper per token than Sonnet.
-// Vision requests (food photo analysis) must use Sonnet — Haiku lacks vision.
-// Callers can pass model: 'haiku' | 'sonnet' to override.
+// Allowlist: only 'haiku' and 'sonnet' string aliases are accepted from callers.
+// Any other value (including raw model IDs or Opus) is rejected and auto-detected.
+// Text-only requests use Haiku (~12x cheaper). Vision requests require Sonnet.
 const MODEL_HAIKU  = "claude-haiku-4-5-20251001";
 const MODEL_SONNET = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 
-function resolveModel(requestedModel, messages) {
+function resolveModel(requestedModel, messages, userId) {
   if (requestedModel === 'haiku')  return MODEL_HAIKU;
   if (requestedModel === 'sonnet') return MODEL_SONNET;
-  // Unknown model IDs are ignored — fall through to auto-detect
+  // Anything else (arbitrary model ID, Opus, unknown string) is rejected
+  if (requestedModel) {
+    console.warn('[claude] model:rejected', { requested: requestedModel, user_id: userId, falling_back_to: 'auto_detect' });
+  }
   // Auto-detect: if any message contains an image block, require Sonnet
   const hasImage = messages.some(m =>
     Array.isArray(m.content) && m.content.some(b => b?.type === 'image')
   );
-  // Default to Haiku for text-only (12x cheaper, handles JSON output fine)
   return hasImage ? MODEL_SONNET : MODEL_HAIKU;
 }
 
@@ -57,7 +58,12 @@ function getSystemPrompt(max_tokens, providedSystem) {
 export async function POST(req) {
   // ── Auth gate ────────────────────────────────────────────────────────────
   const userId = await verifyAuth(req);
-  if (!userId) return bad("Sign in to continue", 401);
+  if (!userId) {
+    const hasToken = !!(req.headers.get('authorization') || '').trim();
+    console.warn('[claude] auth:failed', { reason: hasToken ? 'invalid_token' : 'no_token' });
+    return bad("Sign in to continue", 401);
+  }
+  console.info('[claude] auth:ok', { user_id: userId });
   // ────────────────────────────────────────────────────────────────────────
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -77,7 +83,7 @@ export async function POST(req) {
   const approxSize = JSON.stringify({ messages, system }).length;
   if (approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  const chosenModel  = resolveModel(model, messages);
+  const chosenModel  = resolveModel(model, messages, userId);
   const systemPrompt = getSystemPrompt(maxTokens, system);
 
   const upstreamBody = {

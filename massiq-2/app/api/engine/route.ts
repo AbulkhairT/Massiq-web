@@ -36,7 +36,12 @@ async function verifyAuth(req: NextRequest): Promise<string | null> {
 export async function POST(req: NextRequest) {
   // ── Auth gate ────────────────────────────────────────────────────────────
   const userId = await verifyAuth(req);
-  if (!userId) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 });
+  if (!userId) {
+    const hasToken = !!(req.headers.get('authorization') || '').trim();
+    console.warn('[engine] auth:failed', { reason: hasToken ? 'invalid_token' : 'no_token' });
+    return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 });
+  }
+  console.info('[engine] auth:ok', { user_id: userId });
   // ────────────────────────────────────────────────────────────────────────
 
   let body: any

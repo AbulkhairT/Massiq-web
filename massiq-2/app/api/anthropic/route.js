@@ -34,7 +34,12 @@ async function verifyAuth(req) {
 export async function POST(req){
   // ── Auth gate ────────────────────────────────────────────────────────────
   const userId = await verifyAuth(req);
-  if (!userId) return bad("Sign in to continue", 401);
+  if (!userId) {
+    const hasToken = !!(req.headers.get('authorization') || '').trim();
+    console.warn('[anthropic] auth:failed', { reason: hasToken ? 'invalid_token' : 'no_token' });
+    return bad("Sign in to continue", 401);
+  }
+  console.info('[anthropic] auth:ok', { user_id: userId });
   // ────────────────────────────────────────────────────────────────────────
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -51,17 +56,18 @@ export async function POST(req){
   const approxSize = JSON.stringify({messages, system}).length;
   if(approxSize > 10_000_000) return bad("Payload too large", 413);
 
-  // Haiku has full vision capability at ~10x lower cost than Sonnet.
-  // Body: model field always wins (runScan passes it explicitly).
-  // ANTHROPIC_SCAN_MODEL env var overrides for special deployments.
-  // ANTHROPIC_MODEL is intentionally NOT in the fallback — it targets general text routes.
-  // Only the two allowed model aliases are honoured; any other value is ignored.
+  // Allowlist: only these two model IDs are accepted; anything else is ignored
+  // and falls back to the default scan model.
   const ALLOWED_SCAN_MODELS = new Set([
     "claude-haiku-4-5-20251001",
     "claude-sonnet-4-6",
     process.env.ANTHROPIC_SCAN_MODEL,
   ].filter(Boolean));
+
   const requestedModel = ALLOWED_SCAN_MODELS.has(model) ? model : null;
+  if (model && !requestedModel) {
+    console.warn('[anthropic] model:rejected', { requested: model, user_id: userId, falling_back_to: 'default' });
+  }
   const chosenModel = requestedModel || process.env.ANTHROPIC_SCAN_MODEL || "claude-haiku-4-5-20251001";
 
   const upstreamBody = { model: chosenModel, max_tokens: maxTokens, messages };
