@@ -5352,7 +5352,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, enti
       // Step 1: Claude analyzes the PHYSIQUE (visual assessment only — engine handles targets)
       const res = await fetch('/api/anthropic', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
           system: `You are a physique analysis AI. Analyze this photo using visual body composition estimation techniques.
