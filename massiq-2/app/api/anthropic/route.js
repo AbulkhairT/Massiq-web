@@ -6,7 +6,37 @@ function bad(msg, status=400){
   return NextResponse.json({ error: msg }, { status });
 }
 
+/**
+ * Verifies the Authorization Bearer token against Supabase and returns the
+ * authenticated userId, or null if the token is missing/invalid.
+ */
+async function verifyAuth(req) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey     = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) return null;
+
+  const authHeader  = req.headers.get('authorization') || '';
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!bearerToken) return null;
+
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: anonKey, Authorization: `Bearer ${bearerToken}` },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user?.id ? user.id : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req){
+  // ── Auth gate ────────────────────────────────────────────────────────────
+  const userId = await verifyAuth(req);
+  if (!userId) return bad("Sign in to continue", 401);
+  // ────────────────────────────────────────────────────────────────────────
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if(!apiKey) return bad("Server misconfigured: missing ANTHROPIC_API_KEY", 500);
 
@@ -25,7 +55,14 @@ export async function POST(req){
   // Body: model field always wins (runScan passes it explicitly).
   // ANTHROPIC_SCAN_MODEL env var overrides for special deployments.
   // ANTHROPIC_MODEL is intentionally NOT in the fallback — it targets general text routes.
-  const chosenModel = model || process.env.ANTHROPIC_SCAN_MODEL || "claude-haiku-4-5-20251001";
+  // Only the two allowed model aliases are honoured; any other value is ignored.
+  const ALLOWED_SCAN_MODELS = new Set([
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-6",
+    process.env.ANTHROPIC_SCAN_MODEL,
+  ].filter(Boolean));
+  const requestedModel = ALLOWED_SCAN_MODELS.has(model) ? model : null;
+  const chosenModel = requestedModel || process.env.ANTHROPIC_SCAN_MODEL || "claude-haiku-4-5-20251001";
 
   const upstreamBody = { model: chosenModel, max_tokens: maxTokens, messages };
   if(system) upstreamBody.system = system;

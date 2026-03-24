@@ -10,6 +10,25 @@ function bad(msg, status = 400) {
   return NextResponse.json({ error: msg }, { status });
 }
 
+async function verifyAuth(req) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey     = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) return null;
+  const authHeader  = req.headers.get('authorization') || '';
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!bearerToken) return null;
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: anonKey, Authorization: `Bearer ${bearerToken}` },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user?.id ? user.id : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Model selection ─────────────────────────────────────────────────────────
 // Text-only requests (meal suggestions, recipe details, meal swaps) use Haiku
 // which is ~12x cheaper per token than Sonnet.
@@ -21,7 +40,7 @@ const MODEL_SONNET = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 function resolveModel(requestedModel, messages) {
   if (requestedModel === 'haiku')  return MODEL_HAIKU;
   if (requestedModel === 'sonnet') return MODEL_SONNET;
-  if (requestedModel) return requestedModel;  // explicit model ID passthrough
+  // Unknown model IDs are ignored — fall through to auto-detect
   // Auto-detect: if any message contains an image block, require Sonnet
   const hasImage = messages.some(m =>
     Array.isArray(m.content) && m.content.some(b => b?.type === 'image')
@@ -36,6 +55,11 @@ function getSystemPrompt(max_tokens, providedSystem) {
 }
 
 export async function POST(req) {
+  // ── Auth gate ────────────────────────────────────────────────────────────
+  const userId = await verifyAuth(req);
+  if (!userId) return bad("Sign in to continue", 401);
+  // ────────────────────────────────────────────────────────────────────────
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return bad("Server misconfigured: missing ANTHROPIC_API_KEY", 500);
 

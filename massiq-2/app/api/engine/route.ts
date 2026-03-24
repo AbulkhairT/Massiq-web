@@ -14,7 +14,31 @@ import { runEngine, buildClaudeContext } from '../../../lib/engine'
 
 export const runtime = 'nodejs'
 
+async function verifyAuth(req: NextRequest): Promise<string | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey     = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) return null;
+  const authHeader  = req.headers.get('authorization') || '';
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!bearerToken) return null;
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: anonKey, Authorization: `Bearer ${bearerToken}` },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user?.id ? user.id : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
+  // ── Auth gate ────────────────────────────────────────────────────────────
+  const userId = await verifyAuth(req);
+  if (!userId) return NextResponse.json({ error: 'Sign in to continue' }, { status: 401 });
+  // ────────────────────────────────────────────────────────────────────────
+
   let body: any
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })

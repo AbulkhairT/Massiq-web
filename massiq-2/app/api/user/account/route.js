@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import Stripe from 'stripe';
 
 export const runtime = 'nodejs';
 
@@ -78,7 +79,36 @@ export async function DELETE(request) {
     return NextResponse.json({ error: 'Invalid or expired token' }, { status: 401 });
   }
 
-  // ── 2. Fetch storage paths before deleting rows ───────────────────────────
+  // ── 2. Cancel Stripe subscription if one exists ───────────────────────────
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  if (stripeSecretKey) {
+    try {
+      const subRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/subscriptions?user_id=eq.${userId}&select=stripe_subscription_id&limit=1`,
+        { method: 'GET', headers: serviceHeaders() }
+      );
+      if (subRes.ok) {
+        const subRows = await subRes.json().catch(() => []);
+        const stripeSubId = Array.isArray(subRows) && subRows.length > 0
+          ? subRows[0].stripe_subscription_id
+          : null;
+        if (stripeSubId) {
+          const stripe = new Stripe(stripeSecretKey, { apiVersion: '2024-06-20' });
+          try {
+            await stripe.subscriptions.cancel(stripeSubId);
+            console.info('[delete-account] Stripe subscription cancelled:', stripeSubId);
+          } catch (err) {
+            // Swallow already-canceled errors; log others
+            console.warn('[delete-account] Stripe cancel failed (continuing):', err.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[delete-account] Could not fetch subscription for Stripe cancel (continuing):', err.message);
+    }
+  }
+
+  // ── 4. Fetch storage paths before deleting rows ───────────────────────────
   let storagePaths = [];
   try {
     const assets = await sbFetch(
@@ -92,7 +122,7 @@ export async function DELETE(request) {
     console.warn('[delete-account] Could not fetch scan_assets (continuing):', err.message);
   }
 
-  // ── 3. Delete storage objects ─────────────────────────────────────────────
+  // ── 5. Delete storage objects ─────────────────────────────────────────────
   if (storagePaths.length > 0) {
     try {
       await sbFetch('/storage/v1/object/scan-photos', {
@@ -105,7 +135,7 @@ export async function DELETE(request) {
     }
   }
 
-  // ── 4. Delete application data (order matters for FK constraints) ─────────
+  // ── 6. Delete application data (order matters for FK constraints) ─────────
   const tables = [
     'physique_projections',
     'scans',
@@ -130,7 +160,7 @@ export async function DELETE(request) {
     }
   }
 
-  // ── 5. Delete auth.users entry (Supabase Admin API) ───────────────────────
+  // ── 7. Delete auth.users entry (Supabase Admin API) ───────────────────────
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
       method: 'DELETE',
