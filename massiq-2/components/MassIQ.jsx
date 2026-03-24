@@ -1092,13 +1092,29 @@ function Onboarding({ onComplete, currentUserId, isEditing }) {
     const normalizedHeightCm = data.unitSystem === 'imperial'
       ? ((Number(data.heightFt || 0) * 12) + Number(data.heightInch || 0)) * 2.54
       : Number(data.heightCm || 0);
+    // Build explicit profile — no form-only keys; every field maps to correct DB column
     const profile = {
-      ...data,
+      name: String(data.name || '').trim(),
+      goal: data.goal || null,
+      unitSystem: data.unitSystem === 'metric' ? 'metric' : 'imperial',
       age: Number(data.age),
       weightLbs: Number(normalizedWeightLbs.toFixed(1)),
+      weightKg: Number((normalizedWeightLbs * 0.453592).toFixed(2)),
       heightCm: Number(normalizedHeightCm.toFixed(1)),
       heightIn: Number((normalizedHeightCm / 2.54).toFixed(1)),
+      gender: data.gender || 'Male',
+      activity: data.activity || null,
+      dietPrefs: Array.isArray(data.dietPrefs) ? data.dietPrefs : [],
+      cuisines: Array.isArray(data.cuisines) ? data.cuisines : [],
+      avoid: Array.isArray(data.avoid) ? data.avoid : [],
     };
+    // [onboarding:debug] — remove after verifying end-to-end mapping
+    console.info('[onboarding:debug] final profile payload (before save)', JSON.stringify({
+      name: profile.name, goal: profile.goal, unitSystem: profile.unitSystem,
+      age: profile.age, weightLbs: profile.weightLbs, heightCm: profile.heightCm,
+      gender: profile.gender, activity: profile.activity,
+      dietPrefs: profile.dietPrefs, cuisines: profile.cuisines, avoid: profile.avoid,
+    }));
     LS.set(LS_KEYS.profile, profile);
 
     // Editing existing profile — skip plan gen (use explicit flag, not stale LS cache)
@@ -6997,6 +7013,15 @@ export default function MassIQ() {
             const fallbackName = persistedName || cached?.name || null;
             if (fallbackName) loadedProfile = { ...loadedProfile, name: fallbackName };
           }
+          // [onboarding:debug] — remove after verifying end-to-end mapping (logged after name fallback)
+          if (loadedProfile) {
+            console.info('[onboarding:debug] hydrated profile (after read + name fallback)', JSON.stringify({
+              name: loadedProfile.name, goal: loadedProfile.goal, unitSystem: loadedProfile.unitSystem,
+              age: loadedProfile.age, weightLbs: loadedProfile.weightLbs, heightCm: loadedProfile.heightCm,
+              gender: loadedProfile.gender, activity: loadedProfile.activity,
+              dietPrefs: loadedProfile.dietPrefs, cuisines: loadedProfile.cuisines, avoid: loadedProfile.avoid,
+            }));
+          }
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
           setTab('home');
@@ -7416,6 +7441,14 @@ export default function MassIQ() {
     }
     setEditing(false);
 
+    // [onboarding:debug] — remove after verifying end-to-end mapping
+    console.info('[onboarding:debug] payload about to persist', JSON.stringify({
+      name: profileWithId.name, goal: profileWithId.goal, unitSystem: profileWithId.unitSystem,
+      age: profileWithId.age, weightLbs: profileWithId.weightLbs, heightCm: profileWithId.heightCm,
+      gender: profileWithId.gender, activity: profileWithId.activity,
+      dietPrefs: profileWithId.dietPrefs, cuisines: profileWithId.cuisines, avoid: profileWithId.avoid,
+    }));
+
     // ── Critical persistence ─────────────────────────────────────────────────
     // Start the DB write immediately and hold the Promise in a ref.
     // The Paywall reads this ref and AWAITS it before navigating to Stripe.
@@ -7523,7 +7556,7 @@ export default function MassIQ() {
   // 4. Still loading profile/data
   if (!ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
-  const profileComplete = profile && profile.age && profile.weightLbs && profile.heightCm;
+  const profileComplete = profile && (profile.name || '').trim() && profile.age && profile.weightLbs && profile.heightCm;
   console.info('[route:decision]', {
     userId:           session?.user?.id ?? null,
     sessionPresent:   !!session?.access_token,

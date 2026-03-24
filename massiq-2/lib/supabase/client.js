@@ -449,6 +449,13 @@ export async function fetchUser(token) {
 
 export async function upsertProfile(token, userId, profile) {
   const row = serializeProfile(userId, profile);
+  // [onboarding:debug] — remove after verifying end-to-end mapping
+  console.info('[onboarding:debug] serialized row for DB write', JSON.stringify({
+    id: row.id, name: row.name, goal: row.goal, unit_system: row.unit_system,
+    age: row.age, weight: row.weight, height: row.height, gender: row.gender,
+    activity_level: row.activity_level, diet_prefs: row.diet_prefs,
+    cuisines: row.cuisines, avoid: row.avoid,
+  }));
   try {
     return await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
       method: 'POST',
