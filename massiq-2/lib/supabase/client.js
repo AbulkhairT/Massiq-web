@@ -1730,23 +1730,30 @@ export async function createPhaseHistoryRow(token, userId, payload) {
 }
 
 export async function createMusclePriorityRow(token, userId, payload) {
+  const rawMuscle = payload.muscle ?? payload.muscleKey;
+  const muscle = rawMuscle != null ? String(rawMuscle).trim() : '';
+  if (!muscle) {
+    throw personalizationTableError('muscle_priorities', 'muscle is required', null);
+  }
+  const priorityLevel = String(payload.priorityLevel ?? payload.priorityTier ?? 'medium').trim() || 'medium';
+  const rationale = payload.rationale ?? payload.notes ?? null;
+
   const row = {
     user_id: userId,
-    plan_id: payload.planId || null,
     scan_id: payload.scanId || null,
-    muscle_key: payload.muscleKey,
-    priority_tier: payload.priorityTier || 'medium',
-    rank: payload.rank ?? null,
-    notes: payload.notes || null,
+    muscle,
+    priority_level: priorityLevel,
+    rationale: rationale ?? null,
   };
+
   console.info('[db:muscle-priority] payload', {
     user_id: row.user_id,
     scan_id: row.scan_id,
-    plan_id: row.plan_id,
     scan_id_null: row.scan_id == null,
-    plan_id_null: row.plan_id == null,
-    muscle_key: row.muscle_key,
-    tier: row.priority_tier,
+    muscle: row.muscle,
+    muscle_null: row.muscle == null || row.muscle === '',
+    priority_level: row.priority_level,
+    rationale: row.rationale,
   });
   try {
     const rows = await supabaseFetch('/rest/v1/muscle_priorities', {
@@ -1756,7 +1763,7 @@ export async function createMusclePriorityRow(token, userId, payload) {
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (!out?.id) throw new Error('[muscle_priorities] insert returned no id');
-    console.info('[db:muscle-priority] ok', { id: out.id });
+    console.info('[db:muscle-priority] ok', { id: out.id, muscle: row.muscle });
     return out;
   } catch (err) {
     logPostgrestFailure('[db:muscle-priority] insert FAILED', err, row);
@@ -1867,25 +1874,19 @@ export async function persistPersonalizationArtifacts(token, userId, {
     });
   }
   const ta = engineOutput.training_adjustments || {};
-  let r = 0;
   for (const m of ta.priority_muscles_high || []) {
     await createMusclePriorityRow(token, userId, {
-      planId,
       scanId,
-      muscleKey: m,
-      priorityTier: 'high',
-      rank: r++,
-      notes: (ta.exercise_emphasis || []).find((x) => String(x).includes(m)) || null,
+      muscle: m,
+      priorityLevel: 'high',
+      rationale: (ta.exercise_emphasis || []).find((x) => String(x).includes(m)) || null,
     });
   }
-  r = 0;
   for (const m of ta.priority_muscles_medium || []) {
     await createMusclePriorityRow(token, userId, {
-      planId,
       scanId,
-      muscleKey: m,
-      priorityTier: 'medium',
-      rank: r++,
+      muscle: m,
+      priorityLevel: 'medium',
     });
   }
   const na = engineOutput.nutrition_adjustments || {};
