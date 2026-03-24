@@ -65,6 +65,13 @@ async function insertSuccessEvent({ userId, source, mealName }) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) throw new Error('Server misconfigured');
+  const row = {
+    user_id: userId,
+    source: source === 'nutrition' ? 'nutrition' : 'home',
+    status: 'success',
+    meal_name: mealName || null,
+  };
+  console.info('[food-scan-event] insert', { user_id: userId, source: row.source, meal_name: row.meal_name });
   const res = await fetch(
     `${supabaseUrl}/rest/v1/food_scan_events`,
     {
@@ -75,18 +82,104 @@ async function insertSuccessEvent({ userId, source, mealName }) {
         Authorization: `Bearer ${serviceKey}`,
         Prefer: 'return=minimal',
       },
-      body: JSON.stringify({
-        user_id: userId,
-        source: source === 'nutrition' ? 'nutrition' : 'home',
-        status: 'success',
-        meal_name: mealName || null,
-      }),
+      body: JSON.stringify(row),
     }
   );
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    console.error('[food-scan-event] FAILED', { user_id: userId, status: res.status, error: text.slice(0, 500) });
     throw new Error(`Could not save food scan event (${res.status}): ${text}`);
   }
+}
+
+/**
+ * Persists a nutrition log row for confirmed real-food scans (not for not_food / failed — those never call complete).
+ * Skips when macros are missing or invalid (preview-only / client bug).
+ */
+async function insertFoodLogRow({ userId, source, mealName, payload }) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    console.warn('[food-log] skip — server misconfigured');
+    return { ok: false, skip_reason: 'server_misconfigured' };
+  }
+
+  const cals = Number(payload?.calories);
+  if (!Number.isFinite(cals) || cals < 0) {
+    console.info('[food-log] skip — no valid calories (preview-only or incomplete payload)', {
+      user_id: userId,
+      skip_reason: 'no_valid_calories',
+    });
+    return { ok: false, skip_reason: 'no_valid_calories' };
+  }
+
+  const protein = Math.round(Number(payload?.protein_g ?? payload?.protein ?? 0)) || 0;
+  const carbs = Math.round(Number(payload?.carbs_g ?? payload?.carbs ?? 0)) || 0;
+  const fat = Math.round(Number(payload?.fat_g ?? payload?.fat ?? 0)) || 0;
+  const fiberRaw = payload?.fiber_g ?? payload?.fiber;
+  const fiberNum = fiberRaw != null && fiberRaw !== '' ? Number(fiberRaw) : null;
+  const fiber = fiberNum != null && Number.isFinite(fiberNum) ? Math.round(fiberNum) : null;
+
+  let foodItems = payload?.food_items;
+  if (!Array.isArray(foodItems) || foodItems.length === 0) {
+    foodItems = [
+      {
+        name: mealName || 'Meal',
+        calories: Math.round(cals),
+        protein_g: protein,
+        carbs_g: carbs,
+        fat_g: fat,
+      },
+    ];
+  }
+
+  const row = {
+    user_id: userId,
+    source: 'food_scan',
+    meal_name: mealName || null,
+    calories: Math.round(cals),
+    protein_g: protein,
+    carbs_g: carbs,
+    fat_g: fat,
+    fiber_g: fiber,
+    food_items: foodItems,
+    notes: `scan_source:${source === 'nutrition' ? 'nutrition' : 'home'}`,
+  };
+
+  console.info('[food-log] insert', {
+    user_id: userId,
+    meal_name: row.meal_name,
+    calories: row.calories,
+    protein_g: row.protein_g,
+  });
+
+  const res = await fetch(`${supabaseUrl}/rest/v1/food_logs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify(row),
+  });
+
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    console.error('[food-log] FAILED', {
+      user_id: userId,
+      status: res.status,
+      error: text.slice(0, 800),
+    });
+    return { ok: false, error: text, status: res.status };
+  }
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {}
+  const id = Array.isArray(parsed) ? parsed[0]?.id : parsed?.id;
+  console.info('[food-log] ok', { user_id: userId, food_log_id: id ?? null });
+  return { ok: true, id: id ?? null };
 }
 
 export async function POST(req) {
@@ -118,8 +211,15 @@ export async function POST(req) {
 
   await insertSuccessEvent({ userId, source, mealName });
 
+  const foodLogResult = await insertFoodLogRow({ userId, source, mealName, payload });
+
   if (premium) {
-    return NextResponse.json({ premium: true, used_today: 0, remaining_today: null });
+    return NextResponse.json({
+      premium: true,
+      used_today: 0,
+      remaining_today: null,
+      food_log: foodLogResult,
+    });
   }
 
   const [usedToday, remainingToday] = await Promise.all([
@@ -130,5 +230,6 @@ export async function POST(req) {
     premium: false,
     used_today: Math.max(0, usedToday),
     remaining_today: Math.max(0, remainingToday),
+    food_log: foodLogResult,
   });
 }

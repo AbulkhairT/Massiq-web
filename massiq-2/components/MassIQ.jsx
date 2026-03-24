@@ -26,7 +26,8 @@ import {
   createScanDecision,
   createDecisionLog,
   createPlanAdjustment,
-  createProgressMetric,
+  upsertProgressMetric,
+  getPriorScanForComparison,
   getScanComparisons,
   getScanDecisions,
   getDecisionLogs,
@@ -414,6 +415,40 @@ const getBFDisplay = (scan) => {
   const n = parseFloat(bf);
   return isNaN(n) ? '—' : n.toFixed(1) + '%';
 };
+
+/** Rough total weight (lbs) from lean mass (lbs) and body fat % — for comparison deltas only */
+function estWeightLbsFromComp(leanMassLbs, bfPct) {
+  if (leanMassLbs == null || bfPct == null) return null;
+  const bf = Number(bfPct) / 100;
+  if (!Number.isFinite(bf) || bf >= 0.999) return null;
+  return leanMassLbs / (1 - bf);
+}
+
+function planAuditSnapshot(plan) {
+  if (!plan) return null;
+  return {
+    phase: plan.phase,
+    week: plan.week,
+    startDate: plan.startDate,
+    targetBF: plan.targetBF,
+    startBF: plan.startBF,
+    macros: {
+      calories: plan?.dailyTargets?.calories ?? plan?.macros?.calories ?? null,
+      protein: plan?.dailyTargets?.protein ?? plan?.macros?.protein ?? null,
+      carbs: plan?.dailyTargets?.carbs ?? plan?.macros?.carbs ?? null,
+      fat: plan?.dailyTargets?.fat ?? plan?.macros?.fat ?? null,
+    },
+  };
+}
+
+function weightKgFromProfile(profile) {
+  if (!profile) return null;
+  const kg = Number(profile.weightKg);
+  if (Number.isFinite(kg) && kg > 0) return Number(kg.toFixed(3));
+  const lbs = Number(profile.weightLbs);
+  if (Number.isFinite(lbs) && lbs > 0) return Number((lbs * 0.453592).toFixed(3));
+  return null;
+}
 
 const PHASE_META = {
   Cut:     { label: 'Cut',     icon: 'arrow-down', target: 'Reduce body fat while preserving lean tissue' },
@@ -2009,6 +2044,10 @@ async function recordFoodScanSuccess(accessToken, payload) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || `complete ${res.status}`);
+  const fl = data?.food_log;
+  if (fl && fl.ok === false && fl.skip_reason !== 'no_valid_calories') {
+    console.warn('[food-log] not persisted', { skip_reason: fl.skip_reason, error: fl.error });
+  }
   return data;
 }
 
@@ -2166,7 +2205,16 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
     setMeals(updated);
     LS.set(LS_KEYS.meals(today), updated);
     try {
-      await onFoodScanComplete?.({ source: 'home', meal_name: meal.name, meal_id: String(meal.id) });
+      await onFoodScanComplete?.({
+        source: 'home',
+        meal_name: meal.name,
+        meal_id: String(meal.id),
+        calories: meal.calories,
+        protein_g: meal.protein,
+        carbs_g: meal.carbs,
+        fat_g: meal.fat,
+        food_items: [{ name: meal.name, calories: meal.calories, protein: meal.protein, carbs: meal.carbs, fat: meal.fat }],
+      });
       await refreshFoodStatus();
     } catch (err) {
       console.error('[food-scan] completion write failed:', err?.message);
@@ -2993,7 +3041,16 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade
     LS.set(LS_KEYS.meals(today), [...meals, safeMeal]);
     if (fromPhoto) {
       try {
-        await onFoodScanComplete?.({ source: 'nutrition', meal_name: safeMeal.name, meal_id: String(safeMeal.id) });
+        await onFoodScanComplete?.({
+          source: 'nutrition',
+          meal_name: safeMeal.name,
+          meal_id: String(safeMeal.id),
+          calories: safeMeal.calories,
+          protein_g: safeMeal.protein,
+          carbs_g: safeMeal.carbs,
+          fat_g: safeMeal.fat,
+          food_items: [{ name: safeMeal.name, calories: safeMeal.calories, protein: safeMeal.protein, carbs: safeMeal.carbs, fat: safeMeal.fat }],
+        });
         await refreshFoodStatus();
       } catch (err) {
         console.error('[food-scan] completion write failed:', err?.message);
@@ -7554,35 +7611,105 @@ export default function MassIQ() {
         console.warn('[sync] step4:createProjection:skipped — missing planId or scanId', { planId, scanId });
       }
 
-      // ── Step 5: Persist structured adaptation/comparison/decision records ─
+      // ── Step 5: Scan intelligence — each sub-step isolated (one failure must not block others) ─
       if (savedScanEntry?.dbId) {
+        const token = session.access_token;
+        let priorFromDb = null;
         try {
-          const prevValid = (() => {
-            for (let i = historyBeforeInsert.length - 1; i >= 0; i -= 1) {
-              const s = historyBeforeInsert[i];
-              if (s && s.scanStatus !== 'duplicate') return s;
-            }
-            return null;
-          })();
-          const prevBF = prevValid ? getBF(prevValid) : null;
-          const currBF = getBF(savedScanEntry);
-          const daysElapsed = prevValid?.date ? Math.max(1, Math.round(daysBetween(prevValid.date, savedScanEntry.date || new Date().toISOString().slice(0, 10)))) : null;
-          const weeklyBodyFatChange = (prevBF != null && currBF != null && daysElapsed != null) ? Number((((currBF - prevBF) / daysElapsed) * 7).toFixed(3)) : null;
+          priorFromDb = await getPriorScanForComparison(token, userId, savedScanEntry.dbId);
+        } catch (priorErr) {
+          console.error('[scan:prior] unexpected throw', { user_id: userId, error: priorErr?.message, raw: String(priorErr) });
+        }
 
-          if (prevValid?.dbId) {
-            await createScanComparison(session.access_token, userId, {
+        const localPrev = (() => {
+          for (let i = historyBeforeInsert.length - 1; i >= 0; i -= 1) {
+            const s = historyBeforeInsert[i];
+            if (s && s.scanStatus !== 'duplicate') return s;
+          }
+          return null;
+        })();
+
+        const priorScan = priorFromDb || (localPrev?.dbId ? localPrev : null);
+        if (!priorFromDb && localPrev && !localPrev.dbId) {
+          console.info('[scan:prior] note — local prior missing dbId; DB lookup used', { user_id: userId, resolved: Boolean(priorScan) });
+        }
+
+        const prevBF = priorScan ? getBF(priorScan) : null;
+        const currBF = getBF(savedScanEntry);
+        const prevDateStr = priorScan?.date ? String(priorScan.date).slice(0, 10) : null;
+        const currDateStr = String(savedScanEntry.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+        const daysElapsed = prevDateStr
+          ? Math.max(1, Math.round(Math.abs(daysBetween(prevDateStr, currDateStr))))
+          : null;
+        const weeklyBodyFatChange =
+          prevBF != null && currBF != null && daysElapsed != null
+            ? Number((((currBF - prevBF) / daysElapsed) * 7).toFixed(3))
+            : null;
+
+        const wPrevLbs = estWeightLbsFromComp(priorScan?.leanMass, prevBF);
+        const wCurrLbs = estWeightLbsFromComp(savedScanEntry.leanMass, currBF);
+        const weightDelta =
+          wPrevLbs != null && wCurrLbs != null ? Number((wCurrLbs - wPrevLbs).toFixed(2)) : null;
+        const weeklyWeightChangePct =
+          wPrevLbs != null && wCurrLbs != null && daysElapsed != null
+            ? Number(
+                (
+                  (((wCurrLbs - wPrevLbs) / wPrevLbs) * 100) /
+                  (daysElapsed / 7)
+                ).toFixed(4),
+              )
+            : null;
+
+        const sc = savedScanEntry.scanComparison || {};
+        const improvedAreas = [];
+        const worsenedAreas = [];
+        if (typeof sc.bf_delta === 'number') {
+          if (sc.bf_delta < -0.05) improvedAreas.push('body_fat');
+          if (sc.bf_delta > 0.05) worsenedAreas.push('body_fat');
+        }
+        if (typeof sc.lm_delta_lbs === 'number') {
+          if (sc.lm_delta_lbs > 0.3) improvedAreas.push('lean_mass');
+          if (sc.lm_delta_lbs < -0.3) worsenedAreas.push('lean_mass');
+        }
+
+        const prevIdForCompare = priorScan?.dbId || priorScan?.id;
+        if (prevIdForCompare) {
+          try {
+            await createScanComparison(token, userId, {
               currentScanId: savedScanEntry.dbId,
-              previousScanId: prevValid.dbId,
+              previousScanId: prevIdForCompare,
               bodyFatDelta: currBF != null && prevBF != null ? Number((currBF - prevBF).toFixed(2)) : null,
-              leanMassDelta: savedScanEntry.leanMass != null && prevValid.leanMass != null ? Number((savedScanEntry.leanMass - prevValid.leanMass).toFixed(2)) : null,
-              physiqueScoreDelta: savedScanEntry.physiqueScore != null && prevValid.physiqueScore != null ? Math.round(savedScanEntry.physiqueScore - prevValid.physiqueScore) : null,
-              symmetryScoreDelta: savedScanEntry.symmetryScore != null && prevValid.symmetryScore != null ? Math.round(savedScanEntry.symmetryScore - prevValid.symmetryScore) : null,
+              leanMassDelta:
+                savedScanEntry.leanMass != null && priorScan.leanMass != null
+                  ? Number((savedScanEntry.leanMass - priorScan.leanMass).toFixed(2))
+                  : null,
+              physiqueScoreDelta:
+                savedScanEntry.physiqueScore != null && priorScan.physiqueScore != null
+                  ? Math.round(savedScanEntry.physiqueScore - priorScan.physiqueScore)
+                  : null,
+              symmetryScoreDelta:
+                savedScanEntry.symmetryScore != null && priorScan.symmetryScore != null
+                  ? Math.round(savedScanEntry.symmetryScore - priorScan.symmetryScore)
+                  : null,
+              weightDelta,
               summary: savedScanEntry.adaptationRationale || null,
               comparisonConfidence: savedScanEntry.confidence || null,
+              improvedAreas,
+              worsenedAreas,
             });
+          } catch (cmpErr) {
+            console.error('[scan:compare] sub-step FAILED', { user_id: userId, error: cmpErr?.message, raw: String(cmpErr) });
           }
+        } else {
+          console.info('[scan:compare] skip', {
+            user_id: userId,
+            current_scan_id: savedScanEntry.dbId,
+            skip_reason: 'no_prior_scan — baseline (no other row in scans for this user before current)',
+          });
+        }
 
-          await createScanDecision(session.access_token, userId, {
+        try {
+          await createScanDecision(token, userId, {
             scanId: savedScanEntry.dbId,
             planId: planId || null,
             decisionType: savedScanEntry.adaptationDecision || 'keep_plan',
@@ -7590,54 +7717,77 @@ export default function MassIQ() {
             payload: {
               comparison: savedScanEntry.scanComparison || null,
               confidence: savedScanEntry.confidence || null,
+              limiting_factor: savedScanEntry.limitingFactor || null,
+              scan_context_adaptation: savedScanEntry.scanContext?.adaptation || null,
             },
           });
+        } catch (sdErr) {
+          console.error('[scan:decision] sub-step FAILED', { user_id: userId, error: sdErr?.message, raw: String(sdErr) });
+        }
 
-          await createDecisionLog(session.access_token, userId, {
+        try {
+          await createDecisionLog(token, userId, {
             scanId: savedScanEntry.dbId,
             planId: planId || null,
             decisionCategory: 'scan_adaptation',
             decision: {
               type: savedScanEntry.adaptationDecision || 'keep_plan',
               comparison: savedScanEntry.scanComparison || null,
+              limiting_factor: savedScanEntry.limitingFactor || null,
             },
             confidence: savedScanEntry.confidence || null,
             explanation: savedScanEntry.adaptationRationale || null,
           });
+        } catch (dlErr) {
+          console.error('[decision:log] sub-step FAILED', { user_id: userId, error: dlErr?.message, raw: String(dlErr) });
+        }
 
-          await createProgressMetric(session.access_token, userId, {
-            asOfDate: String(savedScanEntry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+        try {
+          await upsertProgressMetric(token, userId, {
+            asOfDate: currDateStr,
             bodyFatPct: currBF != null ? Number(currBF.toFixed(2)) : null,
             leanMassKg: savedScanEntry.leanMass != null ? Number((savedScanEntry.leanMass * 0.453592).toFixed(3)) : null,
+            weightKg: weightKgFromProfile(nextProfile),
             weeklyBodyFatChange,
+            weeklyWeightChangePct,
             trendStatus: savedScanEntry.adaptationDecision || null,
           });
+        } catch (pmErr) {
+          console.error('[progress:metrics] sub-step FAILED', { user_id: userId, error: pmErr?.message, raw: String(pmErr) });
+        }
 
-          if (planId && previousPlan && nextPlan) {
-            await createPlanAdjustment(session.access_token, userId, {
-              planId,
-              scanId: savedScanEntry.dbId,
-              adjustmentType: 'macro_update',
-              oldValue: {
-                phase: previousPlan.phase,
-                calories: previousPlan?.dailyTargets?.calories ?? previousPlan?.macros?.calories ?? null,
-                protein: previousPlan?.dailyTargets?.protein ?? previousPlan?.macros?.protein ?? null,
-                carbs: previousPlan?.dailyTargets?.carbs ?? previousPlan?.macros?.carbs ?? null,
-                fat: previousPlan?.dailyTargets?.fat ?? previousPlan?.macros?.fat ?? null,
-              },
-              newValue: {
-                phase: nextPlan.phase,
-                calories: nextPlan?.dailyTargets?.calories ?? nextPlan?.macros?.calories ?? null,
-                protein: nextPlan?.dailyTargets?.protein ?? nextPlan?.macros?.protein ?? null,
-                carbs: nextPlan?.dailyTargets?.carbs ?? nextPlan?.macros?.carbs ?? null,
-                fat: nextPlan?.dailyTargets?.fat ?? nextPlan?.macros?.fat ?? null,
-              },
-              triggerReason: savedScanEntry.adaptationDecision || 'scan_update',
-              explanation: savedScanEntry.adaptationRationale || null,
+        if (planId && previousPlan && nextPlan) {
+          const oldSnap = planAuditSnapshot(previousPlan);
+          const newSnap = planAuditSnapshot(nextPlan);
+          const planChanged = JSON.stringify(oldSnap) !== JSON.stringify(newSnap);
+          if (planChanged) {
+            try {
+              await createPlanAdjustment(token, userId, {
+                planId,
+                scanId: savedScanEntry.dbId,
+                adjustmentType: 'plan_update',
+                oldValue: oldSnap,
+                newValue: newSnap,
+                triggerReason: savedScanEntry.adaptationDecision || 'scan_update',
+                explanation: savedScanEntry.adaptationRationale || null,
+              });
+            } catch (paErr) {
+              console.error('[plan:adjustment] sub-step FAILED', { user_id: userId, error: paErr?.message, raw: String(paErr) });
+            }
+          } else {
+            console.info('[plan:adjustment] skip — plan audit snapshot unchanged vs prior active plan', {
+              user_id: userId,
+              plan_id: planId,
+              scan_id: savedScanEntry.dbId,
             });
           }
-        } catch (decisionErr) {
-          console.warn('[sync] step5:decision persistence failed (non-fatal)', decisionErr?.message);
+        } else {
+          console.info('[plan:adjustment] skip — missing planId or previousPlan or nextPlan', {
+            user_id: userId,
+            has_plan_id: Boolean(planId),
+            has_previous: Boolean(previousPlan),
+            has_next: Boolean(nextPlan),
+          });
         }
       }
 
@@ -7655,10 +7805,24 @@ export default function MassIQ() {
     if (!session?.access_token || !nextPlan) return;
     const user = session.user || await fetchUser(session.access_token);
     const userId = user?.id;
-    if (!userId) return;
-    const planRow = await upsertPlan(session.access_token, userId, nextPlan);
+    if (!userId) {
+      console.warn('[db:meal-plan] skip — no user id from session');
+      return;
+    }
+    let planRow;
+    try {
+      planRow = await upsertPlan(session.access_token, userId, nextPlan);
+    } catch (e) {
+      console.error('[db:plan] persistProgramArtifacts upsertPlan FAILED', { user_id: userId, error: e?.message });
+      setToast('Could not save plan to server. Meal/workout sync skipped.');
+      throw e;
+    }
     const planId = planRow?.id;
-    if (!planId) return;
+    if (!planId) {
+      console.error('[db:plan] persistProgramArtifacts — no plan id after upsert');
+      setToast('Plan not synced; meal/workout not saved.');
+      return;
+    }
 
     if (Array.isArray(mealDays)) {
       const totals = mealDays.reduce((acc, day) => {
@@ -7669,28 +7833,40 @@ export default function MassIQ() {
         const f = meals.reduce((s, m) => s + Number(m?.fat || 0), 0);
         return { calories: acc.calories + cals, protein: acc.protein + p, carbs: acc.carbs + cb, fat: acc.fat + f };
       }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
-      await upsertMealPlan(session.access_token, userId, {
-        planId,
-        preferencesSnapshot: {
-          goal: nextProfile?.goal || null,
-          diet_prefs: nextProfile?.dietPrefs || [],
-          cuisines: nextProfile?.cuisines || [],
-          avoid: nextProfile?.avoid || [],
-          unit_system: nextProfile?.unitSystem || 'imperial',
-        },
-        meals: mealDays,
-        totals,
-      });
+      try {
+        await upsertMealPlan(session.access_token, userId, {
+          planId,
+          preferencesSnapshot: {
+            goal: nextProfile?.goal || null,
+            diet_prefs: nextProfile?.dietPrefs || [],
+            cuisines: nextProfile?.cuisines || [],
+            avoid: nextProfile?.avoid || [],
+            unit_system: nextProfile?.unitSystem || 'imperial',
+          },
+          meals: mealDays,
+          totals,
+        });
+      } catch (e) {
+        console.error('[db:meal-plan] persistProgramArtifacts FAILED', { user_id: userId, plan_id: planId, error: e?.message });
+        setToast('Meal plan could not be saved to your account.');
+        throw e;
+      }
     }
 
     if (Array.isArray(workoutDays)) {
-      await upsertWorkoutProgram(session.access_token, userId, {
-        planId,
-        splitName: nextPlan?.phase ? `${nextPlan.phase} Split` : null,
-        daysPerWeek: nextPlan?.dailyTargets?.trainingDaysPerWeek || nextPlan?.trainDays || null,
-        structure: { days: workoutDays },
-        progressionRules: { phase: nextPlan?.phase || null, week: nextPlan?.week || null },
-      });
+      try {
+        await upsertWorkoutProgram(session.access_token, userId, {
+          planId,
+          splitName: nextPlan?.phase ? `${nextPlan.phase} Split` : null,
+          daysPerWeek: nextPlan?.dailyTargets?.trainingDaysPerWeek || nextPlan?.trainDays || null,
+          structure: { days: workoutDays },
+          progressionRules: { phase: nextPlan?.phase || null, week: nextPlan?.week || null },
+        });
+      } catch (e) {
+        console.error('[db:workout] persistProgramArtifacts FAILED', { user_id: userId, plan_id: planId, error: e?.message });
+        setToast('Workout program could not be saved to your account.');
+        throw e;
+      }
     }
   };
 
@@ -7912,7 +8088,11 @@ export default function MassIQ() {
 
   const handleFoodScanComplete = async (payload = {}) => {
     if (!session?.access_token) return;
-    await recordFoodScanSuccess(session.access_token, payload);
+    const data = await recordFoodScanSuccess(session.access_token, payload);
+    const fl = data?.food_log;
+    if (fl && fl.ok === false && fl.skip_reason !== 'no_valid_calories') {
+      setToast('Meal saved in app; server could not store nutrition log. Check connection or try again.');
+    }
     if (session?.user?.id) {
       try {
         const ent = await getEntitlements(session.access_token, session.user.id);

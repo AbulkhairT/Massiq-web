@@ -258,7 +258,7 @@ function serializeScan(userId, scan) {
   };
 }
 
-function deserializeScan(row) {
+export function deserializeScan(row) {
   const ma  = row?.muscle_assessment || {};
   const ctx = row?.scan_context      || {};
   const pa  = ctx?.premium_analysis  || {};
@@ -465,7 +465,7 @@ export async function upsertProfile(token, userId, profile) {
       },
       body: JSON.stringify(row),
     });
-    // [onboarding:debug] — remove after verifying end-to-end mapping
+    console.info('[db:profile] ok', { user_id: userId });
     console.info('[onboarding:debug] DB response after profile upsert', result);
     return result;
   } catch (err) {
@@ -479,10 +479,11 @@ export async function upsertProfile(token, userId, profile) {
         },
         body: JSON.stringify(base),
       });
-      // [onboarding:debug] — remove after verifying end-to-end mapping
+      console.info('[db:profile] ok (fallback cols)', { user_id: userId });
       console.info('[onboarding:debug] DB response after profile upsert (fallback cols)', result);
       return result;
     }
+    console.error('[db:profile] FAILED', { user_id: userId, error: err?.message });
     throw err;
   }
 }
@@ -558,15 +559,18 @@ export async function upsertPlan(token, userId, plan) {
 
   try {
     const planRow = await doUpsertPlan(token, userId, existingId, row);
+    console.info('[db:plan] ok', { user_id: userId, plan_id: planRow.id });
     console.info('[sync] upsertPlan:ok', { planId: planRow.id });
     return planRow;
   } catch (err) {
     if (isColumnError(err)) {
       const { start_date, week, ...base } = row;
       const planRow = await doUpsertPlan(token, userId, existingId, base);
+      console.info('[db:plan] ok (fallback cols)', { user_id: userId, plan_id: planRow.id });
       console.info('[sync] upsertPlan:ok (fallback, no start_date/week)', { planId: planRow.id });
       return planRow;
     }
+    console.error('[db:plan] FAILED', { user_id: userId, error: err?.message });
     throw err;
   }
 }
@@ -591,25 +595,61 @@ export async function getPlan(token, userId) {
   return Array.isArray(rows) && rows[0] ? deserializePlan(rows[0]) : null;
 }
 
+/**
+ * Upsert meal_plans for (user_id, plan_id): PATCH existing row or POST new.
+ * profiles.id === auth user id — userId must be session user id.
+ */
 export async function upsertMealPlan(token, userId, { planId, preferencesSnapshot = {}, meals = [], totals = {} }) {
-  if (!planId) throw new Error('[meal_plans] Missing planId');
+  if (!planId) {
+    const err = new Error('[meal_plans] Missing planId — cannot persist meal plan artifact');
+    console.error('[db:meal-plan]', { user_id: userId, plan_id: null, error: err.message });
+    throw err;
+  }
   const payload = {
     user_id: userId,
     plan_id: planId,
     preferences_snapshot: preferencesSnapshot || {},
     meals: Array.isArray(meals) ? meals : [],
-    total_calories: toSafeInt(totals?.calories ?? 0, 'total_calories'),
-    total_protein_g: toSafeInt(totals?.protein ?? 0, 'total_protein_g'),
-    total_carbs_g: toSafeInt(totals?.carbs ?? 0, 'total_carbs_g'),
-    total_fat_g: toSafeInt(totals?.fat ?? 0, 'total_fat_g'),
+    total_calories: Math.round(Number(totals?.calories ?? 0)),
+    total_protein_g: Math.round(Number(totals?.protein ?? 0)),
+    total_carbs_g: Math.round(Number(totals?.carbs ?? 0)),
+    total_fat_g: Math.round(Number(totals?.fat ?? 0)),
     updated_at: new Date().toISOString(),
   };
-  const rows = await supabaseFetch('/rest/v1/meal_plans', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify(payload),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  console.info('[db:meal-plan] upsert start', { user_id: userId, plan_id: planId, meal_days: Array.isArray(meals) ? meals.length : 0 });
+  let existing = null;
+  try {
+    const found = await supabaseFetch(
+      `/rest/v1/meal_plans?user_id=eq.${userId}&plan_id=eq.${planId}&select=id&limit=1`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    existing = Array.isArray(found) && found[0]?.id ? found[0] : null;
+  } catch (e) {
+    console.warn('[db:meal-plan] lookup existing failed (will try POST)', e?.message);
+  }
+  try {
+    if (existing?.id) {
+      const rows = await supabaseFetch(`/rest/v1/meal_plans?id=eq.${existing.id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(token), Prefer: 'return=representation' },
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      console.info('[db:meal-plan] ok PATCH', { user_id: userId, plan_id: planId, meal_plan_id: row?.id ?? existing.id });
+      return row || { id: existing.id, ...payload };
+    }
+    const rows = await supabaseFetch('/rest/v1/meal_plans', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(payload),
+    });
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[db:meal-plan] ok POST', { user_id: userId, plan_id: planId, meal_plan_id: row?.id ?? null });
+    return row;
+  } catch (err) {
+    console.error('[db:meal-plan] FAILED', { user_id: userId, plan_id: planId, error: err?.message, raw: String(err) });
+    throw err;
+  }
 }
 
 export async function getLatestMealPlan(token, userId) {
@@ -621,7 +661,11 @@ export async function getLatestMealPlan(token, userId) {
 }
 
 export async function upsertWorkoutProgram(token, userId, { planId, splitName = null, daysPerWeek = null, structure = {}, progressionRules = {} }) {
-  if (!planId) throw new Error('[workout_programs] Missing planId');
+  if (!planId) {
+    const err = new Error('[workout_programs] Missing planId');
+    console.error('[db:workout]', { user_id: userId, plan_id: null, error: err.message });
+    throw err;
+  }
   const payload = {
     user_id: userId,
     plan_id: planId,
@@ -631,12 +675,40 @@ export async function upsertWorkoutProgram(token, userId, { planId, splitName = 
     progression_rules: progressionRules || {},
     updated_at: new Date().toISOString(),
   };
-  const rows = await supabaseFetch('/rest/v1/workout_programs', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify(payload),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  console.info('[db:workout] upsert start', { user_id: userId, plan_id: planId });
+  let existing = null;
+  try {
+    const found = await supabaseFetch(
+      `/rest/v1/workout_programs?user_id=eq.${userId}&plan_id=eq.${planId}&select=id&limit=1`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    existing = Array.isArray(found) && found[0]?.id ? found[0] : null;
+  } catch (e) {
+    console.warn('[db:workout] lookup existing failed (will try POST)', e?.message);
+  }
+  try {
+    if (existing?.id) {
+      const rows = await supabaseFetch(`/rest/v1/workout_programs?id=eq.${existing.id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(token), Prefer: 'return=representation' },
+        body: JSON.stringify(payload),
+      });
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      console.info('[db:workout] ok PATCH', { user_id: userId, plan_id: planId, workout_program_id: row?.id ?? existing.id });
+      return row || { id: existing.id, ...payload };
+    }
+    const rows = await supabaseFetch('/rest/v1/workout_programs', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(payload),
+    });
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[db:workout] ok POST', { user_id: userId, plan_id: planId, workout_program_id: row?.id ?? null });
+    return row;
+  } catch (err) {
+    console.error('[db:workout] FAILED', { user_id: userId, plan_id: planId, error: err?.message });
+    throw err;
+  }
 }
 
 export async function getLatestWorkoutProgram(token, userId) {
@@ -647,90 +719,272 @@ export async function getLatestWorkoutProgram(token, userId) {
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
+/**
+ * Most recent scan for this user excluding the current scan id (for comparisons).
+ */
+export async function getPriorScanForComparison(token, userId, excludeScanId) {
+  if (!excludeScanId) {
+    console.info('[scan:prior] skip lookup — no excludeScanId');
+    return null;
+  }
+  const pathBase = `/rest/v1/scans?user_id=eq.${userId}&id=neq.${excludeScanId}&order=created_at.desc&limit=1&select=`;
+  const colsExtended = [
+    'id', 'user_id', 'body_fat', 'lean_mass',
+    'physique_score', 'symmetry_score', 'scan_confidence',
+    'muscle_assessment', 'scan_notes', 'created_at',
+    'engine_version', 'scan_status', 'duplicate_of_scan_id',
+    'asset_id', 'scan_context',
+  ].join(',');
+  const colsBase = 'id,user_id,body_fat,lean_mass,physique_score,symmetry_score,scan_confidence,muscle_assessment,scan_notes,created_at';
+  let rows;
+  try {
+    rows = await supabaseFetch(`${pathBase}${colsExtended}`, { method: 'GET', headers: authHeaders(token) });
+  } catch (err) {
+    if (String(err?.message).includes('column') || String(err?.message).includes('does not exist')) {
+      console.warn('[scan:prior] extended columns missing — fallback', err?.message);
+      try {
+        rows = await supabaseFetch(`${pathBase}${colsBase}`, { method: 'GET', headers: authHeaders(token) });
+      } catch (err2) {
+        console.error('[scan:prior] lookup FAILED (fallback)', { user_id: userId, error: err2?.message });
+        return null;
+      }
+    } else {
+      console.error('[scan:prior] lookup FAILED', { user_id: userId, exclude_scan_id: excludeScanId, error: err?.message, raw: String(err) });
+      return null;
+    }
+  }
+  const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!row) {
+    console.info('[scan:prior] no row — first scan or exclude is only scan', { user_id: userId, exclude_scan_id: excludeScanId });
+    return null;
+  }
+  const parsed = deserializeScan(row);
+  console.info('[scan:prior] ok', { user_id: userId, prior_scan_id: parsed.id, current_excluded: excludeScanId });
+  return parsed;
+}
+
 export async function createScanComparison(token, userId, payload) {
-  const rows = await supabaseFetch('/rest/v1/scan_comparisons', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify({
-      user_id: userId,
-      current_scan_id: payload.currentScanId,
-      previous_scan_id: payload.previousScanId || null,
-      body_fat_delta: payload.bodyFatDelta ?? null,
-      lean_mass_delta: payload.leanMassDelta ?? null,
-      physique_score_delta: payload.physiqueScoreDelta ?? null,
-      symmetry_score_delta: payload.symmetryScoreDelta ?? null,
-      summary: payload.summary || null,
-      comparison_confidence: payload.comparisonConfidence || null,
-    }),
+  const body = {
+    user_id: userId,
+    current_scan_id: payload.currentScanId,
+    previous_scan_id: payload.previousScanId || null,
+    body_fat_delta: payload.bodyFatDelta ?? null,
+    lean_mass_delta: payload.leanMassDelta ?? null,
+    physique_score_delta: payload.physiqueScoreDelta ?? null,
+    symmetry_score_delta: payload.symmetryScoreDelta ?? null,
+    weight_delta: payload.weightDelta ?? null,
+    summary: payload.summary || null,
+    comparison_confidence: payload.comparisonConfidence || null,
+    improved_areas: payload.improvedAreas ?? [],
+    worsened_areas: payload.worsenedAreas ?? [],
+  };
+  console.info('[scan:compare] write', {
+    user_id: userId,
+    current_scan_id: body.current_scan_id,
+    previous_scan_id: body.previous_scan_id,
   });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  try {
+    const rows = await supabaseFetch('/rest/v1/scan_comparisons', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(body),
+    });
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[scan:compare] ok', { user_id: userId, comparison_id: row?.id ?? null });
+    return row;
+  } catch (err) {
+    if (isColumnError(err)) {
+      const minimal = {
+        user_id: userId,
+        current_scan_id: payload.currentScanId,
+        previous_scan_id: payload.previousScanId || null,
+        body_fat_delta: payload.bodyFatDelta ?? null,
+        lean_mass_delta: payload.leanMassDelta ?? null,
+        physique_score_delta: payload.physiqueScoreDelta ?? null,
+        symmetry_score_delta: payload.symmetryScoreDelta ?? null,
+        summary: payload.summary || null,
+        comparison_confidence: payload.comparisonConfidence || null,
+      };
+      console.warn('[scan:compare] retry without extended columns', err?.message);
+      const rows = await supabaseFetch('/rest/v1/scan_comparisons', {
+        method: 'POST',
+        headers: { ...authHeaders(token), Prefer: 'return=representation' },
+        body: JSON.stringify(minimal),
+      });
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      console.info('[scan:compare] ok (minimal)', { user_id: userId, comparison_id: row?.id ?? null });
+      return row;
+    }
+    console.error('[scan:compare] FAILED', { user_id: userId, error: err?.message, raw: String(err) });
+    throw err;
+  }
 }
 
 export async function createScanDecision(token, userId, payload) {
-  const rows = await supabaseFetch('/rest/v1/scan_decisions', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify({
-      user_id: userId,
-      scan_id: payload.scanId,
-      plan_id: payload.planId || null,
-      decision_type: payload.decisionType || 'keep_plan',
-      decision_reason: payload.decisionReason || null,
-      payload: payload.payload || {},
-    }),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  const row = {
+    user_id: userId,
+    scan_id: payload.scanId,
+    plan_id: payload.planId || null,
+    decision_type: payload.decisionType || 'keep_plan',
+    decision_reason: payload.decisionReason || null,
+    payload: payload.payload || {},
+  };
+  console.info('[scan:decision] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, decision_type: row.decision_type });
+  try {
+    const rows = await supabaseFetch('/rest/v1/scan_decisions', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[scan:decision] ok', { user_id: userId, scan_decision_id: out?.id ?? null });
+    return out;
+  } catch (err) {
+    console.error('[scan:decision] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
+    throw err;
+  }
 }
 
 export async function createDecisionLog(token, userId, payload) {
-  const rows = await supabaseFetch('/rest/v1/decision_log', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify({
-      user_id: userId,
-      scan_id: payload.scanId || null,
-      plan_id: payload.planId || null,
-      decision_category: payload.decisionCategory || 'adaptation',
-      decision: payload.decision || {},
-      confidence: payload.confidence || null,
-      explanation: payload.explanation || null,
-    }),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  const row = {
+    user_id: userId,
+    scan_id: payload.scanId || null,
+    plan_id: payload.planId || null,
+    decision_category: payload.decisionCategory || 'adaptation',
+    decision: payload.decision || {},
+    confidence: payload.confidence || null,
+    explanation: payload.explanation || null,
+  };
+  console.info('[decision:log] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, category: row.decision_category });
+  try {
+    const rows = await supabaseFetch('/rest/v1/decision_log', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[decision:log] ok', { user_id: userId, decision_log_id: out?.id ?? null });
+    return out;
+  } catch (err) {
+    console.error('[decision:log] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
+    throw err;
+  }
 }
 
 export async function createPlanAdjustment(token, userId, payload) {
-  const rows = await supabaseFetch('/rest/v1/plan_adjustments', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify({
-      user_id: userId,
-      plan_id: payload.planId,
-      scan_id: payload.scanId || null,
-      adjustment_type: payload.adjustmentType || 'macro_update',
-      old_value: payload.oldValue || {},
-      new_value: payload.newValue || {},
-      trigger_reason: payload.triggerReason || null,
-      explanation: payload.explanation || null,
-    }),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  const row = {
+    user_id: userId,
+    plan_id: payload.planId,
+    scan_id: payload.scanId || null,
+    adjustment_type: payload.adjustmentType || 'macro_update',
+    old_value: payload.oldValue || {},
+    new_value: payload.newValue || {},
+    trigger_reason: payload.triggerReason || null,
+    explanation: payload.explanation || null,
+  };
+  console.info('[plan:adjustment] write', { user_id: userId, plan_id: row.plan_id, scan_id: row.scan_id });
+  try {
+    const rows = await supabaseFetch('/rest/v1/plan_adjustments', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[plan:adjustment] ok', { user_id: userId, plan_adjustment_id: out?.id ?? null });
+    return out;
+  } catch (err) {
+    console.error('[plan:adjustment] FAILED', { user_id: userId, plan_id: row.plan_id, error: err?.message });
+    throw err;
+  }
 }
 
+/**
+ * Insert or update progress_metrics for (user_id, as_of_date) so multiple scans same day still persist.
+ */
+export async function upsertProgressMetric(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    as_of_date: payload.asOfDate,
+    body_fat_pct: payload.bodyFatPct ?? null,
+    lean_mass_kg: payload.leanMassKg ?? null,
+    weight_kg: payload.weightKg ?? null,
+    weekly_body_fat_change: payload.weeklyBodyFatChange ?? null,
+    weekly_weight_change_pct: payload.weeklyWeightChangePct ?? null,
+    trend_status: payload.trendStatus || null,
+  };
+  console.info('[progress:metrics] upsert start', { user_id: userId, as_of_date: row.as_of_date });
+  let existingId = null;
+  try {
+    const found = await supabaseFetch(
+      `/rest/v1/progress_metrics?user_id=eq.${userId}&as_of_date=eq.${row.as_of_date}&select=id&limit=1`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    existingId = Array.isArray(found) && found[0]?.id ? found[0].id : null;
+  } catch (e) {
+    console.warn('[progress:metrics] lookup existing failed (will POST)', e?.message);
+  }
+  try {
+    if (existingId) {
+      const rows = await supabaseFetch(`/rest/v1/progress_metrics?id=eq.${existingId}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(token), Prefer: 'return=representation' },
+        body: JSON.stringify(row),
+      });
+      const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      console.info('[progress:metrics] ok PATCH', { user_id: userId, progress_metric_id: out?.id ?? existingId });
+      return out || { id: existingId, ...row };
+    }
+    const rows = await supabaseFetch('/rest/v1/progress_metrics', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    console.info('[progress:metrics] ok POST', { user_id: userId, progress_metric_id: out?.id ?? null });
+    return out;
+  } catch (err) {
+    if (isColumnError(err)) {
+      const rowMinimal = {
+        user_id: userId,
+        as_of_date: payload.asOfDate,
+        body_fat_pct: payload.bodyFatPct ?? null,
+        lean_mass_kg: payload.leanMassKg ?? null,
+        weekly_body_fat_change: payload.weeklyBodyFatChange ?? null,
+        trend_status: payload.trendStatus || null,
+      };
+      console.warn('[progress:metrics] retry without weight_kg / weekly_weight_change_pct', err?.message);
+      try {
+        if (existingId) {
+          const rows2 = await supabaseFetch(`/rest/v1/progress_metrics?id=eq.${existingId}`, {
+            method: 'PATCH',
+            headers: { ...authHeaders(token), Prefer: 'return=representation' },
+            body: JSON.stringify(rowMinimal),
+          });
+          const out2 = Array.isArray(rows2) && rows2[0] ? rows2[0] : null;
+          console.info('[progress:metrics] ok PATCH (minimal)', { user_id: userId, progress_metric_id: out2?.id ?? existingId });
+          return out2 || { id: existingId, ...rowMinimal };
+        }
+        const rows2 = await supabaseFetch('/rest/v1/progress_metrics', {
+          method: 'POST',
+          headers: { ...authHeaders(token), Prefer: 'return=representation' },
+          body: JSON.stringify(rowMinimal),
+        });
+        const out2 = Array.isArray(rows2) && rows2[0] ? rows2[0] : null;
+        console.info('[progress:metrics] ok POST (minimal)', { user_id: userId, progress_metric_id: out2?.id ?? null });
+        return out2;
+      } catch (err2) {
+        console.error('[progress:metrics] FAILED (minimal retry)', { user_id: userId, error: err2?.message });
+        throw err2;
+      }
+    }
+    console.error('[progress:metrics] FAILED', { user_id: userId, as_of_date: row.as_of_date, error: err?.message, raw: String(err) });
+    throw err;
+  }
+}
+
+/** @deprecated prefer upsertProgressMetric — kept for callers that need raw POST */
 export async function createProgressMetric(token, userId, payload) {
-  const rows = await supabaseFetch('/rest/v1/progress_metrics', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify({
-      user_id: userId,
-      as_of_date: payload.asOfDate,
-      body_fat_pct: payload.bodyFatPct ?? null,
-      lean_mass_kg: payload.leanMassKg ?? null,
-      weekly_body_fat_change: payload.weeklyBodyFatChange ?? null,
-      trend_status: payload.trendStatus || null,
-    }),
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  return upsertProgressMetric(token, userId, payload);
 }
 
 export async function getScanComparisons(token, userId, limit = 50) {
@@ -776,6 +1030,7 @@ export async function getProgressMetrics(token, userId, limit = 30) {
 
 export async function createScan(token, userId, scan) {
   const row = serializeScan(userId, scan);
+  console.info('[scan:save] payload', { user_id: userId, body_fat: row.body_fat, lean_mass: row.lean_mass, asset_id: row.asset_id, scan_status: row.scan_status });
   console.info('[sync] createScan:payload', { userId, body_fat: row.body_fat, lean_mass: row.lean_mass, asset_id: row.asset_id, scan_status: row.scan_status });
   const rows = await supabaseFetch('/rest/v1/scans', {
     method: 'POST',
@@ -796,6 +1051,7 @@ export async function createScan(token, userId, scan) {
   if (!result?.id) {
     throw new Error(`[scans] Insert succeeded but no id in response: ${JSON.stringify(raw)}`);
   }
+  console.info('[scan:save] ok', { user_id: userId, scan_id: result.id });
   console.info('[sync] createScan:ok', { id: result.id, bodyFat: result.bodyFat, leanMass: result.leanMass });
   return result;
 }
@@ -1072,3 +1328,16 @@ export async function createProjection(token, userId, scanId, planId, plan, scan
   if (!result?.id) throw new Error('[projection] Insert succeeded but no id returned');
   return result;
 }
+
+// ─── Domain persistence aliases (single import surface for app code) ─────────
+export const saveProfile = upsertProfile;
+export const saveScan = createScan;
+export const saveProgressMetrics = upsertProgressMetric;
+export const saveScanComparison = createScanComparison;
+export const savePlanDecision = createScanDecision;
+export const saveDecisionLog = createDecisionLog;
+export const savePlanAdjustment = createPlanAdjustment;
+export const saveMealPlan = upsertMealPlan;
+export const saveWorkoutProgram = upsertWorkoutProgram;
+export const refreshSubscriptionState = getSubscription;
+export const fetchPriorScanForComparison = getPriorScanForComparison;

@@ -293,6 +293,10 @@ export async function GET() {
 }
 
 export async function POST(req) {
+  console.info('[billing:webhook] POST received', {
+    supabase_masked: maskUrl(process.env.NEXT_PUBLIC_SUPABASE_URL),
+    has_service_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  });
   console.info('[stripe:webhook] POST received', {
     supabase_masked: maskUrl(process.env.NEXT_PUBLIC_SUPABASE_URL),
     has_service_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,

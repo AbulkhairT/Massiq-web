@@ -9,6 +9,7 @@ function BillingSuccessContent() {
 
   useEffect(() => {
     const sessionId = searchParams.get('session_id');
+    console.info('[premium:return]', { session_id: sessionId || null, redirect: 'app' });
     const target = sessionId ? `/app?checkout_success=1&session_id=${encodeURIComponent(sessionId)}` : '/app';
     router.replace(target);
   }, [router, searchParams]);
