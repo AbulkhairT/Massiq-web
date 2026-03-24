@@ -527,6 +527,11 @@ export async function ensureProfile(token, userId) {
   return getProfile(token, userId);
 }
 
+function isConflictError(err) {
+  const s = String(err?.message || '');
+  return s.includes('409') || s.toLowerCase().includes('conflict') || s.includes('duplicate key');
+}
+
 async function doUpsertPlan(token, userId, existingId, row) {
   if (existingId) {
     const rows = await supabaseFetch(`/rest/v1/plans?id=eq.${existingId}`, {
@@ -547,28 +552,83 @@ async function doUpsertPlan(token, userId, existingId, row) {
   return planRow;
 }
 
+/**
+ * Single entry point for plans writes. Respects UNIQUE(user_id): PATCH existing row or INSERT once.
+ * On 409 (race), re-fetch by user_id and PATCH.
+ */
 export async function upsertPlan(token, userId, plan) {
   const row = serializePlan(userId, plan);
+  console.info('[db:plan] upsert start', { user_id: userId, phase: row.phase, calories: row.calories, protein: row.protein });
   console.info('[sync] upsertPlan:payload', { userId, phase: row.phase, calories: row.calories, protein: row.protein });
 
-  const existing = await supabaseFetch(
-    `/rest/v1/plans?select=id&user_id=eq.${userId}&limit=1`,
-    { method: 'GET', headers: authHeaders(token) },
-  );
-  const existingId = Array.isArray(existing) && existing[0]?.id;
+  let existingId = null;
+  try {
+    const existing = await supabaseFetch(
+      `/rest/v1/plans?select=id&user_id=eq.${userId}&limit=1`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    existingId = Array.isArray(existing) && existing[0]?.id ? existing[0].id : null;
+  } catch (e) {
+    console.warn('[db:plan] existing lookup failed', { user_id: userId, error: e?.message });
+  }
+  console.info('[db:plan] upsert state', { user_id: userId, existing_plan_id: existingId || null });
+
+  const attempt = async (r) => {
+    try {
+      const planRow = await doUpsertPlan(token, userId, existingId, r);
+      console.info('[db:plan] success', {
+        user_id: userId,
+        existing_plan_id: existingId || null,
+        final_plan_id: planRow.id,
+      });
+      console.info('[sync] upsertPlan:ok', { planId: planRow.id });
+      return planRow;
+    } catch (err) {
+      if (isConflictError(err)) {
+        console.warn('[db:plan] conflict — refetch and PATCH', { user_id: userId, error: err?.message });
+        let rid = null;
+        try {
+          const again = await supabaseFetch(
+            `/rest/v1/plans?select=id&user_id=eq.${userId}&limit=1`,
+            { method: 'GET', headers: authHeaders(token) },
+          );
+          rid = Array.isArray(again) && again[0]?.id ? again[0].id : null;
+        } catch (e2) {
+          console.error('[db:plan] refetch after conflict failed', e2?.message);
+          throw err;
+        }
+        if (rid) {
+          existingId = rid;
+          const planRow = await doUpsertPlan(token, userId, existingId, r);
+          console.info('[db:plan] success after conflict', { user_id: userId, final_plan_id: planRow.id });
+          return planRow;
+        }
+      }
+      throw err;
+    }
+  };
 
   try {
-    const planRow = await doUpsertPlan(token, userId, existingId, row);
-    console.info('[db:plan] ok', { user_id: userId, plan_id: planRow.id });
-    console.info('[sync] upsertPlan:ok', { planId: planRow.id });
-    return planRow;
+    return await attempt(row);
   } catch (err) {
     if (isColumnError(err)) {
       const { start_date, week, ...base } = row;
-      const planRow = await doUpsertPlan(token, userId, existingId, base);
-      console.info('[db:plan] ok (fallback cols)', { user_id: userId, plan_id: planRow.id });
-      console.info('[sync] upsertPlan:ok (fallback, no start_date/week)', { planId: planRow.id });
-      return planRow;
+      existingId = null;
+      try {
+        const existing = await supabaseFetch(
+          `/rest/v1/plans?select=id&user_id=eq.${userId}&limit=1`,
+          { method: 'GET', headers: authHeaders(token) },
+        );
+        existingId = Array.isArray(existing) && existing[0]?.id ? existing[0].id : null;
+      } catch {}
+      try {
+        const planRow = await attempt(base);
+        console.info('[db:plan] ok (fallback cols)', { user_id: userId, plan_id: planRow.id });
+        return planRow;
+      } catch (e2) {
+        console.error('[db:plan] FAILED', { user_id: userId, error: e2?.message });
+        throw e2;
+      }
     }
     console.error('[db:plan] FAILED', { user_id: userId, error: err?.message });
     throw err;
@@ -1242,23 +1302,78 @@ export async function getSubscription(token, userId) {
 }
 
 /**
- * Fetch the user's entitlement row (free scan usage counter).
- * Returns null if the row doesn't exist yet (user has 0 scans, no row created).
- * The row is created automatically by the DB trigger on first scan insert.
+ * Fetch or lazily create the user's entitlement row. Never throws for missing table/row.
  */
-export async function getEntitlements(token, userId) {
+export async function ensureEntitlements(token, userId) {
   if (!token || !userId) return null;
+  console.info('[entitlements] ensure start', { user_id: userId });
+  let row = null;
   try {
     const rows = await supabaseFetch(
       `/rest/v1/user_entitlements?user_id=eq.${userId}&select=user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today&limit=1`,
       { method: 'GET', headers: authHeaders(token) },
     );
-    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+    row = Array.isArray(rows) && rows[0] ? rows[0] : null;
   } catch (err) {
-    // Non-fatal: table may not exist yet (migration 003 not run)
-    console.warn('[entitlements] getEntitlements failed (non-fatal):', err?.message);
-    return null;
+    console.warn('[entitlements] fetch failed', { user_id: userId, error: err?.message });
+    console.info('[entitlements] using fallback defaults', { user_id: userId });
+    return {
+      user_id: userId,
+      free_scans_used: 0,
+      free_scan_limit: 2,
+      lifetime_scan_count: 0,
+      free_food_scans_used: 0,
+      free_food_scans_used_today: 0,
+      _fallback: true,
+    };
   }
+  if (row) {
+    console.info('[entitlements] ok', { user_id: userId });
+    return row;
+  }
+  console.info('[entitlements] no row — inserting default', { user_id: userId });
+  try {
+    const ins = await supabaseFetch('/rest/v1/user_entitlements', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        user_id: userId,
+        free_scans_used: 0,
+        free_scan_limit: 2,
+        lifetime_scan_count: 0,
+      }),
+    });
+    const created = Array.isArray(ins) && ins[0] ? ins[0] : null;
+    if (created) {
+      console.info('[entitlements] created default row', { user_id: userId });
+      return created;
+    }
+  } catch (e) {
+    if (isConflictError(e)) {
+      try {
+        const rows = await supabaseFetch(
+          `/rest/v1/user_entitlements?user_id=eq.${userId}&select=user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today&limit=1`,
+          { method: 'GET', headers: authHeaders(token) },
+        );
+        const again = Array.isArray(rows) && rows[0] ? rows[0] : null;
+        if (again) return again;
+      } catch {}
+    }
+    console.warn('[entitlements] insert failed', { user_id: userId, error: e?.message });
+  }
+  console.info('[entitlements] using fallback defaults', { user_id: userId });
+  return {
+    user_id: userId,
+    free_scans_used: 0,
+    free_scan_limit: 2,
+    lifetime_scan_count: 0,
+    _fallback: true,
+  };
+}
+
+/** @deprecated use ensureEntitlements */
+export async function getEntitlements(token, userId) {
+  return ensureEntitlements(token, userId);
 }
 
 // ─── physique_projections ───────────────────────────────────────────────────
@@ -1308,6 +1423,235 @@ function serializeProjection(userId, scanId, planId, plan, scan, profile) {
     summary,
     disclaimer,
   };
+}
+
+/** True when migration 016 tables are not deployed — safe to skip personalization persistence only. */
+function isPersonalizationSchemaMissingError(err) {
+  const m = String(err?.message || err || '').toLowerCase();
+  return (
+    (m.includes('does not exist') && (m.includes('decision_engine') || m.includes('phase_history') || m.includes('muscle_priorities') || m.includes('plan_directives')))
+    || m.includes('pgrst205')
+    || (m.includes('relation') && m.includes('public.') && m.includes('does not exist'))
+  );
+}
+
+/**
+ * Latest food_logs for adherence heuristics (RLS: own rows only).
+ */
+export async function getFoodLogsRecentForAdherence(token, userId, limit = 150) {
+  if (!token || !userId) return [];
+  try {
+    const rows = await supabaseFetch(
+      `/rest/v1/food_logs?user_id=eq.${userId}&select=calories,protein_g,created_at&order=created_at.desc&limit=${limit}`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    return Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.error('[food_logs] adherence fetch failed', err?.message);
+    throw err;
+  }
+}
+
+/**
+ * Insert decision_engine_run. Returns null only if migration 016 is not applied; otherwise throws on failure.
+ */
+export async function createDecisionEngineRun(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    scan_id: payload.scanId || null,
+    plan_id: payload.planId || null,
+    engine_version: payload.engineVersion || '2.0.0',
+    input_summary: payload.inputSummary || {},
+    output_json: payload.outputJson || {},
+  };
+  console.info('[db:decision-engine-run] write start', { user_id: userId, scan_id: row.scan_id });
+  try {
+    const rows = await supabaseFetch('/rest/v1/decision_engine_runs', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!out?.id) {
+      throw new Error('[decision_engine_runs] insert returned no row id');
+    }
+    console.info('[db:decision-engine-run] ok', { id: out.id });
+    return out;
+  } catch (err) {
+    if (isPersonalizationSchemaMissingError(err)) {
+      console.warn('[db:decision-engine-run] migration 016 not applied — personalization tables skipped', err?.message);
+      return null;
+    }
+    console.error('[db:decision-engine-run] FAILED', err?.message);
+    throw new Error(`[personalization] decision_engine_runs: ${err?.message || err}`);
+  }
+}
+
+export async function createPhaseHistoryRow(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    plan_id: payload.planId || null,
+    scan_id: payload.scanId || null,
+    from_phase: payload.fromPhase ?? null,
+    to_phase: payload.toPhase,
+    reason: payload.reason || null,
+  };
+  console.info('[db:phase-history] write start', { user_id: userId, from: row.from_phase, to: row.to_phase });
+  const rows = await supabaseFetch('/rest/v1/phase_history', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(row),
+  });
+  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!out?.id) throw new Error('[phase_history] insert returned no id');
+  console.info('[db:phase-history] ok', { id: out.id });
+  return out;
+}
+
+export async function createMusclePriorityRow(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    plan_id: payload.planId || null,
+    scan_id: payload.scanId || null,
+    muscle_key: payload.muscleKey,
+    priority_tier: payload.priorityTier || 'medium',
+    rank: payload.rank ?? null,
+    notes: payload.notes || null,
+  };
+  console.info('[db:muscle-priority] write', { user_id: userId, muscle: row.muscle_key, tier: row.priority_tier });
+  const rows = await supabaseFetch('/rest/v1/muscle_priorities', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(row),
+  });
+  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!out?.id) throw new Error('[muscle_priorities] insert returned no id');
+  console.info('[db:muscle-priority] ok', { id: out.id });
+  return out;
+}
+
+export async function createPlanDirectiveRow(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    plan_id: payload.planId || null,
+    scan_id: payload.scanId || null,
+    category: payload.category || 'general',
+    directive_key: payload.directiveKey || null,
+    payload: payload.payload || {},
+  };
+  console.info('[db:plan-directive] write', { user_id: userId, category: row.category, key: row.directive_key });
+  const rows = await supabaseFetch('/rest/v1/plan_directives', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(row),
+  });
+  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!out?.id) throw new Error('[plan_directives] insert returned no id');
+  console.info('[db:plan-directive] ok', { id: out.id });
+  return out;
+}
+
+export async function createUserFeedbackEvent(token, userId, payload) {
+  const row = {
+    user_id: userId,
+    event_type: payload.eventType || 'unknown',
+    payload: payload.payload || {},
+    scan_id: payload.scanId || null,
+  };
+  try {
+    const rows = await supabaseFetch('/rest/v1/user_feedback_events', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  } catch (err) {
+    console.warn('[user_feedback_events] skip', err?.message);
+    return null;
+  }
+}
+
+/**
+ * Orchestrates decision_engine_runs, phase_history, muscle_priorities, plan_directives.
+ * Throws if any write fails after `decision_engine_runs` exists (migration applied).
+ * Returns silently if migration 016 is not deployed (first insert returns null).
+ */
+export async function persistPersonalizationArtifacts(token, userId, {
+  scanId,
+  planId,
+  previousPhase,
+  engineOutput,
+  inputSummary = {},
+}) {
+  if (!scanId || !engineOutput) return;
+  const run = await createDecisionEngineRun(token, userId, {
+    scanId,
+    planId,
+    engineVersion: engineOutput.engine_version || '2.0.0',
+    inputSummary,
+    outputJson: engineOutput,
+  });
+  if (!run) return;
+
+  const newPhase = engineOutput.phase_decision?.recommended_phase;
+  if (previousPhase != null && newPhase != null && String(previousPhase) !== String(newPhase)) {
+    await createPhaseHistoryRow(token, userId, {
+      planId,
+      scanId,
+      fromPhase: previousPhase,
+      toPhase: newPhase,
+      reason: engineOutput.phase_decision?.reason || engineOutput.phase_decision?.rationale || null,
+    });
+  }
+  const ta = engineOutput.training_adjustments || {};
+  let r = 0;
+  for (const m of ta.priority_muscles_high || []) {
+    await createMusclePriorityRow(token, userId, {
+      planId,
+      scanId,
+      muscleKey: m,
+      priorityTier: 'high',
+      rank: r++,
+      notes: (ta.exercise_emphasis || []).find((x) => String(x).includes(m)) || null,
+    });
+  }
+  r = 0;
+  for (const m of ta.priority_muscles_medium || []) {
+    await createMusclePriorityRow(token, userId, {
+      planId,
+      scanId,
+      muscleKey: m,
+      priorityTier: 'medium',
+      rank: r++,
+    });
+  }
+  const na = engineOutput.nutrition_adjustments || {};
+  await createPlanDirectiveRow(token, userId, {
+    planId,
+    scanId,
+    category: 'nutrition',
+    directiveKey: 'macro_directives',
+    payload: {
+      deficit_aggressiveness: na.deficit_aggressiveness,
+      carb_timing: na.carb_timing,
+      simplify_meals: na.simplify_meals,
+      carb_training_emphasis: na.carb_training_emphasis,
+      directives: na.directives,
+    },
+  });
+  await createPlanDirectiveRow(token, userId, {
+    planId,
+    scanId,
+    category: 'training',
+    directiveKey: 'volume_frequency',
+    payload: {
+      weekly_set_targets: ta.weekly_set_targets,
+      frequency_targets: ta.frequency_targets,
+      volume_delta_sets: ta.volume_delta_sets,
+      unilateral: ta.unilateral,
+      recovery_notes: ta.recovery_notes,
+    },
+  });
 }
 
 export async function createProjection(token, userId, scanId, planId, plan, scan, profile) {

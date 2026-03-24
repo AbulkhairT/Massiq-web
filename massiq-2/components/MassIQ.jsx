@@ -3,7 +3,9 @@ import { useState, useEffect, useRef, useMemo, Component } from "react";
 import { Icon } from './Icon';
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
-import { buildMealPlan }    from '../lib/content/meals';
+import { buildMealPlan, sumMealDayMacros, sumMealPlanTotals } from '../lib/content/meals';
+import { runScanDecisionEngine } from '../lib/engine/scanDecisionEngine';
+import { buildAdherenceContextFromFoodLogs } from '../lib/engine/adherenceFromFoodLogs';
 import {
   initializeSession,
   getStoredSession,
@@ -34,13 +36,15 @@ import {
   getLatestPlanAdjustment,
   getProgressMetrics,
   createProjection,
+  persistPersonalizationArtifacts,
+  getFoodLogsRecentForAdherence,
   uploadScanPhoto,
   createScanAsset,
   findAssetBySha256,
   findSimilarAsset,
   getScanByAssetId,
   getSubscription,
-  getEntitlements,
+  ensureEntitlements,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
@@ -745,17 +749,23 @@ async function generateMealPlan(profile, activePlan) {
   const targetCalories = m.calories || 2000;
   const targetProtein = m.protein || 150;
 
-  const computeTotals = (days) => {
-    const dayTotals = (Array.isArray(days) ? days : []).map((d) => {
-      const meals = Array.isArray(d?.meals) ? d.meals : [];
-      const calories = meals.reduce((s, meal) => s + Number(meal?.calories || 0), 0);
-      const protein = meals.reduce((s, meal) => s + Number(meal?.protein || 0), 0);
-      const carbs = meals.reduce((s, meal) => s + Number(meal?.carbs || 0), 0);
-      const fat = meals.reduce((s, meal) => s + Number(meal?.fat || 0), 0);
-      return { calories, protein, carbs, fat };
-    });
-    const sample = dayTotals[0] || { calories: 0, protein: 0, carbs: 0, fat: 0 };
-    return sample;
+  const de = activePlan?.decisionEngine;
+  const na = de?.nutrition_adjustments;
+  const directives = {
+    simplifyRepeat: Boolean(na?.simplify_meals),
+    trainingCarbEmphasis: Boolean(na?.carb_training_emphasis),
+    satietyFocus: Boolean(na?.satiety_focus),
+    deficitAggressiveness: na?.deficit_aggressiveness,
+    phaseContext: activePlan?.phase || profile.goal,
+    proteinDistributionEven: na?.protein_distribution === 'even',
+    carbTiming: na?.carb_timing === 'around_training' ? 'around_training' : 'even',
+    vegetarianProteinOptimize: Boolean(na?.vegetarian_protein_optimize),
+  };
+
+  /** First day daily totals (template uses breakfast/lunch/dinner/snack, not meals[]) */
+  const computeFirstDayTotals = (days) => {
+    const first = Array.isArray(days) && days[0] ? days[0] : null;
+    return sumMealDayMacros(first);
   };
 
   const withinTolerance = (totals) => (
@@ -763,33 +773,42 @@ async function generateMealPlan(profile, activePlan) {
     && Math.abs(Number(totals.protein || 0) - targetProtein) <= 10
   );
 
-  const rebalancePlan = (days) => {
-    const totals = computeTotals(days);
+  const rebalancePlan = (days) => (Array.isArray(days) ? days : []).map((d) => {
+    const totals = sumMealDayMacros(d);
     const calScale = totals.calories > 0 ? targetCalories / totals.calories : 1;
-    const proteinDelta = targetProtein - Number(totals.protein || 0);
-    const mealsPerDay = Math.max(1, (Array.isArray(days?.[0]?.meals) ? days[0].meals.length : 4));
-    const proteinPerMeal = proteinDelta / mealsPerDay;
+    const proteinDelta = targetProtein - totals.protein;
+    const slotCount = Array.isArray(d?.meals) && d.meals.length
+      ? d.meals.length
+      : 4;
+    const proteinPerSlot = proteinDelta / Math.max(1, slotCount);
 
-    const adjusted = (Array.isArray(days) ? days : []).map((d) => ({
+    const mapMeal = (meal) => {
+      if (!meal) return meal;
+      const baseProtein = Number(meal?.protein || 0) * calScale;
+      const protein = Math.max(0, baseProtein + proteinPerSlot);
+      const carbs = Math.max(0, Number(meal?.carbs || 0) * calScale);
+      const fat = Math.max(0, Number(meal?.fat || 0) * calScale);
+      const calories = Math.max(0, (protein * 4) + (carbs * 4) + (fat * 9));
+      return {
+        ...meal,
+        calories: Math.round(calories),
+        protein: Math.round(protein),
+        carbs: Math.round(carbs),
+        fat: Math.round(fat),
+      };
+    };
+
+    if (Array.isArray(d?.meals) && d.meals.length) {
+      return { ...d, meals: d.meals.map(mapMeal) };
+    }
+    return {
       ...d,
-      meals: (Array.isArray(d?.meals) ? d.meals : []).map((meal) => {
-        const baseCalories = Number(meal?.calories || 0) * calScale;
-        const baseProtein = Number(meal?.protein || 0) * calScale;
-        const protein = Math.max(0, baseProtein + proteinPerMeal);
-        const carbs = Math.max(0, Number(meal?.carbs || 0) * calScale);
-        const fat = Math.max(0, Number(meal?.fat || 0) * calScale);
-        const calories = Math.max(0, (protein * 4) + (carbs * 4) + (fat * 9));
-        return {
-          ...meal,
-          calories: Math.round(calories),
-          protein: Math.round(protein),
-          carbs: Math.round(carbs),
-          fat: Math.round(fat),
-        };
-      }),
-    }));
-    return adjusted;
-  };
+      breakfast: mapMeal(d.breakfast),
+      lunch: mapMeal(d.lunch),
+      dinner: mapMeal(d.dinner),
+      snack: mapMeal(d.snack),
+    };
+  });
 
   let generated = buildMealPlan(
     targetCalories,
@@ -797,8 +816,9 @@ async function generateMealPlan(profile, activePlan) {
     trainDays,
     profile.dietPrefs || [],
     profile.avoid     || [],
+    directives,
   );
-  let totals = computeTotals(generated);
+  let totals = computeFirstDayTotals(generated);
 
   // Try deterministic regeneration around target before rebalance.
   if (!withinTolerance(totals)) {
@@ -815,8 +835,9 @@ async function generateMealPlan(profile, activePlan) {
         trainDays,
         profile.dietPrefs || [],
         profile.avoid || [],
+        directives,
       );
-      const candidateTotals = computeTotals(candidate);
+      const candidateTotals = computeFirstDayTotals(candidate);
       if (withinTolerance(candidateTotals)) {
         generated = candidate;
         totals = candidateTotals;
@@ -827,7 +848,7 @@ async function generateMealPlan(profile, activePlan) {
 
   if (!withinTolerance(totals)) {
     generated = rebalancePlan(generated);
-    totals = computeTotals(generated);
+    totals = computeFirstDayTotals(generated);
   }
 
   console.info('[meal:verify] generated meal plan totals', {
@@ -891,9 +912,23 @@ async function generateMissions(profile, activePlan) {
 }
 
 async function generateWorkoutPlan(profile, activePlan) {
-  // Synchronous — no LLM call. Evidence-based split selection by training days.
+  // Synchronous — no LLM call. Evidence-based split selection by training days + scan decision.
   const trainDays = getActiveTargets(activePlan, profile)?.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  return buildWorkoutPlan(profile.goal, trainDays);
+  const de = activePlan?.decisionEngine;
+  const ta = de?.training_adjustments;
+  const goal = activePlan?.phase || de?.phase_decision?.recommended_phase || profile.goal;
+  const intel = {
+    priorityMusclesHigh: ta?.priority_muscles_high,
+    priorityMusclesMedium: ta?.priority_muscles_medium,
+    volumeDelta: typeof ta?.volume_delta_sets === 'number' ? ta.volume_delta_sets : undefined,
+    cardioDelta: typeof ta?.cardio_delta === 'number' ? ta.cardio_delta : undefined,
+    trainingEmphasis: ta?.unilateral ? 'correction' : undefined,
+    symmetryActions: ta?.unilateral ? [{ area: 'Balance', action: 'Add unilateral accessories for lagging or asymmetric sides.' }] : undefined,
+    recoveryNotes: typeof ta?.recovery_notes === 'string' ? ta.recovery_notes : undefined,
+    movePriorityEarlyInWeek: Boolean(ta?.move_priority_muscles_early_in_week),
+    weeklySetBonusMap: ta?.weekly_set_targets && typeof ta.weekly_set_targets === 'object' ? ta.weekly_set_targets : undefined,
+  };
+  return buildWorkoutPlan(goal, trainDays, intel);
 }
 
 async function generateRecipeDetails(meal, profile) {
@@ -5696,7 +5731,7 @@ Return ONLY this JSON (no markdown, no extra text):
     // Use result.dailyTargets which already has protein from calcTargets (set in runScan)
     const baseTargets = clampMacros(result.dailyTargets || calcMacros(profile), profile);
     const isLowConfidence = (result.confidence || '').toLowerCase() === 'low';
-    const m = isLowConfidence
+    let m = isLowConfidence
       ? clampMacros({
           ...baseTargets,
           calories: Math.round((previousPlanTargets.calories * 0.7) + (baseTargets.calories * 0.3)),
@@ -5711,14 +5746,81 @@ Return ONLY this JSON (no markdown, no extra text):
     const isFirstScan     = existingHistory.length === 0;
     const existingPlan    = LS.get(LS_KEYS.activePlan, null);
     const prevScanForAdaptation = getLastValidScan(existingHistory);
+    // startDate is set once on first scan and kept — there is no "new 10-week block" reset.
+    // `week` is a rolling 1–12 index for UI only; phase/macros come from runScanDecisionEngine + scans, not from week rollover.
     const startDate = isFirstScan ? today : (existingPlan?.startDate || today);
     const week = existingPlan?.startDate
       ? Math.min(12, Math.max(1, Math.floor(daysBetween(existingPlan.startDate, today) / 7) + 1))
       : 1;
 
+    let adherenceContext = null;
+    const sessApply = getStoredSession();
+    if (sessApply?.access_token && sessApply?.user?.id) {
+      try {
+        const foodRows = await getFoodLogsRecentForAdherence(sessApply.access_token, sessApply.user.id);
+        adherenceContext = buildAdherenceContextFromFoodLogs(foodRows, { scanHistory: existingHistory });
+        console.info('[adherence] context for engine', {
+          skipped_meals_est: adherenceContext.skipped_meals_per_week_estimate,
+          weekend_slip: adherenceContext.weekend_slip_score,
+          logs_7d_sample: foodRows.filter((r) => {
+            const t = new Date(r.created_at).getTime();
+            return Number.isFinite(t) && Date.now() - t <= 7 * 86400000;
+          }).length,
+        });
+      } catch (adhErr) {
+        console.error('[adherence] food_logs unavailable — engine runs without meal adherence signals', adhErr?.message);
+      }
+    }
+
+    const targetBF = eng?.target_bf ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct);
+    const startBFEng = eng?.start_bf ?? result.bodyFatPct;
+    const currentPlanForEngine = {
+      phase: existingPlan?.phase || profile.goal,
+      targetBF,
+      startBF: startBFEng,
+      dailyTargets: existingPlan?.dailyTargets || m,
+      engineTrajectory: existingPlan?.engineTrajectory || eng?.trajectory || null,
+    };
+
+    const adaptationInput = { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' };
+    console.info('[scan:adapt] adaptation input', { newScan: adaptationInput, prevScan: prevScanForAdaptation ? { date: prevScanForAdaptation.date, bodyFat: getBF(prevScanForAdaptation), leanMass: prevScanForAdaptation.leanMass, scanStatus: prevScanForAdaptation.scanStatus || 'complete' } : null, planCtx: { phase: currentPlanForEngine.phase, week, startDate } });
+
+    const engineDecision = runScanDecisionEngine({
+      profile,
+      latestScan: {
+        date: today,
+        bodyFatPct: result.bodyFatPct,
+        bodyFat: result.bodyFatPct,
+        leanMass: result.leanMass,
+        physiqueScore: result.physiqueScore,
+        symmetryScore: result.symmetryScore,
+        confidence: result.confidence || 'medium',
+        weakestGroups: result.weakestGroups,
+        muscleGroups: result.muscleGroups,
+      },
+      previousScan: prevScanForAdaptation,
+      currentPlan: currentPlanForEngine,
+      scanResult: result,
+      adherenceContext,
+    });
+
+    const adaptation = engineDecision.adaptation_legacy;
+    const adj = adaptation.adjustment || {};
+    const na = engineDecision.nutrition_adjustments || {};
+    m = clampMacros({
+      ...m,
+      calories: m.calories + (adj.calories_delta ?? na.calories_delta ?? 0),
+      protein: m.protein + (adj.protein_delta_g ?? na.protein_delta_g ?? 0),
+      carbs: m.carbs + (na.carbs_delta_g ?? 0),
+      fat: m.fat + (adj.fat_delta_g ?? 0),
+    }, profile);
+
+    const recommendedPhase = engineDecision.phase_decision?.recommended_phase || profile.goal;
+    console.info('[scan:adapt] adaptation output', adaptation);
+
     const plan = {
-      phase:          profile.goal,
-      phaseName:      `${profile.goal} Phase`,
+      phase:          recommendedPhase,
+      phaseName:      `${recommendedPhase} Phase`,
       objective:      eng?.diagnosis?.primary?.recommended_action || '',
       week,
       startDate,
@@ -5731,32 +5833,25 @@ Return ONLY this JSON (no markdown, no extra text):
       steps:          m.steps               || 9000,
       bodyFat:        result.bodyFatPct,
       leanMass:       result.leanMass,
-      startBF:        eng?.start_bf         ?? result.bodyFatPct,
-      targetBF:       eng?.target_bf        ?? (profile.goal === 'Cut' ? result.bodyFatPct - 4 : result.bodyFatPct),
+      startBF:        startBFEng,
+      targetBF,
       weeklyMissions: result.weeklyMissions  || [],
       whyThisWorks:   result.whyThisWorks    || '',
       cardioDays:     m.cardioDays           || 2,
       engineDiagnosis: eng?.diagnosis        || null,
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
+      decisionEngine: engineDecision,
+      decisionExplanation: engineDecision.human_explanation || '',
     };
     console.log('[plan:apply] plan built (current plan before apply)', { week, startDate, phase: plan.phase, start_date: startDate, computed_week: week });
-
-    // Compute dynamic adaptation decision (compare new scan vs prior)
-    const adaptationInput = { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' };
-    const adaptation = computeAdaptation(
-      adaptationInput,
-      prevScanForAdaptation,
-      plan,
-    );
-    // [scan:adapt] verification logs — remove after verifying
-    console.info('[scan:adapt] adaptation input', { newScan: adaptationInput, prevScan: prevScanForAdaptation ? { date: prevScanForAdaptation.date, bodyFat: getBF(prevScanForAdaptation), leanMass: prevScanForAdaptation.leanMass, scanStatus: prevScanForAdaptation.scanStatus || 'complete' } : null, plan: { phase: plan.phase, week: plan.week, startDate: plan.startDate } });
-    console.info('[scan:adapt] adaptation output', adaptation);
 
     // Build scan_context: adaptation + scoring breakdown + image hash + premium analysis
     const scanContext = {
       adaptation:       { decision: adaptation.decision, rationale: adaptation.rationale, adjustment: adaptation.adjustment || null },
       comparison:       adaptation.comparison || null,
+      adherence_context: adherenceContext,
+      decision_engine:  engineDecision,
       scoring_breakdown: result.scoringBreakdown || null,
       scoring_version:  result.scoringVersion   || null,
       ffmi:             result.ffmi             || null,
@@ -5780,7 +5875,7 @@ Return ONLY this JSON (no markdown, no extra text):
       leanMass: result.leanMass,
       physiqueScore: result.physiqueScore,
       symmetryScore: result.symmetryScore,
-      phase: profile.goal,
+      phase: recommendedPhase,
       confidence: result.confidence || 'medium',
       // Keep only weak group names — not full muscleGroups object (saves storage)
       weakestGroups: result.weakestGroups || (result.priorityAreas || []).slice(0, 3),
@@ -5808,6 +5903,9 @@ Return ONLY this JSON (no markdown, no extra text):
       adaptationDecision:  adaptation.decision,
       adaptationRationale: adaptation.rationale,
       scanComparison:      adaptation.comparison || null,
+      decisionEngine:      engineDecision,
+      decisionExplanation: engineDecision.human_explanation || '',
+      adherenceContextSnapshot: adherenceContext,
     };
     // Save plan + stats to LS immediately (safe to be optimistic)
     LS.set(LS_KEYS.activePlan, plan);
@@ -5839,7 +5937,7 @@ Return ONLY this JSON (no markdown, no extra text):
     }
 
     // Regenerate meal plan + workout plan with scan data in background
-    generateMealPlan(profile, plan, result)
+    generateMealPlan(profile, plan)
       .then(async (days) => {
         LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days });
         if (onPersistProgramArtifacts) {
@@ -7252,7 +7350,7 @@ export default function MassIQ() {
 
         // Load entitlements (non-fatal — null means no scans yet, free limit applies)
         try {
-          const ent = await getEntitlements(session.access_token, userId);
+          const ent = await ensureEntitlements(session.access_token, userId);
           if (mounted) {
             setEntitlements(ent);
             if (ent != null && ent.free_food_scans_date) {
@@ -7470,7 +7568,7 @@ export default function MassIQ() {
               if (!cancelled) {
                 setSubscription(sub);
                 try {
-                  const ent = await getEntitlements(session.access_token, userId);
+                  const ent = await ensureEntitlements(session.access_token, userId);
                   if (!cancelled) {
                     setEntitlements(ent);
                     if (ent != null && ent.free_food_scans_date) {
@@ -7719,6 +7817,8 @@ export default function MassIQ() {
               confidence: savedScanEntry.confidence || null,
               limiting_factor: savedScanEntry.limitingFactor || null,
               scan_context_adaptation: savedScanEntry.scanContext?.adaptation || null,
+              decision_engine: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
+              human_explanation: savedScanEntry.decisionExplanation || null,
             },
           });
         } catch (sdErr) {
@@ -7734,12 +7834,28 @@ export default function MassIQ() {
               type: savedScanEntry.adaptationDecision || 'keep_plan',
               comparison: savedScanEntry.scanComparison || null,
               limiting_factor: savedScanEntry.limitingFactor || null,
+              decision_engine: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
             },
             confidence: savedScanEntry.confidence || null,
-            explanation: savedScanEntry.adaptationRationale || null,
+            explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
           });
         } catch (dlErr) {
           console.error('[decision:log] sub-step FAILED', { user_id: userId, error: dlErr?.message, raw: String(dlErr) });
+        }
+
+        try {
+          await persistPersonalizationArtifacts(token, userId, {
+            scanId: savedScanEntry.dbId,
+            planId: planId || null,
+            previousPhase: previousPlan?.phase ?? null,
+            engineOutput: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
+            inputSummary: {
+              adherence: savedScanEntry.adherenceContextSnapshot || null,
+            },
+          });
+        } catch (peErr) {
+          console.error('[personalization] persistPersonalizationArtifacts FAILED', peErr?.message, peErr);
+          setToast('Scan saved, but personalization metadata failed to sync. Check migration 016, RLS, and connection.');
         }
 
         try {
@@ -7769,7 +7885,7 @@ export default function MassIQ() {
                 oldValue: oldSnap,
                 newValue: newSnap,
                 triggerReason: savedScanEntry.adaptationDecision || 'scan_update',
-                explanation: savedScanEntry.adaptationRationale || null,
+                explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
               });
             } catch (paErr) {
               console.error('[plan:adjustment] sub-step FAILED', { user_id: userId, error: paErr?.message, raw: String(paErr) });
@@ -7825,14 +7941,30 @@ export default function MassIQ() {
     }
 
     if (Array.isArray(mealDays)) {
-      const totals = mealDays.reduce((acc, day) => {
-        const meals = Array.isArray(day?.meals) ? day.meals : [];
-        const cals = meals.reduce((s, m) => s + Number(m?.calories || 0), 0);
-        const p = meals.reduce((s, m) => s + Number(m?.protein || 0), 0);
-        const cb = meals.reduce((s, m) => s + Number(m?.carbs || 0), 0);
-        const f = meals.reduce((s, m) => s + Number(m?.fat || 0), 0);
-        return { calories: acc.calories + cals, protein: acc.protein + p, carbs: acc.carbs + cb, fat: acc.fat + f };
-      }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+      console.info('[db:meal-plan] save start', { user_id: userId, plan_id: planId });
+      const totals = sumMealPlanTotals(mealDays);
+      console.info('[db:meal-plan] computed totals', {
+        total_calories: totals.calories,
+        total_protein_g: totals.protein,
+        total_carbs_g: totals.carbs,
+        total_fat_g: totals.fat,
+        days: mealDays.length,
+      });
+      if (
+        totals.calories === 0
+        && totals.protein === 0
+        && totals.carbs === 0
+        && totals.fat === 0
+      ) {
+        const sample = mealDays[0];
+        const hasSlots = sample && (sample.breakfast || sample.lunch || sample.dinner || sample.snack);
+        const hasMealsArr = sample && Array.isArray(sample.meals) && sample.meals.length > 0;
+        console.warn('[db:meal-plan] computed totals are zero — no macros on meal rows', {
+          has_slots: Boolean(hasSlots),
+          has_meals_array: Boolean(hasMealsArr),
+          day_keys: sample ? Object.keys(sample) : [],
+        });
+      }
       try {
         await upsertMealPlan(session.access_token, userId, {
           planId,
@@ -7846,6 +7978,7 @@ export default function MassIQ() {
           meals: mealDays,
           totals,
         });
+        console.info('[db:meal-plan] save success', { user_id: userId, plan_id: planId });
       } catch (e) {
         console.error('[db:meal-plan] persistProgramArtifacts FAILED', { user_id: userId, plan_id: planId, error: e?.message });
         setToast('Meal plan could not be saved to your account.');
@@ -7854,6 +7987,7 @@ export default function MassIQ() {
     }
 
     if (Array.isArray(workoutDays)) {
+      console.info('[db:workout] save start', { user_id: userId, plan_id: planId });
       try {
         await upsertWorkoutProgram(session.access_token, userId, {
           planId,
@@ -7862,6 +7996,7 @@ export default function MassIQ() {
           structure: { days: workoutDays },
           progressionRules: { phase: nextPlan?.phase || null, week: nextPlan?.week || null },
         });
+        console.info('[db:workout] save success', { user_id: userId, plan_id: planId });
       } catch (e) {
         console.error('[db:workout] persistProgramArtifacts FAILED', { user_id: userId, plan_id: planId, error: e?.message });
         setToast('Workout program could not be saved to your account.');
@@ -8095,7 +8230,7 @@ export default function MassIQ() {
     }
     if (session?.user?.id) {
       try {
-        const ent = await getEntitlements(session.access_token, session.user.id);
+        const ent = await ensureEntitlements(session.access_token, session.user.id);
         setEntitlements(ent);
       } catch {}
     }

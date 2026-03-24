@@ -41,6 +41,15 @@ export interface WorkoutIntelligence {
   cardioDelta?: number
   volumeDelta?: number
   symmetryActions?: SymmetryAction[]
+  /** Up to 2 — extra set volume on matching movement patterns */
+  priorityMusclesHigh?: string[]
+  priorityMusclesMedium?: string[]
+  /** Prepended to first training day warmup */
+  recoveryNotes?: string
+  /** Prioritize first Mon–Tue slot for priority muscles (label hint) */
+  movePriorityEarlyInWeek?: boolean
+  /** Optional extra sets from engine weekly_set_targets (muscle key → bonus) */
+  weeklySetBonusMap?: Record<string, number>
 }
 
 /* ─── Exercise library ───────────────────────────────────────────────────── */
@@ -314,18 +323,47 @@ function pplx2Split(goal: string): WorkoutDay[] {
  * @param trainDays  Number of training days per week (3–6)
  * @returns       Array of 7 WorkoutDay objects (Monday–Sunday)
  */
+function exerciseMatchesMuscleGroup(exName: string, muscle: string): boolean {
+  const n = exName.toLowerCase()
+  const m = muscle.toLowerCase()
+  if (m === 'chest') return n.includes('bench') || n.includes('chest') || n.includes('fly') || n.includes('push-up') || n.includes('push up')
+  if (m === 'back') return n.includes('pull') || n.includes('row') || n.includes('lat') || n.includes('deadlift')
+  if (m === 'shoulders') return n.includes('press') && n.includes('overhead') || n.includes('lateral') || n.includes('delt') || n.includes('rear')
+  if (m === 'arms') return n.includes('curl') || n.includes('tricep') || n.includes('skull') || n.includes('hammer')
+  if (m === 'legs') return n.includes('squat') || n.includes('leg') || n.includes('lunge') || n.includes('rdl') || n.includes('calf')
+  if (m === 'core') return n.includes('plank') || n.includes('crunch') || n.includes('twist') || n.includes('raise')
+  return false
+}
+
 function adaptWorkoutPlan(days: WorkoutDay[], intel?: WorkoutIntelligence): WorkoutDay[] {
   if (!intel) return days
   const volumeDelta = intel.volumeDelta ?? 0
   const cardioDelta = intel.cardioDelta ?? 0
   const symmetryActions = intel.symmetryActions || []
   const unilateralHint = symmetryActions[0]
+  const priHigh = intel.priorityMusclesHigh || []
+  const priMed = intel.priorityMusclesMedium || []
+  const bonusMap = intel.weeklySetBonusMap || {}
+  let firstTraining = true
 
   return days.map((d) => {
     if (!d.isTrainingDay) return d
     const adaptedExercises = (d.exercises || []).map((ex, idx) => {
       if (idx > 3) return ex
-      const newSets = Math.max(2, Math.min(6, (ex.sets || 3) + volumeDelta))
+      let extra = 0
+      for (const mus of priHigh) {
+        if (exerciseMatchesMuscleGroup(ex.name, mus)) extra = Math.max(extra, 1)
+      }
+      for (const mus of priMed) {
+        if (exerciseMatchesMuscleGroup(ex.name, mus)) extra = Math.max(extra, 0)
+      }
+      let mapBonus = 0
+      for (const mus of priHigh) {
+        if (exerciseMatchesMuscleGroup(ex.name, mus) && bonusMap[mus] != null) {
+          mapBonus = Math.max(mapBonus, Math.min(2, Math.round((bonusMap[mus] || 0) / 6)))
+        }
+      }
+      const newSets = Math.max(2, Math.min(6, (ex.sets || 3) + volumeDelta + extra + mapBonus))
       const lowerStress = intel.recoveryRisk || intel.trainingEmphasis === 'recovery'
       return {
         ...ex,
@@ -345,6 +383,14 @@ function adaptWorkoutPlan(days: WorkoutDay[], intel?: WorkoutIntelligence): Work
       })
     }
 
+    let warmup = d.warmup
+    if (intel.recoveryNotes && firstTraining) {
+      warmup = `${intel.recoveryNotes} ${d.warmup || ''}`.trim()
+      firstTraining = false
+    } else if (intel.movePriorityEarlyInWeek && priHigh.length && /push|chest|shoulder/i.test(d.workoutType || '')) {
+      warmup = `Priority muscle focus — ${priHigh[0]} first. ${d.warmup || ''}`.trim()
+    }
+
     let cardio = d.cardio
     if (typeof cardio === 'string' && cardioDelta !== 0) {
       cardio = cardioDelta > 0
@@ -352,7 +398,7 @@ function adaptWorkoutPlan(days: WorkoutDay[], intel?: WorkoutIntelligence): Work
         : `${cardio}. Keep cardio conservative this week to protect recovery.`
     }
 
-    return { ...d, exercises: adaptedExercises, cardio }
+    return { ...d, exercises: adaptedExercises, cardio, warmup }
   })
 }
 

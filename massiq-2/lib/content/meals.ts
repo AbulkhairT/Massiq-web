@@ -37,6 +37,61 @@ export interface MealDay {
   snack:         Meal
 }
 
+/** Sum macros from a single meal object */
+export function sumMealMacros(meal: Partial<Meal> | null | undefined): { calories: number; protein: number; carbs: number; fat: number } {
+  if (!meal) return { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  return {
+    calories: Number(meal.calories ?? 0) || 0,
+    protein:  Number(meal.protein ?? 0) || 0,
+    carbs:    Number(meal.carbs ?? 0) || 0,
+    fat:      Number(meal.fat ?? 0) || 0,
+  }
+}
+
+/** One day: either `meals[]` or breakfast/lunch/dinner/snack slots (MassIQ template shape) */
+export function sumMealDayMacros(day: any): { calories: number; protein: number; carbs: number; fat: number } {
+  if (!day) return { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  if (Array.isArray(day.meals) && day.meals.length > 0) {
+    return day.meals.reduce(
+      (acc: { calories: number; protein: number; carbs: number; fat: number }, m: any) => {
+        const s = sumMealMacros(m)
+        return {
+          calories: acc.calories + s.calories,
+          protein: acc.protein + s.protein,
+          carbs: acc.carbs + s.carbs,
+          fat: acc.fat + s.fat,
+        }
+      },
+      { calories: 0, protein: 0, carbs: 0, fat: 0 },
+    )
+  }
+  const b = sumMealMacros(day.breakfast)
+  const l = sumMealMacros(day.lunch)
+  const d = sumMealMacros(day.dinner)
+  const s = sumMealMacros(day.snack)
+  return {
+    calories: b.calories + l.calories + d.calories + s.calories,
+    protein: b.protein + l.protein + d.protein + s.protein,
+    carbs: b.carbs + l.carbs + d.carbs + s.carbs,
+    fat: b.fat + l.fat + d.fat + s.fat,
+  }
+}
+
+/** Full week: sum all days (weekly totals for persistence) */
+export function sumMealPlanTotals(days: any[]): { calories: number; protein: number; carbs: number; fat: number } {
+  const init = { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  if (!Array.isArray(days)) return init
+  return days.reduce((acc, day) => {
+    const m = sumMealDayMacros(day)
+    return {
+      calories: acc.calories + m.calories,
+      protein: acc.protein + m.protein,
+      carbs: acc.carbs + m.carbs,
+      fat: acc.fat + m.fat,
+    }
+  }, init)
+}
+
 /* ─── Meal database ──────────────────────────────────────────────────────── */
 
 const MEALS: Meal[] = [
@@ -407,12 +462,32 @@ function pickUnique<T>(pool: T[], count: number): T[] {
  * @param avoid           Foods to avoid
  * @returns Array of 7 MealDay objects
  */
+export interface MealPlanDirectives {
+  /** Repeat the same curated meals across the week for adherence */
+  simplifyRepeat?: boolean
+  /** Extra carbs on training days (stacked on existing train/rest split) */
+  trainingCarbEmphasis?: boolean
+  /** Shift calories to lunch/dinner for fullness */
+  satietyFocus?: boolean
+  /** Engine: mild = smaller train/rest swing */
+  deficitAggressiveness?: 'mild' | 'moderate' | 'aggressive'
+  /** Cut / Bulk / Recomp — biases template picks */
+  phaseContext?: string
+  /** Prefer evenly distributed protein */
+  proteinDistributionEven?: boolean
+  /** Emphasize carbs around training (alias path) */
+  carbTiming?: 'around_training' | 'even'
+  /** Extra diligence on plant protein templates */
+  vegetarianProteinOptimize?: boolean
+}
+
 export function buildMealPlan(
   targetCalories: number,
   targetProtein: number,
   trainDays: number = 4,
   dietPrefs: string[] = [],
   avoid: string[] = [],
+  directives?: MealPlanDirectives,
 ): MealDay[] {
   // Sensible per-meal distribution: 25 / 30 / 30 / 15
   // Flat split regardless of training vs rest — avoids disproportionate single meals
@@ -430,6 +505,9 @@ export function buildMealPlan(
 
   const trainingPattern = TRAINING_PATTERN[Math.max(3, Math.min(6, trainDays))] || TRAINING_PATTERN[4]
 
+  const trainRestBoost = directives?.deficitAggressiveness === 'mild' ? 1.015 : 1.03
+  const trainRestCut = directives?.deficitAggressiveness === 'mild' ? 0.985 : 0.97
+
   const breakfasts = filterMeals(MEALS.filter(m => m.mealType === 'breakfast'), dietPrefs, avoid)
   const lunches    = filterMeals(MEALS.filter(m => m.mealType === 'lunch'),    dietPrefs, avoid)
   const dinners    = filterMeals(MEALS.filter(m => m.mealType === 'dinner'),   dietPrefs, avoid)
@@ -446,19 +524,29 @@ export function buildMealPlan(
   const dnPick = pickUnique(dn, 7)
   const snPick = pickUnique(sn, 7)
 
+  const distUse = directives?.satietyFocus
+    ? { breakfast: 0.22, lunch: 0.34, dinner: 0.34, snack: 0.10 }
+    : dist
+
   return DAYS.map((day, i) => {
     const isTrain = trainingPattern[i]
-    // Training days get a modest +3% bonus, rest days −3%
-    const dayCals = Math.round(targetCalories * (isTrain ? 1.03 : 0.97))
+    const idx = directives?.simplifyRepeat ? 0 : i
+    const carbBoost =
+      (directives?.trainingCarbEmphasis || directives?.carbTiming === 'around_training') && isTrain
+        ? 1.02
+        : 1
+    const dayCals = Math.round(
+      targetCalories * (isTrain ? trainRestBoost : trainRestCut) * carbBoost,
+    )
 
     // Scale each meal to its target, then cap at the per-meal limit
     const clamp = (meal: Meal, target: number, cap: number) =>
       scaleMeal(meal, Math.min(target, cap))
 
-    let breakfast = clamp(bfPick[i], Math.round(dayCals * dist.breakfast), CAPS.breakfast)
-    let lunch     = clamp(lnPick[i], Math.round(dayCals * dist.lunch),     CAPS.lunch)
-    let dinner    = clamp(dnPick[i], Math.round(dayCals * dist.dinner),    CAPS.dinner)
-    let snack     = clamp(snPick[i], Math.round(dayCals * dist.snack),     CAPS.snack)
+    let breakfast = clamp(bfPick[idx], Math.round(dayCals * distUse.breakfast), CAPS.breakfast)
+    let lunch     = clamp(lnPick[idx], Math.round(dayCals * distUse.lunch),     CAPS.lunch)
+    let dinner    = clamp(dnPick[idx], Math.round(dayCals * distUse.dinner),    CAPS.dinner)
+    let snack     = clamp(snPick[idx], Math.round(dayCals * distUse.snack),     CAPS.snack)
 
     // Cap daily protein to within 8% of target — scaleMeal scales protein with calories,
     // which can overshoot if templates are protein-dense (e.g. 60g / 600 kcal).
