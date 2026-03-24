@@ -5488,6 +5488,7 @@ Return ONLY this JSON (no markdown, no extra text):
         perceptualHash:  pHash,
         assetId:         resolvedAssetId,
       };
+      console.log('[plan:state] scan result set', { bodyFat: data?.bodyFatPct, leanMass: data?.leanMass });
       setResult(data);
     } catch (err) {
       setError(err.message || 'Scan failed. Please try again.');
@@ -5496,7 +5497,11 @@ Return ONLY this JSON (no markdown, no extra text):
   };
 
   const applyPlan = async () => {
-    if (!result) return;
+    console.log('[plan:apply] clicked', { hasResult: !!result, hasProfile: !!profile });
+    if (!result) {
+      console.error('[plan:apply] no result found — cannot build plan');
+      return;
+    }
     const today  = new Date().toISOString().slice(0, 10);
     const eng    = result.engineOutput;          // engine output attached by runScan
     const previousPlanTargets = getActiveTargets(LS.get(LS_KEYS.activePlan, null), profile);
@@ -5512,6 +5517,16 @@ Return ONLY this JSON (no markdown, no extra text):
           fat: Math.round((previousPlanTargets.fat * 0.7) + (baseTargets.fat * 0.3)),
         }, profile)
       : baseTargets;
+
+    // Compute week/startDate BEFORE building plan (was causing ReferenceError — used before declared)
+    const existingHistory = LS.get(LS_KEYS.scanHistory, []);
+    const isFirstScan     = existingHistory.length === 0;
+    const existingPlan    = LS.get(LS_KEYS.activePlan, null);
+    const prevScanForAdaptation = existingHistory[existingHistory.length - 1] || null;
+    const startDate = isFirstScan ? today : (existingPlan?.startDate || today);
+    const week = existingPlan?.startDate
+      ? Math.min(12, Math.max(1, Math.floor(daysBetween(existingPlan.startDate, today) / 7) + 1))
+      : 1;
 
     const plan = {
       phase:          profile.goal,
@@ -5537,16 +5552,7 @@ Return ONLY this JSON (no markdown, no extra text):
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
     };
-    const existingHistory = LS.get(LS_KEYS.scanHistory, []);
-    const isFirstScan     = existingHistory.length === 0;
-    const existingPlan    = LS.get(LS_KEYS.activePlan, null);
-    const prevScanForAdaptation = existingHistory[existingHistory.length - 1] || null;
-
-    // Rolling plan: preserve startDate from existing plan; only reset for first scan
-    const startDate = isFirstScan ? today : (existingPlan?.startDate || today);
-    const week = existingPlan?.startDate
-      ? Math.min(12, Math.max(1, Math.floor(daysBetween(existingPlan.startDate, today) / 7) + 1))
-      : 1;
+    console.log('[plan:apply] plan built', { week, startDate, phase: plan.phase });
 
     // Compute dynamic adaptation decision (compare new scan vs prior)
     const adaptation = computeAdaptation(
@@ -5620,13 +5626,13 @@ Return ONLY this JSON (no markdown, no extra text):
     setApplying(true);
     setError('');
     try {
-      console.info('[scan] applyPlan: awaiting DB persistence before updating scan history');
+      console.info('[plan:apply] awaiting DB persistence');
       await onPlanApplied(plan, entry);
       // DB confirmed — now read the freshly-stamped history back from LS
       setScanHistory(LS.get(LS_KEYS.scanHistory, []));
-      console.info('[scan] applyPlan: scan persisted, history updated');
+      console.log('[plan:apply] success — plan and scan persisted to DB');
     } catch (persistErr) {
-      console.error('[scan] applyPlan: DB persist failed', persistErr?.message, persistErr);
+      console.error('[plan:apply] DB persist failed', persistErr?.message, persistErr);
       const msg = String(persistErr?.message || '');
       const userMsg = msg.includes('401') || msg.includes('Missing Authorization')
         ? 'Session expired. Please sign in again and try again.'
@@ -5636,8 +5642,9 @@ Return ONLY this JSON (no markdown, no extra text):
       setError(userMsg);
       setApplying(false);
       return; // Stay on scan tab so user can retry
+    } finally {
+      setApplying(false);
     }
-    setApplying(false);
 
     // Regenerate meal plan + workout plan with scan data in background
     generateMealPlan(profile, plan, result)
@@ -6166,7 +6173,12 @@ Return ONLY this JSON (no markdown, no extra text):
         )}
 
         {/* 10 – Apply This Plan → */}
-        <Btn onClick={applyPlan} disabled={applying} style={{ width: '100%', marginTop: 4 }}>
+        <Btn
+          type="button"
+          onClick={applyPlan}
+          disabled={applying}
+          style={{ width: '100%', marginTop: 4, position: 'relative', zIndex: 1 }}
+        >
           {applying ? 'Saving to account…' : 'Apply This Plan →'}
         </Btn>
         <Card className="su" style={{ animationDelay: '.11s' }}>
