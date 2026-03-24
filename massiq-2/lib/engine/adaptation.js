@@ -51,9 +51,11 @@ export function computeAdaptation(newScan, prevScan, plan) {
     };
   }
 
+  const prevBF     = prevScan.bodyFat ?? prevScan.bodyFatPct;
+  const newBF      = newScan.bodyFat  ?? newScan.bodyFatPct;
   const days       = daysBetween(prevScan.date, newScan.date);
   const weeks      = Math.max(0.1, days / 7);
-  const bfDelta    = Number(newScan.bodyFat)     - Number(prevScan.bodyFat);
+  const bfDelta    = Number(newBF)    - Number(prevBF);
   const lmDelta    = Number(newScan.leanMass)    - Number(prevScan.leanMass);
   const scoreDelta = (newScan.physiqueScore  || 0) - (prevScan.physiqueScore  || 0);
   const symDelta   = (newScan.symmetryScore  || 0) - (prevScan.symmetryScore  || 0);

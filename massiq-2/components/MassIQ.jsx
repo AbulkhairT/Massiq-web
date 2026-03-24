@@ -18,6 +18,20 @@ import {
   getPlan,
   createScan,
   getScans,
+  upsertMealPlan,
+  getLatestMealPlan,
+  upsertWorkoutProgram,
+  getLatestWorkoutProgram,
+  createScanComparison,
+  createScanDecision,
+  createDecisionLog,
+  createPlanAdjustment,
+  createProgressMetric,
+  getScanComparisons,
+  getScanDecisions,
+  getDecisionLogs,
+  getLatestPlanAdjustment,
+  getProgressMetrics,
   createProjection,
   uploadScanPhoto,
   createScanAsset,
@@ -693,13 +707,103 @@ async function generateMealPlan(profile, activePlan) {
   // Synchronous — no LLM call. Template database with macro-matching.
   const m          = getActiveTargets(activePlan, profile);
   const trainDays  = m.trainingDaysPerWeek || activePlan?.trainDays || 4;
-  return buildMealPlan(
-    m.calories || 2000,
-    m.protein  || 150,
+  const targetCalories = m.calories || 2000;
+  const targetProtein = m.protein || 150;
+
+  const computeTotals = (days) => {
+    const dayTotals = (Array.isArray(days) ? days : []).map((d) => {
+      const meals = Array.isArray(d?.meals) ? d.meals : [];
+      const calories = meals.reduce((s, meal) => s + Number(meal?.calories || 0), 0);
+      const protein = meals.reduce((s, meal) => s + Number(meal?.protein || 0), 0);
+      const carbs = meals.reduce((s, meal) => s + Number(meal?.carbs || 0), 0);
+      const fat = meals.reduce((s, meal) => s + Number(meal?.fat || 0), 0);
+      return { calories, protein, carbs, fat };
+    });
+    const sample = dayTotals[0] || { calories: 0, protein: 0, carbs: 0, fat: 0 };
+    return sample;
+  };
+
+  const withinTolerance = (totals) => (
+    Math.abs(Number(totals.calories || 0) - targetCalories) <= 75
+    && Math.abs(Number(totals.protein || 0) - targetProtein) <= 10
+  );
+
+  const rebalancePlan = (days) => {
+    const totals = computeTotals(days);
+    const calScale = totals.calories > 0 ? targetCalories / totals.calories : 1;
+    const proteinDelta = targetProtein - Number(totals.protein || 0);
+    const mealsPerDay = Math.max(1, (Array.isArray(days?.[0]?.meals) ? days[0].meals.length : 4));
+    const proteinPerMeal = proteinDelta / mealsPerDay;
+
+    const adjusted = (Array.isArray(days) ? days : []).map((d) => ({
+      ...d,
+      meals: (Array.isArray(d?.meals) ? d.meals : []).map((meal) => {
+        const baseCalories = Number(meal?.calories || 0) * calScale;
+        const baseProtein = Number(meal?.protein || 0) * calScale;
+        const protein = Math.max(0, baseProtein + proteinPerMeal);
+        const carbs = Math.max(0, Number(meal?.carbs || 0) * calScale);
+        const fat = Math.max(0, Number(meal?.fat || 0) * calScale);
+        const calories = Math.max(0, (protein * 4) + (carbs * 4) + (fat * 9));
+        return {
+          ...meal,
+          calories: Math.round(calories),
+          protein: Math.round(protein),
+          carbs: Math.round(carbs),
+          fat: Math.round(fat),
+        };
+      }),
+    }));
+    return adjusted;
+  };
+
+  let generated = buildMealPlan(
+    targetCalories,
+    targetProtein,
     trainDays,
     profile.dietPrefs || [],
     profile.avoid     || [],
   );
+  let totals = computeTotals(generated);
+
+  // Try deterministic regeneration around target before rebalance.
+  if (!withinTolerance(totals)) {
+    const targets = [
+      { c: targetCalories + 50, p: targetProtein },
+      { c: targetCalories - 50, p: targetProtein },
+      { c: targetCalories, p: targetProtein + 8 },
+      { c: targetCalories, p: targetProtein - 8 },
+    ];
+    for (const t of targets) {
+      const candidate = buildMealPlan(
+        t.c,
+        t.p,
+        trainDays,
+        profile.dietPrefs || [],
+        profile.avoid || [],
+      );
+      const candidateTotals = computeTotals(candidate);
+      if (withinTolerance(candidateTotals)) {
+        generated = candidate;
+        totals = candidateTotals;
+        break;
+      }
+    }
+  }
+
+  if (!withinTolerance(totals)) {
+    generated = rebalancePlan(generated);
+    totals = computeTotals(generated);
+  }
+
+  console.info('[meal:verify] generated meal plan totals', {
+    target_calories: targetCalories,
+    target_protein: targetProtein,
+    actual_calories: totals.calories,
+    actual_protein: totals.protein,
+    calories_ok: Math.abs(Number(totals.calories || 0) - targetCalories) <= 75,
+    protein_ok: Math.abs(Number(totals.protein || 0) - targetProtein) <= 10,
+  });
+  return generated;
 }
 
 async function generateSuggestions(profile, activePlan, todayMeals) {
@@ -3846,6 +3950,8 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
   const week       = activePlan.startDate
     ? Math.min(12, Math.max(1, Math.floor(daysBetween(activePlan.startDate, today) / 7) + 1))
     : (activePlan.week || 1);
+  // [plan:week] verification log — remove after verifying
+  console.info('[plan:week] current week computed', { start_date: activePlan.startDate || null, stored_week: activePlan.week || null, computed_week: week, source: 'plans' });
   const phasePct   = Math.round((week / 12) * 100);
   const startDate  = activePlan.startDate || today;
   const nextScanDate = activePlan.nextScanDate || (() => {
@@ -4486,7 +4592,7 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null }) {
   const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -4527,6 +4633,7 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
   const firstScan = scanHistory[0];
   const bfDelta   = firstScan && lastScan ? ((getBF(lastScan) || 0) - (getBF(firstScan) || 0)).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
+  const latestMetric = Array.isArray(progressMetrics) && progressMetrics.length > 0 ? progressMetrics[0] : null;
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
@@ -4612,6 +4719,21 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
   return (
     <div className="screen">
       <h1 className="screen-title">Profile</h1>
+      {(latestMetric || latestPlanAdjustment) && (
+        <Card className="su" style={{ animationDelay: '.005s' }}>
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Backend Progress Context</div>
+          {latestMetric && (
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: latestPlanAdjustment ? 8 : 0 }}>
+              Source: `progress_metrics` · as_of {latestMetric.as_of_date} · weekly BF change {latestMetric.weekly_body_fat_change ?? '—'}% · trend {latestMetric.trend_status || 'unknown'}.
+            </div>
+          )}
+          {latestPlanAdjustment && (
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+              Source: `plan_adjustments` · reason: {latestPlanAdjustment.explanation || latestPlanAdjustment.trigger_reason || 'No explanation recorded'}.
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* ── Subscription status ─────────────────────────────────────────── */}
       <Card className="su" style={{
@@ -5039,6 +5161,15 @@ function validateScanConsistency(newScan, prevScan, daysBetween) {
   return issues;
 }
 
+function getLastValidScan(history = []) {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const s = history[i];
+    if (s && s.scanStatus !== 'duplicate') return s;
+  }
+  return null;
+}
+
 /* ─── Scan History Detail Modal ─────────────────────────────────────────────
    Shown when user taps a previous scan card.
    Shows key results only — keeps it focused and fast to parse.
@@ -5170,7 +5301,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied, subscription, entitlements, parentScanHistory }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5522,7 +5653,7 @@ Return ONLY this JSON (no markdown, no extra text):
     const existingHistory = LS.get(LS_KEYS.scanHistory, []);
     const isFirstScan     = existingHistory.length === 0;
     const existingPlan    = LS.get(LS_KEYS.activePlan, null);
-    const prevScanForAdaptation = existingHistory[existingHistory.length - 1] || null;
+    const prevScanForAdaptation = getLastValidScan(existingHistory);
     const startDate = isFirstScan ? today : (existingPlan?.startDate || today);
     const week = existingPlan?.startDate
       ? Math.min(12, Math.max(1, Math.floor(daysBetween(existingPlan.startDate, today) / 7) + 1))
@@ -5552,14 +5683,18 @@ Return ONLY this JSON (no markdown, no extra text):
       engineTrajectory: eng?.trajectory      || null,
       tdee:           eng?.physio?.tdee      || null,
     };
-    console.log('[plan:apply] plan built', { week, startDate, phase: plan.phase });
+    console.log('[plan:apply] plan built (current plan before apply)', { week, startDate, phase: plan.phase, start_date: startDate, computed_week: week });
 
     // Compute dynamic adaptation decision (compare new scan vs prior)
+    const adaptationInput = { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' };
     const adaptation = computeAdaptation(
-      { date: today, bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' },
+      adaptationInput,
       prevScanForAdaptation,
       plan,
     );
+    // [scan:adapt] verification logs — remove after verifying
+    console.info('[scan:adapt] adaptation input', { newScan: adaptationInput, prevScan: prevScanForAdaptation ? { date: prevScanForAdaptation.date, bodyFat: getBF(prevScanForAdaptation), leanMass: prevScanForAdaptation.leanMass, scanStatus: prevScanForAdaptation.scanStatus || 'complete' } : null, plan: { phase: plan.phase, week: plan.week, startDate: plan.startDate } });
+    console.info('[scan:adapt] adaptation output', adaptation);
 
     // Build scan_context: adaptation + scoring breakdown + image hash + premium analysis
     const scanContext = {
@@ -5648,10 +5783,20 @@ Return ONLY this JSON (no markdown, no extra text):
 
     // Regenerate meal plan + workout plan with scan data in background
     generateMealPlan(profile, plan, result)
-      .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
+      .then(async (days) => {
+        LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days });
+        if (onPersistProgramArtifacts) {
+          try { await onPersistProgramArtifacts(profile, plan, { mealDays: days }); } catch (e) { console.warn('[sync] persist meal_plans failed (non-fatal)', e?.message); }
+        }
+      })
       .catch(err => console.error('Meal plan regen failed:', err));
     generateWorkoutPlan(profile, plan)
-      .then(days => { LS.set(LS_KEYS.workoutplan, days); })
+      .then(async (days) => {
+        LS.set(LS_KEYS.workoutplan, days);
+        if (onPersistProgramArtifacts) {
+          try { await onPersistProgramArtifacts(profile, plan, { workoutDays: days }); } catch (e) { console.warn('[sync] persist workout_programs failed (non-fatal)', e?.message); }
+        }
+      })
       .catch(err => console.error('Workout plan regen failed:', err));
     showToast('Plan applied. Generating your meal plan...');
     setTab('plan');
@@ -5679,15 +5824,32 @@ Return ONLY this JSON (no markdown, no extra text):
     const phColor = PHASE_LABEL_COLORS[ph.label] || C.green;
     const dt      = result.dailyTargets || {};
     const mg      = result.muscleGroups || {};
-    const prevScan = scanHistory[scanHistory.length - 1];
+    const prevScan = getLastValidScan(scanHistory);
     const bfTrend = prevScan ? Number(result.bodyFatPct || 0) - (getBF(prevScan) || 0) : null;
     const lmTrend = prevScan ? Number(result.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
     const predictedTrajectory = getTrajectoryStatus(prevScan ? [...scanHistory, { bodyFat: result.bodyFatPct, leanMass: result.leanMass }] : scanHistory, profile.goal);
+    // Compute adaptation for display — uses real scan deltas, not generic text
+    const minimalPlan = { phase: profile.goal };
+    const adaptationForDisplay = computeAdaptation(
+      { date: new Date().toISOString().slice(0, 10), bodyFat: result.bodyFatPct, leanMass: result.leanMass, physiqueScore: result.physiqueScore, symmetryScore: result.symmetryScore, confidence: result.confidence || 'medium' },
+      prevScan,
+      minimalPlan,
+    );
+    // Near-target: suggest maintain when Cut phase and already lean
+    const isNearTarget = profile.goal === 'Cut' && (profile.gender === 'Female' ? (result.bodyFatPct || 99) <= 22 : (result.bodyFatPct || 99) <= 14);
     const nextDecision = result.confidence === 'low'
       ? 'Retake scan with improved lighting before committing plan updates.'
-      : predictedTrajectory.tone === 'warn'
-        ? 'Apply plan with adjustment and review again in 2–3 weeks.'
-        : 'Apply plan and continue current phase until next checkpoint.';
+      : isNearTarget
+        ? 'You\'re close to target. Apply plan and consider transitioning to maintain once you hit your goal.'
+        : prevScan && adaptationForDisplay.rationale
+          ? adaptationForDisplay.rationale
+          : predictedTrajectory.tone === 'warn'
+            ? 'Apply plan with adjustment and review again in 2–3 weeks.'
+            : 'Apply plan and continue current phase until next checkpoint.';
+    // [plan:next] verification log — remove after verifying
+    console.info('[plan:next] next decision payload', { prevScan: prevScan ? { date: prevScan.date, bodyFat: getBF(prevScan), leanMass: prevScan.leanMass } : null, adaptationDecision: adaptationForDisplay.decision, nextDecision: nextDecision.substring(0, 80) });
+    // [scan:compare] verification log — remove after verifying
+    if (prevScan) console.info('[scan:compare] previous scan used for comparison', { date: prevScan.date, bodyFat: getBF(prevScan), leanMass: prevScan.leanMass, physiqueScore: prevScan.physiqueScore });
     // FREE users see full current scan analysis — entitlement diff is history/persistence only
     const trajectoryView = predictedTrajectory;
     const shortSummary = (() => {
@@ -6339,6 +6501,7 @@ Return ONLY this JSON (no markdown, no extra text):
           {isPremium ? <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[...scanHistory].reverse().map((s, i) => {
               const realIdx = scanHistory.length - 1 - i;
+              const cmp = s?.dbComparison || null;
               return (
               <div key={i} className="bp" onClick={() => setViewOld(realIdx)} style={{ display: 'flex', alignItems: 'center', gap: 12, background: C.card, borderRadius: 14, padding: '12px 14px', border: `1px solid ${s.isBaseline ? C.purple + '55' : C.border}` }}>
                 <div style={{ flex: 1 }}>
@@ -6349,6 +6512,11 @@ Return ONLY this JSON (no markdown, no extra text):
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Body Fat {getBFDisplay(s)} · Lean {s.leanMass > 0 ? fmt.leanMass(s.leanMass, profile?.unitSystem) : '—'}</div>
+                  {cmp && (
+                    <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>
+                      DB deltas: BF {Number(cmp.body_fat_delta || 0) >= 0 ? '+' : ''}{Number(cmp.body_fat_delta || 0).toFixed(1)}% · Lean {Number(cmp.lean_mass_delta || 0) >= 0 ? '+' : ''}{Number(cmp.lean_mass_delta || 0).toFixed(1)} lb
+                    </div>
+                  )}
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
                 <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
@@ -6383,8 +6551,18 @@ Return ONLY this JSON (no markdown, no extra text):
 
 function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial', premium = false }) {
   if (!scan) return null;
-  const bfDelta = prevScan ? (getBF(scan) || 0) - (getBF(prevScan) || 0) : null;
-  const lmDelta = prevScan ? Number(scan.leanMass || 0) - Number(prevScan.leanMass || 0) : null;
+  const dbCmp = scan?.dbComparison || null;
+  // [scan:source] verification log — remove after verifying
+  console.info('[scan:source] modal data sources', {
+    scan_id: scan?.id || scan?.dbId || null,
+    last_scan_used: prevScan ? { id: prevScan.id || prevScan.dbId || null, date: prevScan.date } : null,
+    comparison_source: dbCmp ? 'scan_comparisons' : 'derived',
+    comparison_row_id: dbCmp?.id || null,
+    decision_source: scan?.dbDecision ? 'scan_decisions' : (scan?.dbDecisionLog ? 'decision_log' : 'scan_context'),
+    decision_row_id: scan?.dbDecision?.id || scan?.dbDecisionLog?.id || null,
+  });
+  const bfDelta = dbCmp?.body_fat_delta ?? (prevScan ? (getBF(scan) || 0) - (getBF(prevScan) || 0) : null);
+  const lmDelta = dbCmp?.lean_mass_delta ?? (prevScan ? Number(scan.leanMass || 0) - Number(prevScan.leanMass || 0) : null);
   const lmDeltaDisplay = unitSystem === 'metric' ? (lmDelta || 0) * 0.453592 : (lmDelta || 0);
   const trajectory = getTrajectoryStatus(prevScan ? [prevScan, scan] : [], scan.phase || 'Maintain');
   return (
@@ -6402,6 +6580,12 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial', pre
             <StatusPill tone={trajectory.tone === 'good' ? 'good' : trajectory.tone === 'warn' ? 'warn' : 'neutral'} label={trajectory.label} />
             <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>{scan.phase || 'Phase not recorded'}</span>
             <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>Confidence: {scan.confidence || 'medium'}</span>
+            <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>
+              Comparison source: {dbCmp ? 'scan_comparisons' : 'derived'}
+            </span>
+            <span style={{ fontSize: 11, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px' }}>
+              Decision source: {scan?.dbDecision ? 'scan_decisions' : (scan?.dbDecisionLog ? 'decision_log' : 'scan_context')}
+            </span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
@@ -6743,6 +6927,8 @@ export default function MassIQ() {
   const [paywallOpen,   setPaywallOpen]   = useState(false);
   const [checkoutActivating, setCheckoutActivating] = useState(false);
   const [checkoutRetryExhausted, setCheckoutRetryExhausted] = useState(false);
+  const [progressMetrics, setProgressMetrics] = useState([]);
+  const [latestPlanAdjustment, setLatestPlanAdjustment] = useState(null);
   const onboardingPersistRef = useRef(null);
 
   // ── SINGLE SOURCE OF TRUTH FOR TARGETS ────────────────────────────────────
@@ -6896,6 +7082,8 @@ export default function MassIQ() {
       setProfile(null);
       setActivePlan(null);
       setScanHistory([]);
+      setProgressMetrics([]);
+      setLatestPlanAdjustment(null);
       setSubscription(null);
       setEntitlements(null);
       setReady(true);
@@ -6914,6 +7102,13 @@ export default function MassIQ() {
         let loadedProfile = null;
         let loadedPlan = null;
         let loadedScanHistory = [];
+        let loadedMealPlan = null;
+        let loadedWorkoutProgram = null;
+        let loadedComparisons = [];
+        let loadedDecisions = [];
+        let loadedDecisionLogs = [];
+        let loadedProgressMetrics = [];
+        let loadedLatestPlanAdjustment = null;
         try {
           console.info('[sync] ensureProfile:start', { userId });
           loadedProfile = await ensureProfile(session.access_token, userId);
@@ -6953,6 +7148,35 @@ export default function MassIQ() {
         } catch (scanErr) {
           console.error('sync:getScans failed (continuing without scans)', scanErr);
           loadedScanHistory = [];
+        }
+        try {
+          loadedMealPlan = await getLatestMealPlan(session.access_token, userId);
+          console.info('[sync] getLatestMealPlan:ok', { hasMealPlan: Boolean(loadedMealPlan) });
+        } catch (mealErr) {
+          console.warn('sync:getLatestMealPlan failed (non-fatal)', mealErr?.message);
+        }
+        try {
+          loadedWorkoutProgram = await getLatestWorkoutProgram(session.access_token, userId);
+          console.info('[sync] getLatestWorkoutProgram:ok', { hasWorkoutProgram: Boolean(loadedWorkoutProgram) });
+        } catch (workoutErr) {
+          console.warn('sync:getLatestWorkoutProgram failed (non-fatal)', workoutErr?.message);
+        }
+        try {
+          loadedComparisons = await getScanComparisons(session.access_token, userId, 100);
+          loadedDecisions = await getScanDecisions(session.access_token, userId, 100);
+          loadedDecisionLogs = await getDecisionLogs(session.access_token, userId, 100);
+          loadedProgressMetrics = await getProgressMetrics(session.access_token, userId, 50);
+          loadedLatestPlanAdjustment = await getLatestPlanAdjustment(session.access_token, userId, loadedPlan?.id || null);
+          console.info('[sync] decision/comparison/progress:ok', {
+            comparisons: loadedComparisons.length,
+            decisions: loadedDecisions.length,
+            decision_logs: loadedDecisionLogs.length,
+            progress_metrics: loadedProgressMetrics.length,
+            has_plan_adjustment: Boolean(loadedLatestPlanAdjustment),
+            adjustment_row_id: loadedLatestPlanAdjustment?.id || null,
+          });
+        } catch (intelErr) {
+          console.warn('sync:intel reads failed (non-fatal)', intelErr?.message);
         }
 
         // Load subscription status (non-fatal — null means free tier)
@@ -7015,6 +7239,8 @@ export default function MassIQ() {
         }
 
         if (mounted) {
+          // [plan:hydrate] verification log — current plan start_date / week after DB read
+          if (loadedPlan) console.info('[plan:hydrate] plan loaded from DB', { start_date: loadedPlan.startDate ?? loadedPlan.start_date, week: loadedPlan.week, phase: loadedPlan.phase });
           // Stamp the current user so a future sign-in can detect a user switch
           localStorage.setItem('massiq:current-user', userId);
           // Restore name if DB doesn't have it — check a logout-resilient key first,
@@ -7036,9 +7262,22 @@ export default function MassIQ() {
           }
           setProfile(loadedProfile);
           setActivePlan(loadedPlan);
+          setProgressMetrics(loadedProgressMetrics);
+          setLatestPlanAdjustment(loadedLatestPlanAdjustment);
           setTab('home');
           LS.set(LS_KEYS.profile, loadedProfile);
           LS.set(LS_KEYS.activePlan, loadedPlan);
+          if (loadedMealPlan?.meals) {
+            LS.set(LS_KEYS.mealplan, {
+              weekKey: weekKey2(),
+              days: Array.isArray(loadedMealPlan.meals) ? loadedMealPlan.meals : [],
+              dbMealPlanId: loadedMealPlan.id,
+              dbPlanId: loadedMealPlan.plan_id,
+            });
+          }
+          if (loadedWorkoutProgram?.structure?.days) {
+            LS.set(LS_KEYS.workoutplan, Array.isArray(loadedWorkoutProgram.structure.days) ? loadedWorkoutProgram.structure.days : []);
+          }
           // DB is the authoritative source for scan history.
           // Each DB row now carries physique_score, symmetry_score, scan_confidence,
           // muscle_assessment (jsonb), and scan_notes so the history card renders
@@ -7047,17 +7286,48 @@ export default function MassIQ() {
           // we attempt to enrich from local cache as a graceful fallback.
           const localHistory = LS.get(LS_KEYS.scanHistory, []);
           if (loadedScanHistory.length > 0) {
+            const comparisonByCurrentScanId = new Map((loadedComparisons || []).map(c => [String(c.current_scan_id), c]));
+            const decisionByScanId = new Map((loadedDecisions || []).map(d => [String(d.scan_id), d]));
+            const decisionLogByScanId = new Map((loadedDecisionLogs || []).map(d => [String(d.scan_id), d]));
             const hydrated = loadedScanHistory.map(dbScan => {
+              const scanIdKey = String(dbScan.id || dbScan.dbId || '');
+              const mergedDbScan = {
+                ...dbScan,
+                dbComparison: comparisonByCurrentScanId.get(scanIdKey) || null,
+                dbDecision: decisionByScanId.get(scanIdKey) || null,
+                dbDecisionLog: decisionLogByScanId.get(scanIdKey) || null,
+                // Prefer persisted decision tables over embedded scan_context fields.
+                adaptationDecision: (decisionByScanId.get(scanIdKey)?.decision_type) || dbScan.adaptationDecision,
+                adaptationRationale: (decisionByScanId.get(scanIdKey)?.decision_reason) || (decisionLogByScanId.get(scanIdKey)?.explanation) || dbScan.adaptationRationale,
+                scanComparison: dbScan.scanComparison || (() => {
+                  const c = comparisonByCurrentScanId.get(scanIdKey);
+                  if (!c) return null;
+                  return {
+                    bf_delta: c.body_fat_delta,
+                    lm_delta_lbs: c.lean_mass_delta,
+                    score_delta: c.physique_score_delta,
+                    symmetry_delta: c.symmetry_score_delta,
+                  };
+                })(),
+              };
               // Rows saved after the schema was complete have physiqueScore — use as-is.
-              if (dbScan.physiqueScore != null) return dbScan;
+              if (dbScan.physiqueScore != null) return mergedDbScan;
               // Older row: try to enrich from local cache by matching dbId.
               const localMatch = localHistory.find(ls =>
                 ls.dbId === dbScan.id || ls.dbId === String(dbScan.id)
               );
-              return localMatch ? { ...localMatch, id: dbScan.id, dbId: dbScan.id } : dbScan;
+              return localMatch ? { ...localMatch, ...mergedDbScan, id: dbScan.id, dbId: dbScan.id } : mergedDbScan;
             });
             LS.set(LS_KEYS.scanHistory, hydrated);
             setScanHistory(hydrated);
+            const latestHydrated = hydrated[hydrated.length - 1] || null;
+            if (latestHydrated) {
+              console.info('[scan:source] hydrated latest source ids', {
+                scan_id: latestHydrated.id || latestHydrated.dbId || null,
+                comparison_row_id: latestHydrated?.dbComparison?.id || null,
+                decision_row_id: latestHydrated?.dbDecision?.id || latestHydrated?.dbDecisionLog?.id || null,
+              });
+            }
             console.info('[sync] hydrate: loaded', hydrated.length, 'scan(s) from DB');
           } else {
             // DB returned 0 scans for this user — clear ALL local scan entries.
@@ -7184,7 +7454,7 @@ export default function MassIQ() {
 
   // criticalProfile: when true the profile write failure is re-thrown instead of
   // swallowed. Used during onboarding so the Paywall can gate checkout on success.
-  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null, { criticalProfile = false } = {}) => {
+  const persistUserState = async (nextProfile, nextPlan, newScanEntry = null, { criticalProfile = false, previousPlan = null } = {}) => {
     if (!session?.access_token) return;
     setSyncing(true);
 
@@ -7213,13 +7483,14 @@ export default function MassIQ() {
           console.info('[sync] step2:upsertPlan:start', { phase: nextPlan?.phase });
           const planRow = await upsertPlan(session.access_token, userId, nextPlan);
           planId = planRow?.id ?? null;
-          console.info('[sync] step2:upsertPlan:ok', { planId });
+          console.info('[sync] step2:upsertPlan:ok', { planId, row: planRow || null });
           if (!planId) {
             console.error('[sync] step2:upsertPlan: returned no id — projection will be skipped');
           }
         } catch (planErr) {
           console.error('[sync] step2:upsertPlan:error', planErr?.message, planErr);
-          // Silent — DB errors are logged to console, not surfaced to user
+          // For Apply Plan path, fail fast to avoid silent "applied" state without DB plan.
+          if (newScanEntry) throw planErr;
         }
       }
 
@@ -7229,6 +7500,7 @@ export default function MassIQ() {
       // Errors are NOT swallowed — they propagate so the caller can show the user.
       let scanId = null;
       let savedScanEntry = null;
+      const historyBeforeInsert = LS.get(LS_KEYS.scanHistory, []);
 
       if (newScanEntry) {
         if (newScanEntry.dbId) {
@@ -7250,8 +7522,7 @@ export default function MassIQ() {
           }
           // Stamp dbId and append confirmed entry to LS history + root state
           savedScanEntry = { ...newScanEntry, dbId: scanId };
-          const currentHistory = LS.get(LS_KEYS.scanHistory, []);
-          const newHistory = [...currentHistory, savedScanEntry];
+          const newHistory = [...historyBeforeInsert, savedScanEntry];
           LS.set(LS_KEYS.scanHistory, newHistory);
           setScanHistory(newHistory);
           console.info('[sync] step3:createScan:ok — history updated', { scanId, total: newHistory.length });
@@ -7283,6 +7554,93 @@ export default function MassIQ() {
         console.warn('[sync] step4:createProjection:skipped — missing planId or scanId', { planId, scanId });
       }
 
+      // ── Step 5: Persist structured adaptation/comparison/decision records ─
+      if (savedScanEntry?.dbId) {
+        try {
+          const prevValid = (() => {
+            for (let i = historyBeforeInsert.length - 1; i >= 0; i -= 1) {
+              const s = historyBeforeInsert[i];
+              if (s && s.scanStatus !== 'duplicate') return s;
+            }
+            return null;
+          })();
+          const prevBF = prevValid ? getBF(prevValid) : null;
+          const currBF = getBF(savedScanEntry);
+          const daysElapsed = prevValid?.date ? Math.max(1, Math.round(daysBetween(prevValid.date, savedScanEntry.date || new Date().toISOString().slice(0, 10)))) : null;
+          const weeklyBodyFatChange = (prevBF != null && currBF != null && daysElapsed != null) ? Number((((currBF - prevBF) / daysElapsed) * 7).toFixed(3)) : null;
+
+          if (prevValid?.dbId) {
+            await createScanComparison(session.access_token, userId, {
+              currentScanId: savedScanEntry.dbId,
+              previousScanId: prevValid.dbId,
+              bodyFatDelta: currBF != null && prevBF != null ? Number((currBF - prevBF).toFixed(2)) : null,
+              leanMassDelta: savedScanEntry.leanMass != null && prevValid.leanMass != null ? Number((savedScanEntry.leanMass - prevValid.leanMass).toFixed(2)) : null,
+              physiqueScoreDelta: savedScanEntry.physiqueScore != null && prevValid.physiqueScore != null ? Math.round(savedScanEntry.physiqueScore - prevValid.physiqueScore) : null,
+              symmetryScoreDelta: savedScanEntry.symmetryScore != null && prevValid.symmetryScore != null ? Math.round(savedScanEntry.symmetryScore - prevValid.symmetryScore) : null,
+              summary: savedScanEntry.adaptationRationale || null,
+              comparisonConfidence: savedScanEntry.confidence || null,
+            });
+          }
+
+          await createScanDecision(session.access_token, userId, {
+            scanId: savedScanEntry.dbId,
+            planId: planId || null,
+            decisionType: savedScanEntry.adaptationDecision || 'keep_plan',
+            decisionReason: savedScanEntry.adaptationRationale || null,
+            payload: {
+              comparison: savedScanEntry.scanComparison || null,
+              confidence: savedScanEntry.confidence || null,
+            },
+          });
+
+          await createDecisionLog(session.access_token, userId, {
+            scanId: savedScanEntry.dbId,
+            planId: planId || null,
+            decisionCategory: 'scan_adaptation',
+            decision: {
+              type: savedScanEntry.adaptationDecision || 'keep_plan',
+              comparison: savedScanEntry.scanComparison || null,
+            },
+            confidence: savedScanEntry.confidence || null,
+            explanation: savedScanEntry.adaptationRationale || null,
+          });
+
+          await createProgressMetric(session.access_token, userId, {
+            asOfDate: String(savedScanEntry.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+            bodyFatPct: currBF != null ? Number(currBF.toFixed(2)) : null,
+            leanMassKg: savedScanEntry.leanMass != null ? Number((savedScanEntry.leanMass * 0.453592).toFixed(3)) : null,
+            weeklyBodyFatChange,
+            trendStatus: savedScanEntry.adaptationDecision || null,
+          });
+
+          if (planId && previousPlan && nextPlan) {
+            await createPlanAdjustment(session.access_token, userId, {
+              planId,
+              scanId: savedScanEntry.dbId,
+              adjustmentType: 'macro_update',
+              oldValue: {
+                phase: previousPlan.phase,
+                calories: previousPlan?.dailyTargets?.calories ?? previousPlan?.macros?.calories ?? null,
+                protein: previousPlan?.dailyTargets?.protein ?? previousPlan?.macros?.protein ?? null,
+                carbs: previousPlan?.dailyTargets?.carbs ?? previousPlan?.macros?.carbs ?? null,
+                fat: previousPlan?.dailyTargets?.fat ?? previousPlan?.macros?.fat ?? null,
+              },
+              newValue: {
+                phase: nextPlan.phase,
+                calories: nextPlan?.dailyTargets?.calories ?? nextPlan?.macros?.calories ?? null,
+                protein: nextPlan?.dailyTargets?.protein ?? nextPlan?.macros?.protein ?? null,
+                carbs: nextPlan?.dailyTargets?.carbs ?? nextPlan?.macros?.carbs ?? null,
+                fat: nextPlan?.dailyTargets?.fat ?? nextPlan?.macros?.fat ?? null,
+              },
+              triggerReason: savedScanEntry.adaptationDecision || 'scan_update',
+              explanation: savedScanEntry.adaptationRationale || null,
+            });
+          }
+        } catch (decisionErr) {
+          console.warn('[sync] step5:decision persistence failed (non-fatal)', decisionErr?.message);
+        }
+      }
+
     } catch (err) {
       console.error('[sync] persistUserState:outer error', err?.message, err);
       // Only re-throw when a scan was being saved — so applyPlan can surface the error.
@@ -7290,6 +7648,49 @@ export default function MassIQ() {
       if (newScanEntry) throw err;
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const persistProgramArtifacts = async (nextProfile, nextPlan, { mealDays = null, workoutDays = null } = {}) => {
+    if (!session?.access_token || !nextPlan) return;
+    const user = session.user || await fetchUser(session.access_token);
+    const userId = user?.id;
+    if (!userId) return;
+    const planRow = await upsertPlan(session.access_token, userId, nextPlan);
+    const planId = planRow?.id;
+    if (!planId) return;
+
+    if (Array.isArray(mealDays)) {
+      const totals = mealDays.reduce((acc, day) => {
+        const meals = Array.isArray(day?.meals) ? day.meals : [];
+        const cals = meals.reduce((s, m) => s + Number(m?.calories || 0), 0);
+        const p = meals.reduce((s, m) => s + Number(m?.protein || 0), 0);
+        const cb = meals.reduce((s, m) => s + Number(m?.carbs || 0), 0);
+        const f = meals.reduce((s, m) => s + Number(m?.fat || 0), 0);
+        return { calories: acc.calories + cals, protein: acc.protein + p, carbs: acc.carbs + cb, fat: acc.fat + f };
+      }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+      await upsertMealPlan(session.access_token, userId, {
+        planId,
+        preferencesSnapshot: {
+          goal: nextProfile?.goal || null,
+          diet_prefs: nextProfile?.dietPrefs || [],
+          cuisines: nextProfile?.cuisines || [],
+          avoid: nextProfile?.avoid || [],
+          unit_system: nextProfile?.unitSystem || 'imperial',
+        },
+        meals: mealDays,
+        totals,
+      });
+    }
+
+    if (Array.isArray(workoutDays)) {
+      await upsertWorkoutProgram(session.access_token, userId, {
+        planId,
+        splitName: nextPlan?.phase ? `${nextPlan.phase} Split` : null,
+        daysPerWeek: nextPlan?.dailyTargets?.trainingDaysPerWeek || nextPlan?.trainDays || null,
+        structure: { days: workoutDays },
+        progressionRules: { phase: nextPlan?.phase || null, week: nextPlan?.week || null },
+      });
     }
   };
 
@@ -7397,6 +7798,8 @@ export default function MassIQ() {
     setProfile(null);
     setActivePlan(null);
     setScanHistory([]);
+    setProgressMetrics([]);
+    setLatestPlanAdjustment(null);
     setEditing(false);
     setSubscription(null);
     setEntitlements(null);
@@ -7431,6 +7834,8 @@ export default function MassIQ() {
     setProfile(null);
     setActivePlan(null);
     setScanHistory([]);
+    setProgressMetrics([]);
+    setLatestPlanAdjustment(null);
     setSubscription(null);
     setEntitlements(null);
     setTab('home');
@@ -7488,10 +7893,16 @@ export default function MassIQ() {
       setActivePlan(plan);
       // Background content generation — independent of the DB write above
       generateMealPlan(p, plan)
-        .then(days => { LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days }); })
+        .then(async (days) => {
+          LS.set(LS_KEYS.mealplan, { weekKey: weekKey2(), days });
+          try { await persistProgramArtifacts(p, plan, { mealDays: days }); } catch (e) { console.warn('[sync] onboarding meal_plans persistence failed (non-fatal)', e?.message); }
+        })
         .catch(console.error);
       generateWorkoutPlan(p, plan)
-        .then(days => { LS.set(LS_KEYS.workoutplan, days); })
+        .then(async (days) => {
+          LS.set(LS_KEYS.workoutplan, days);
+          try { await persistProgramArtifacts(p, plan, { workoutDays: days }); } catch (e) { console.warn('[sync] onboarding workout_programs persistence failed (non-fatal)', e?.message); }
+        })
         .catch(console.error);
       generateMissions(p, plan)
         .then(missions => { LS.set('massiq:missions', missions); })
@@ -7590,12 +8001,14 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPlanApplied={async (p, entry) => { setActivePlan(p); await persistUserState(profile, p, entry); }} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); }} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
             profile={profile}
             activePlan={activePlan}
+            progressMetrics={progressMetrics}
+            latestPlanAdjustment={latestPlanAdjustment}
             setTab={setTab}
             onEditProfile={handleEditProfile}
             onDeleteScanHistory={handleDeleteScanHistory}

@@ -457,7 +457,7 @@ export async function upsertProfile(token, userId, profile) {
     cuisines: row.cuisines, avoid: row.avoid,
   }));
   try {
-    return await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
+    const result = await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
       method: 'POST',
       headers: {
         ...authHeaders(token),
@@ -465,10 +465,13 @@ export async function upsertProfile(token, userId, profile) {
       },
       body: JSON.stringify(row),
     });
+    // [onboarding:debug] — remove after verifying end-to-end mapping
+    console.info('[onboarding:debug] DB response after profile upsert', result);
+    return result;
   } catch (err) {
     if (isColumnError(err)) {
       const { diet_prefs, cuisines, avoid, ...base } = row;
-      return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
+      const result = await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
         method: 'POST',
         headers: {
           ...authHeaders(token),
@@ -476,6 +479,9 @@ export async function upsertProfile(token, userId, profile) {
         },
         body: JSON.stringify(base),
       });
+      // [onboarding:debug] — remove after verifying end-to-end mapping
+      console.info('[onboarding:debug] DB response after profile upsert (fallback cols)', result);
+      return result;
     }
     throw err;
   }
@@ -583,6 +589,189 @@ export async function getPlan(token, userId) {
     } else throw err;
   }
   return Array.isArray(rows) && rows[0] ? deserializePlan(rows[0]) : null;
+}
+
+export async function upsertMealPlan(token, userId, { planId, preferencesSnapshot = {}, meals = [], totals = {} }) {
+  if (!planId) throw new Error('[meal_plans] Missing planId');
+  const payload = {
+    user_id: userId,
+    plan_id: planId,
+    preferences_snapshot: preferencesSnapshot || {},
+    meals: Array.isArray(meals) ? meals : [],
+    total_calories: toSafeInt(totals?.calories ?? 0, 'total_calories'),
+    total_protein_g: toSafeInt(totals?.protein ?? 0, 'total_protein_g'),
+    total_carbs_g: toSafeInt(totals?.carbs ?? 0, 'total_carbs_g'),
+    total_fat_g: toSafeInt(totals?.fat ?? 0, 'total_fat_g'),
+    updated_at: new Date().toISOString(),
+  };
+  const rows = await supabaseFetch('/rest/v1/meal_plans', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function getLatestMealPlan(token, userId) {
+  const rows = await supabaseFetch(
+    `/rest/v1/meal_plans?user_id=eq.${userId}&select=id,user_id,plan_id,preferences_snapshot,meals,total_calories,total_protein_g,total_carbs_g,total_fat_g,created_at,updated_at&order=updated_at.desc&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function upsertWorkoutProgram(token, userId, { planId, splitName = null, daysPerWeek = null, structure = {}, progressionRules = {} }) {
+  if (!planId) throw new Error('[workout_programs] Missing planId');
+  const payload = {
+    user_id: userId,
+    plan_id: planId,
+    split_name: splitName,
+    days_per_week: daysPerWeek != null ? toSafeInt(daysPerWeek, 'days_per_week') : null,
+    structure: structure || {},
+    progression_rules: progressionRules || {},
+    updated_at: new Date().toISOString(),
+  };
+  const rows = await supabaseFetch('/rest/v1/workout_programs', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(payload),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function getLatestWorkoutProgram(token, userId) {
+  const rows = await supabaseFetch(
+    `/rest/v1/workout_programs?user_id=eq.${userId}&select=id,user_id,plan_id,split_name,days_per_week,structure,progression_rules,created_at,updated_at&order=updated_at.desc&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function createScanComparison(token, userId, payload) {
+  const rows = await supabaseFetch('/rest/v1/scan_comparisons', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      user_id: userId,
+      current_scan_id: payload.currentScanId,
+      previous_scan_id: payload.previousScanId || null,
+      body_fat_delta: payload.bodyFatDelta ?? null,
+      lean_mass_delta: payload.leanMassDelta ?? null,
+      physique_score_delta: payload.physiqueScoreDelta ?? null,
+      symmetry_score_delta: payload.symmetryScoreDelta ?? null,
+      summary: payload.summary || null,
+      comparison_confidence: payload.comparisonConfidence || null,
+    }),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function createScanDecision(token, userId, payload) {
+  const rows = await supabaseFetch('/rest/v1/scan_decisions', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      user_id: userId,
+      scan_id: payload.scanId,
+      plan_id: payload.planId || null,
+      decision_type: payload.decisionType || 'keep_plan',
+      decision_reason: payload.decisionReason || null,
+      payload: payload.payload || {},
+    }),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function createDecisionLog(token, userId, payload) {
+  const rows = await supabaseFetch('/rest/v1/decision_log', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      user_id: userId,
+      scan_id: payload.scanId || null,
+      plan_id: payload.planId || null,
+      decision_category: payload.decisionCategory || 'adaptation',
+      decision: payload.decision || {},
+      confidence: payload.confidence || null,
+      explanation: payload.explanation || null,
+    }),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function createPlanAdjustment(token, userId, payload) {
+  const rows = await supabaseFetch('/rest/v1/plan_adjustments', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      user_id: userId,
+      plan_id: payload.planId,
+      scan_id: payload.scanId || null,
+      adjustment_type: payload.adjustmentType || 'macro_update',
+      old_value: payload.oldValue || {},
+      new_value: payload.newValue || {},
+      trigger_reason: payload.triggerReason || null,
+      explanation: payload.explanation || null,
+    }),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function createProgressMetric(token, userId, payload) {
+  const rows = await supabaseFetch('/rest/v1/progress_metrics', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify({
+      user_id: userId,
+      as_of_date: payload.asOfDate,
+      body_fat_pct: payload.bodyFatPct ?? null,
+      lean_mass_kg: payload.leanMassKg ?? null,
+      weekly_body_fat_change: payload.weeklyBodyFatChange ?? null,
+      trend_status: payload.trendStatus || null,
+    }),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function getScanComparisons(token, userId, limit = 50) {
+  const rows = await supabaseFetch(
+    `/rest/v1/scan_comparisons?user_id=eq.${userId}&select=id,current_scan_id,previous_scan_id,body_fat_delta,lean_mass_delta,physique_score_delta,symmetry_score_delta,summary,comparison_confidence,created_at&order=created_at.desc&limit=${limit}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getScanDecisions(token, userId, limit = 50) {
+  const rows = await supabaseFetch(
+    `/rest/v1/scan_decisions?user_id=eq.${userId}&select=id,scan_id,plan_id,decision_type,decision_reason,payload,created_at&order=created_at.desc&limit=${limit}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getDecisionLogs(token, userId, limit = 50) {
+  const rows = await supabaseFetch(
+    `/rest/v1/decision_log?user_id=eq.${userId}&select=id,scan_id,plan_id,decision_category,decision,confidence,explanation,created_at&order=created_at.desc&limit=${limit}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getLatestPlanAdjustment(token, userId, planId = null) {
+  const filter = planId ? `&plan_id=eq.${planId}` : '';
+  const rows = await supabaseFetch(
+    `/rest/v1/plan_adjustments?user_id=eq.${userId}${filter}&select=id,plan_id,scan_id,adjustment_type,old_value,new_value,trigger_reason,explanation,created_at&order=created_at.desc&limit=1`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function getProgressMetrics(token, userId, limit = 30) {
+  const rows = await supabaseFetch(
+    `/rest/v1/progress_metrics?user_id=eq.${userId}&select=id,as_of_date,weight_kg,body_fat_pct,lean_mass_kg,weekly_weight_change_pct,weekly_body_fat_change,trend_status,created_at&order=as_of_date.desc&limit=${limit}`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  return Array.isArray(rows) ? rows : [];
 }
 
 export async function createScan(token, userId, scan) {
