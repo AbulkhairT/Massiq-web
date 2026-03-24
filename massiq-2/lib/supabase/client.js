@@ -427,12 +427,8 @@ export async function fetchUser(token) {
 }
 
 export async function upsertProfile(token, userId, profile) {
-  const full = serializeProfile(userId, profile);
-  // Strip columns that don't exist in the DB schema.
-  // name: not in profiles table (no migration for it).
-  // unit_system: EXISTS in profiles table — do NOT strip.
-  const row = { ...full };
-  delete row.name;
+  const row = serializeProfile(userId, profile);
+  // Migration 013 added the name column — include it in every write.
   return supabaseFetch('/rest/v1/profiles?on_conflict=id', {
     method: 'POST',
     headers: {
@@ -445,20 +441,20 @@ export async function upsertProfile(token, userId, profile) {
 
 export async function getProfile(token, userId) {
   const rows = await supabaseFetch(
-    `/rest/v1/profiles?select=id,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`,
+    `/rest/v1/profiles?select=id,name,age,weight,height,gender,goal,activity_level,unit_system,created_at&id=eq.${userId}&limit=1`,
     { method: 'GET', headers: authHeaders(token) },
   );
   return Array.isArray(rows) && rows[0] ? deserializeProfile(rows[0]) : null;
 }
 
 export async function ensureProfile(token, userId) {
-  const existing = await getProfile(token, userId);
-  if (existing) return existing;
-  await supabaseFetch('/rest/v1/profiles', {
+  // Use upsert (on_conflict=id) so concurrent calls or retries never create
+  // a second row. Migration 013 added the UNIQUE index required for this.
+  await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
     method: 'POST',
     headers: {
       ...authHeaders(token),
-      Prefer: 'return=representation',
+      Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify({ id: userId }),
   });

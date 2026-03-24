@@ -210,10 +210,13 @@ export async function DELETE(request) {
     'profiles',
   ];
 
+  // profiles uses `id` (= auth user id) as its PK, not a `user_id` column.
+  // All other tables use `user_id`. The filter column must match the schema.
   const errors = [];
   for (const table of tables) {
+    const col = table === 'profiles' ? 'id' : 'user_id';
     try {
-      await sbFetch(`/rest/v1/${table}?user_id=eq.${userId}`, {
+      await sbFetch(`/rest/v1/${table}?${col}=eq.${userId}`, {
         method: 'DELETE',
         headers: serviceHeaders(),
       });
