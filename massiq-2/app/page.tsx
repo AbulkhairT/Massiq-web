@@ -467,6 +467,41 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════
+          BETA BANNER
+      ═══════════════════════════════════════════════════════════ */}
+      <div style={{ background: C.bg, padding: '0 20px 40px' }}>
+        <div className="fu" style={{
+          maxWidth: 520,
+          margin: '0 auto',
+          background: C.greenBg,
+          border: `1px solid ${C.borderHi}`,
+          borderRadius: 16,
+          padding: '24px 28px',
+          textAlign: 'center',
+        }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7,
+            marginBottom: 14,
+          }}>
+            <span style={{ width: 4, height: 4, borderRadius: '50%', background: C.green, display: 'inline-block', opacity: 0.8 }} />
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: C.green }}>
+              Public Beta
+            </span>
+          </div>
+          <p style={{ fontSize: 20, fontWeight: 800, color: C.white, letterSpacing: '-0.5px', lineHeight: 1.2, marginBottom: 10 }}>
+            You&apos;re early.
+          </p>
+          <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.65, marginBottom: 10 }}>
+            MassIQ is in public beta and works best as a home screen app.
+          </p>
+          <p style={{ fontSize: 12, color: C.dim, lineHeight: 1.6 }}>
+            Native app is on the way.{' '}
+            <span style={{ opacity: 0.7 }}>Add to Home Screen via Safari for the full experience.</span>
+          </p>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════
           PROOF STRIP
       ═══════════════════════════════════════════════════════════ */}
       <div className="proof-strip">
