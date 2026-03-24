@@ -7108,7 +7108,13 @@ export default function MassIQ() {
                     }
                   }
                 } catch {}
-                try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+                try {
+                  sessionStorage.removeItem('massiq:premium-return');
+                  // Also clear the pre-redirect billing-return flag set in the Paywall.
+                  // Without this it lingers for the rest of the tab session and triggers
+                  // unnecessary auth-retry loops on subsequent page loads.
+                  sessionStorage.removeItem('massiq:billing-return');
+                } catch {}
                 setCheckoutActivating(false);
                 console.info('[premium-poll] subscription activated', { status: sub.status, attempt: attempts });
               }
@@ -7117,7 +7123,10 @@ export default function MassIQ() {
           } catch {}
           if (attempts < 12) await new Promise(r => setTimeout(r, 2500));
         }
-        try { sessionStorage.removeItem('massiq:premium-return'); } catch {}
+        try {
+          sessionStorage.removeItem('massiq:premium-return');
+          sessionStorage.removeItem('massiq:billing-return');
+        } catch {}
         if (!cancelled) {
           setCheckoutActivating(false);
           setToast('Premium is still syncing. If you just paid, refresh in a minute or contact support.');
@@ -7319,6 +7328,10 @@ export default function MassIQ() {
         console.info('[auth] clearing stale cache', { from: prevUserId || cachedProfileId, to: newUserId, reason: isUserSwitch ? 'user-switch' : isFirstLoginWithStaleData ? 'fresh-signup' : 'stale-cache' });
         Object.keys(localStorage).filter(k => k.startsWith('massiq:')).forEach(k => localStorage.removeItem(k));
         setScanHistory([]);
+        // BUG FIX: The clear above removes massiq:auth:session (set by signIn/signUp).
+        // Re-store the session immediately so page refreshes — including Stripe checkout
+        // return — can restore auth without sending the user to login.
+        try { localStorage.setItem('massiq:auth:session', JSON.stringify(res)); } catch {}
       }
       if (newUserId) localStorage.setItem('massiq:current-user', newUserId);
       setSession(res);
