@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS plan_directives (
   user_id        uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   plan_id        uuid REFERENCES plans(id) ON DELETE SET NULL,
   scan_id        uuid REFERENCES scans(id) ON DELETE SET NULL,
-  category       text NOT NULL,
+  directive_type text NOT NULL,
   directive_key  text,
   payload        jsonb NOT NULL DEFAULT '{}',
   created_at     timestamptz NOT NULL DEFAULT now()

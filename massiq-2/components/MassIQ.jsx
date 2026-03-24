@@ -7705,7 +7705,21 @@ export default function MassIQ() {
             bodyFat: newScanEntry.bodyFat,
             leanMass: newScanEntry.leanMass,
           });
-          const saved = await createScan(session.access_token, userId, newScanEntry);
+          let saved;
+          try {
+            saved = await createScan(session.access_token, userId, newScanEntry);
+          } catch (scanErr) {
+            const full = `${scanErr?.message || ''} ${scanErr?.postgrestMessage || ''} ${scanErr?.postgrestDetails || ''}`;
+            if (/body_scan_free_limit|free_limit_reached/i.test(full)) {
+              console.info('[entitlements] limit reached', { source: 'db_insert_guard', detail: full.trim() });
+              try {
+                const ent = await ensureEntitlements(session.access_token, userId);
+                setEntitlements(ent);
+              } catch {}
+              setToast('Free scan limit reached. Upgrade for unlimited scans.');
+            }
+            throw scanErr;
+          }
           scanId = saved?.id ?? null;
           console.info('[sync] step2:createScan:response', { scanId, raw: saved });
           if (!scanId) {
@@ -7750,12 +7764,11 @@ export default function MassIQ() {
           const ent = await ensureEntitlements(session.access_token, userId);
           if (ent) {
             setEntitlements(ent);
-            console.info('[entitlements] hydrated from DB', {
+            console.info('[entitlements] increment success', {
               free_scans_used: ent.free_scans_used,
               free_scan_limit: ent.free_scan_limit,
               lifetime_scan_count: ent.lifetime_scan_count,
             });
-            console.info('[entitlements] increment success (DB counters after scan insert)');
           }
         } catch (e) {
           console.warn('[entitlements] refresh after scan failed', e?.message);

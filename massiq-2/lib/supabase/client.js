@@ -1772,22 +1772,35 @@ export async function createMusclePriorityRow(token, userId, payload) {
 }
 
 export async function createPlanDirectiveRow(token, userId, payload) {
+  const rawType = payload.directiveType ?? payload.category;
+  const directiveType = rawType != null ? String(rawType).trim() : '';
+  if (!directiveType) {
+    throw personalizationTableError(
+      'plan_directives',
+      'directive_type is required (pass directiveType or legacy category)',
+      null,
+    );
+  }
+  const bodyPayload = payload.payload != null && typeof payload.payload === 'object' ? payload.payload : {};
   const row = {
     user_id: userId,
     plan_id: payload.planId || null,
     scan_id: payload.scanId || null,
-    category: payload.category || 'general',
-    directive_key: payload.directiveKey || null,
-    payload: payload.payload || {},
+    directive_type: directiveType,
+    directive_key: payload.directiveKey ?? null,
+    payload: bodyPayload,
   };
   console.info('[db:plan-directive] payload', {
+    insert_keys: Object.keys(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
     scan_id_null: row.scan_id == null,
     plan_id_null: row.plan_id == null,
-    category: row.category,
+    directive_type: row.directive_type,
     directive_key: row.directive_key,
+    directive_key_null: row.directive_key == null,
+    payload_json: JSON.stringify(row.payload),
   });
   try {
     const rows = await supabaseFetch('/rest/v1/plan_directives', {
@@ -1797,7 +1810,7 @@ export async function createPlanDirectiveRow(token, userId, payload) {
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (!out?.id) throw new Error('[plan_directives] insert returned no id');
-    console.info('[db:plan-directive] ok', { id: out.id });
+    console.info('[db:plan-directive] ok', { id: out.id, directive_type: row.directive_type, directive_key: row.directive_key });
     return out;
   } catch (err) {
     logPostgrestFailure('[db:plan-directive] insert FAILED', err, row);
@@ -1893,7 +1906,7 @@ export async function persistPersonalizationArtifacts(token, userId, {
   await createPlanDirectiveRow(token, userId, {
     planId,
     scanId,
-    category: 'nutrition',
+    directiveType: 'nutrition',
     directiveKey: 'macro_directives',
     payload: {
       deficit_aggressiveness: na.deficit_aggressiveness,
@@ -1906,7 +1919,7 @@ export async function persistPersonalizationArtifacts(token, userId, {
   await createPlanDirectiveRow(token, userId, {
     planId,
     scanId,
-    category: 'training',
+    directiveType: 'training',
     directiveKey: 'volume_frequency',
     payload: {
       weekly_set_targets: ta.weekly_set_targets,
