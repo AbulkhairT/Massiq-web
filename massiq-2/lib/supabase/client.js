@@ -889,7 +889,7 @@ export async function createScanDecision(token, userId, payload) {
     decision_reason: payload.decisionReason || null,
     payload: payload.payload || {},
   };
-  console.info('[scan:decision] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, decision_type: row.decision_type });
+  console.info('[db:scan-decision] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, decision_type: row.decision_type });
   try {
     const rows = await supabaseFetch('/rest/v1/scan_decisions', {
       method: 'POST',
@@ -897,10 +897,10 @@ export async function createScanDecision(token, userId, payload) {
       body: JSON.stringify(row),
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    console.info('[scan:decision] ok', { user_id: userId, scan_decision_id: out?.id ?? null });
+    console.info('[db:scan-decision] ok', { user_id: userId, scan_decision_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[scan:decision] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
+    console.error('[db:scan-decision] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
     throw err;
   }
 }
@@ -915,7 +915,7 @@ export async function createDecisionLog(token, userId, payload) {
     confidence: payload.confidence || null,
     explanation: payload.explanation || null,
   };
-  console.info('[decision:log] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, category: row.decision_category });
+  console.info('[db:decision-log] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, category: row.decision_category });
   try {
     const rows = await supabaseFetch('/rest/v1/decision_log', {
       method: 'POST',
@@ -923,10 +923,10 @@ export async function createDecisionLog(token, userId, payload) {
       body: JSON.stringify(row),
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    console.info('[decision:log] ok', { user_id: userId, decision_log_id: out?.id ?? null });
+    console.info('[db:decision-log] ok', { user_id: userId, decision_log_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[decision:log] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
+    console.error('[db:decision-log] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
     throw err;
   }
 }
@@ -942,7 +942,7 @@ export async function createPlanAdjustment(token, userId, payload) {
     trigger_reason: payload.triggerReason || null,
     explanation: payload.explanation || null,
   };
-  console.info('[plan:adjustment] write', { user_id: userId, plan_id: row.plan_id, scan_id: row.scan_id });
+  console.info('[db:plan-adjustment] write', { user_id: userId, plan_id: row.plan_id, scan_id: row.scan_id });
   try {
     const rows = await supabaseFetch('/rest/v1/plan_adjustments', {
       method: 'POST',
@@ -950,10 +950,10 @@ export async function createPlanAdjustment(token, userId, payload) {
       body: JSON.stringify(row),
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    console.info('[plan:adjustment] ok', { user_id: userId, plan_adjustment_id: out?.id ?? null });
+    console.info('[db:plan-adjustment] ok', { user_id: userId, plan_adjustment_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[plan:adjustment] FAILED', { user_id: userId, plan_id: row.plan_id, error: err?.message });
+    console.error('[db:plan-adjustment] FAILED', { user_id: userId, plan_id: row.plan_id, error: err?.message });
     throw err;
   }
 }
@@ -1302,7 +1302,8 @@ export async function getSubscription(token, userId) {
 }
 
 /**
- * Fetch or lazily create the user's entitlement row. Never throws for missing table/row.
+ * Fetch or lazily create the user's entitlement row.
+ * Returns null when the row cannot be read or created — do not invent counters client-side.
  */
 export async function ensureEntitlements(token, userId) {
   if (!token || !userId) return null;
@@ -1316,16 +1317,7 @@ export async function ensureEntitlements(token, userId) {
     row = Array.isArray(rows) && rows[0] ? rows[0] : null;
   } catch (err) {
     console.warn('[entitlements] fetch failed', { user_id: userId, error: err?.message });
-    console.info('[entitlements] using fallback defaults', { user_id: userId });
-    return {
-      user_id: userId,
-      free_scans_used: 0,
-      free_scan_limit: 2,
-      lifetime_scan_count: 0,
-      free_food_scans_used: 0,
-      free_food_scans_used_today: 0,
-      _fallback: true,
-    };
+    return null;
   }
   if (row) {
     console.info('[entitlements] ok', { user_id: userId });
@@ -1361,14 +1353,7 @@ export async function ensureEntitlements(token, userId) {
     }
     console.warn('[entitlements] insert failed', { user_id: userId, error: e?.message });
   }
-  console.info('[entitlements] using fallback defaults', { user_id: userId });
-  return {
-    user_id: userId,
-    free_scans_used: 0,
-    free_scan_limit: 2,
-    lifetime_scan_count: 0,
-    _fallback: true,
-  };
+  return null;
 }
 
 /** @deprecated use ensureEntitlements */
@@ -1426,13 +1411,32 @@ function serializeProjection(userId, scanId, planId, plan, scan, profile) {
 }
 
 /** True when migration 016 tables are not deployed — safe to skip personalization persistence only. */
-function isPersonalizationSchemaMissingError(err) {
+function isPersonalizationTableMissingError(err) {
   const m = String(err?.message || err || '').toLowerCase();
   return (
     (m.includes('does not exist') && (m.includes('decision_engine') || m.includes('phase_history') || m.includes('muscle_priorities') || m.includes('plan_directives')))
     || m.includes('pgrst205')
     || (m.includes('relation') && m.includes('public.') && m.includes('does not exist'))
   );
+}
+
+/** PostgREST schema cache / missing column on an existing table. */
+function isPostgrestColumnOrSchemaCacheError(err) {
+  const m = String(err?.message || err || '');
+  const ml = m.toLowerCase();
+  return (
+    ml.includes('schema cache')
+    || (ml.includes('could not find') && ml.includes('column'))
+    || (ml.includes('column') && ml.includes('does not exist'))
+  );
+}
+
+function parseMissingColumnName(message) {
+  const m = String(message || '');
+  const q = m.match(/['"]([a-zA-Z0-9_]+)['"]\s+column/);
+  if (q) return q[1];
+  const alt = m.match(/column\s+['"]?([a-zA-Z0-9_]+)['"]?/i);
+  return alt ? alt[1] : null;
 }
 
 /**
@@ -1454,9 +1458,10 @@ export async function getFoodLogsRecentForAdherence(token, userId, limit = 150) 
 
 /**
  * Insert decision_engine_run. Returns null only if migration 016 is not applied; otherwise throws on failure.
+ * Column/schema-cache mismatches are logged (table + column + payload) and retried once with a compatible shape.
  */
 export async function createDecisionEngineRun(token, userId, payload) {
-  const row = {
+  const baseRow = {
     user_id: userId,
     scan_id: payload.scanId || null,
     plan_id: payload.planId || null,
@@ -1464,8 +1469,13 @@ export async function createDecisionEngineRun(token, userId, payload) {
     input_summary: payload.inputSummary || {},
     output_json: payload.outputJson || {},
   };
-  console.info('[db:decision-engine-run] write start', { user_id: userId, scan_id: row.scan_id });
-  try {
+  const logPayloadKeys = () => ({
+    keys: Object.keys(baseRow),
+    input_summary_size: JSON.stringify(baseRow.input_summary || {}).length,
+    output_json_size: JSON.stringify(baseRow.output_json || {}).length,
+  });
+
+  const postRow = async (row) => {
     const rows = await supabaseFetch('/rest/v1/decision_engine_runs', {
       method: 'POST',
       headers: { ...authHeaders(token), Prefer: 'return=representation' },
@@ -1475,12 +1485,59 @@ export async function createDecisionEngineRun(token, userId, payload) {
     if (!out?.id) {
       throw new Error('[decision_engine_runs] insert returned no row id');
     }
+    return out;
+  };
+
+  console.info('[db:decision-engine-run] write start', { user_id: userId, scan_id: baseRow.scan_id });
+  try {
+    const out = await postRow(baseRow);
     console.info('[db:decision-engine-run] ok', { id: out.id });
     return out;
   } catch (err) {
-    if (isPersonalizationSchemaMissingError(err)) {
+    if (isPersonalizationTableMissingError(err)) {
       console.warn('[db:decision-engine-run] migration 016 not applied — personalization tables skipped', err?.message);
       return null;
+    }
+    const missing = parseMissingColumnName(err?.message);
+    if (isPostgrestColumnOrSchemaCacheError(err) && (missing === 'input_summary' || String(err?.message || '').includes('input_summary'))) {
+      const mergedOutput = {
+        ...(baseRow.output_json || {}),
+        _embedded_input_summary: baseRow.input_summary || {},
+      };
+      const compatRow = {
+        user_id: baseRow.user_id,
+        scan_id: baseRow.scan_id,
+        plan_id: baseRow.plan_id,
+        engine_version: baseRow.engine_version,
+        output_json: mergedOutput,
+      };
+      console.warn('[db:decision-engine-run] schema mismatch — retrying without input_summary', {
+        table: 'decision_engine_runs',
+        missing_column: 'input_summary',
+        ...logPayloadKeys(),
+      });
+      try {
+        const out = await postRow(compatRow);
+        console.info('[db:decision-engine-run] ok (compat omit input_summary)', { id: out.id });
+        return out;
+      } catch (err2) {
+        console.error('[db:decision-engine-run] compat retry FAILED', {
+          table: 'decision_engine_runs',
+          missing_column: missing || 'unknown',
+          payload: logPayloadKeys(),
+          error: err2?.message,
+        });
+        throw new Error(`[personalization] decision_engine_runs column mismatch after retry: ${err2?.message || err2}`);
+      }
+    }
+    if (isPostgrestColumnOrSchemaCacheError(err)) {
+      console.error('[db:decision-engine-run] schema/column mismatch (no safe retry)', {
+        table: 'decision_engine_runs',
+        missing_column: missing,
+        payload: logPayloadKeys(),
+        error: err?.message,
+      });
+      throw new Error(`[personalization] decision_engine_runs: ${err?.message || err}`);
     }
     console.error('[db:decision-engine-run] FAILED', err?.message);
     throw new Error(`[personalization] decision_engine_runs: ${err?.message || err}`);

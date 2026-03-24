@@ -126,20 +126,20 @@ export function getScanCount(scanHistory) {
 
 /**
  * Returns true if the user is allowed to run a new scan.
- * Premium users: always. Free users: up to free_scan_limit from entitlements.
+ * Premium users: always. Free users: use user_entitlements from DB when logged in (no local bypass).
  *
  * @param {object|null} subscription - subscription row from DB
- * @param {Array}       scanHistory  - local scan history (fallback only)
- * @param {object|null} entitlements - user_entitlements row from DB (preferred)
+ * @param {Array}       scanHistory  - local scan history (fallback when not logged in)
+ * @param {object|null} entitlements - user_entitlements row from DB
+ * @param {boolean}     isLoggedIn   - when true, entitlements must be loaded from DB (null → cannot scan)
  */
-export function canScan(subscription, scanHistory, entitlements = null) {
+export function canScan(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return true;
-  if (entitlements) {
-    // Persistent DB counter — immune to scan history deletion
+  if (entitlements != null) {
     const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
     return entitlements.free_scans_used < limit;
   }
-  // Fallback: count non-duplicate scans in local history
+  if (isLoggedIn) return false;
   return getScanCount(scanHistory) < FREE_SCAN_LIMIT;
 }
 
@@ -147,14 +147,16 @@ export function canScan(subscription, scanHistory, entitlements = null) {
  * Returns the number of free scans remaining (Infinity for premium users).
  *
  * @param {object|null} subscription - subscription row from DB
- * @param {Array}       scanHistory  - local scan history (fallback only)
- * @param {object|null} entitlements - user_entitlements row from DB (preferred)
+ * @param {Array}       scanHistory  - local scan history (fallback when not logged in)
+ * @param {object|null} entitlements - user_entitlements row from DB
+ * @param {boolean}     isLoggedIn   - when true, require DB row for counts
  */
-export function scansRemaining(subscription, scanHistory, entitlements = null) {
+export function scansRemaining(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return Infinity;
-  if (entitlements) {
+  if (entitlements != null) {
     const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
     return Math.max(0, limit - entitlements.free_scans_used);
   }
+  if (isLoggedIn) return 0;
   return Math.max(0, FREE_SCAN_LIMIT - getScanCount(scanHistory));
 }

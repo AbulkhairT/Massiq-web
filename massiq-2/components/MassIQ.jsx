@@ -2275,7 +2275,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
         /* ── STATE A: No scans yet — render polished pre-scan hero ── */
         if (!hasScan) {
-          const freeLeft = scansRemaining(subscription, resolvedHistory, entitlements);
+          const freeLeft = scansRemaining(subscription, resolvedHistory, entitlements, !!accessToken);
           const isPremium = isPremiumActive(subscription);
           return (
             <div style={{
@@ -5393,7 +5393,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory, onRefreshEntitlements, isLoggedIn }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5448,6 +5448,34 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
     try {
+      if (isLoggedIn && onRefreshEntitlements) {
+        try {
+          const entFresh = await onRefreshEntitlements();
+          if (entFresh == null) {
+            console.warn('[entitlements] before body scan — no DB row (cannot enforce limit safely)');
+            setError('Could not load your scan allowance from the server. Check your connection and try again.');
+            return;
+          }
+          const allowed = canScan(subscription, parentScanHistory, entFresh, isLoggedIn);
+          console.info('[entitlements] before body scan', {
+            can_scan: allowed,
+            free_scans_used: entFresh?.free_scans_used,
+            free_scan_limit: entFresh?.free_scan_limit,
+            lifetime_scan_count: entFresh?.lifetime_scan_count,
+          });
+          if (!allowed) {
+            console.info('[entitlements] limit reached');
+            setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
+            showToast('Free scan limit reached. Upgrade for unlimited scans.');
+            return;
+          }
+        } catch (refErr) {
+          console.warn('[entitlements] refresh before scan failed', refErr?.message);
+          setError('Could not verify scan allowance. Check your connection and try again.');
+          return;
+        }
+      }
+
       // ── Step 0: Compute image hashes ─────────────────────────────────────
       // SHA-256 for exact-duplicate detection (DB-backed)
       // Perceptual hash for near-duplicate detection
@@ -5504,6 +5532,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           const existingAsset = await findAssetBySha256(session.access_token, userId, sha256Hash);
           if (existingAsset) {
             console.info('[scan] Exact duplicate detected (SHA-256 match):', existingAsset.id);
+            console.info('[entitlements] duplicate scan skip (same photo SHA — no new scan, no usage)');
             // Retrieve the scan that was linked to this asset
             const priorScan = await getScanByAssetId(session.access_token, existingAsset.id).catch(() => null);
             if (priorScan) {
@@ -5545,6 +5574,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           const { visualData: cachedVisual, ts } = JSON.parse(cached);
           if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
             console.info('[scan] returning localStorage-cached result for same photo');
+            console.info('[entitlements] duplicate scan skip (same photo — local cache, no new scan)');
             const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
             const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
             const scanTargets = calcTargets(profile, { leanMass: cachedVisual.leanMass });
@@ -6515,8 +6545,8 @@ Return ONLY this JSON (no markdown, no extra text):
 
   /* ── Pre-scan state ── */
   const isPremium = isPremiumActive(subscription);
-  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements);
-  const scanLocked = !canScan(subscription, parentScanHistory, entitlements);
+  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const scanLocked = !canScan(subscription, parentScanHistory, entitlements, isLoggedIn);
 
   return (
     <div className="screen">
@@ -7358,6 +7388,15 @@ export default function MassIQ() {
               if (String(ent.free_food_scans_date).slice(0, 10) === today) setFoodScanCache(userId, ent.free_food_scans_used_today ?? 0);
             }
           }
+          if (ent != null) {
+            console.info('[entitlements] hydrated from DB', {
+              free_scans_used: ent.free_scans_used,
+              free_scan_limit: ent.free_scan_limit,
+              lifetime_scan_count: ent.lifetime_scan_count,
+            });
+          } else {
+            console.warn('[sync] entitlements:null — free tier may be blocked until DB row loads');
+          }
           console.info('[sync] entitlements:ok', { free_scans_used: ent?.free_scans_used ?? 0, free_food_scans_used: ent?.free_food_scans_used ?? 0 });
         } catch {
           // Non-fatal: migration 003 may not be applied yet
@@ -7649,6 +7688,13 @@ export default function MassIQ() {
         }
       }
 
+      // Duplicate photo apply: save plan/profile only — no new scans row, no entitlement trigger
+      if (newScanEntry?.scanStatus === 'duplicate') {
+        console.info('[entitlements] duplicate scan skip — no DB scan row, counters unchanged');
+        setToast('Plan saved. Same photo as a previous scan — no new scan was recorded and free scans were not used.');
+        return;
+      }
+
       // ── Step 3: Scan — capture scanId ───────────────────────────────────
       // newScanEntry is the single new scan object (no dbId yet).
       // We insert it, stamp the returned DB id, then append to LS history.
@@ -7681,6 +7727,23 @@ export default function MassIQ() {
           LS.set(LS_KEYS.scanHistory, newHistory);
           setScanHistory(newHistory);
           console.info('[sync] step3:createScan:ok — history updated', { scanId, total: newHistory.length });
+        }
+      }
+
+      if (newScanEntry && newScanEntry.scanStatus !== 'duplicate' && scanId) {
+        try {
+          const ent = await ensureEntitlements(session.access_token, userId);
+          if (ent) {
+            setEntitlements(ent);
+            console.info('[entitlements] hydrated from DB', {
+              free_scans_used: ent.free_scans_used,
+              free_scan_limit: ent.free_scan_limit,
+              lifetime_scan_count: ent.lifetime_scan_count,
+            });
+            console.info('[entitlements] increment success (DB counters after scan insert)');
+          }
+        } catch (e) {
+          console.warn('[entitlements] refresh after scan failed', e?.message);
         }
       }
 
@@ -7771,6 +7834,23 @@ export default function MassIQ() {
         }
 
         const prevIdForCompare = priorScan?.dbId || priorScan?.id;
+
+        try {
+          await persistPersonalizationArtifacts(token, userId, {
+            scanId: savedScanEntry.dbId,
+            planId: planId || null,
+            previousPhase: previousPlan?.phase ?? null,
+            engineOutput: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
+            inputSummary: {
+              adherence: savedScanEntry.adherenceContextSnapshot || null,
+            },
+          });
+        } catch (peErr) {
+          console.error('[personalization] persistPersonalizationArtifacts FAILED', peErr?.message, peErr);
+          setToast('Scan saved, but personalization metadata failed to sync. Check migration 016 / 017, RLS, and connection.');
+          throw peErr;
+        }
+
         if (prevIdForCompare) {
           try {
             await createScanComparison(token, userId, {
@@ -7822,7 +7902,7 @@ export default function MassIQ() {
             },
           });
         } catch (sdErr) {
-          console.error('[scan:decision] sub-step FAILED', { user_id: userId, error: sdErr?.message, raw: String(sdErr) });
+          console.error('[db:scan-decision] sub-step FAILED', { user_id: userId, error: sdErr?.message, raw: String(sdErr) });
         }
 
         try {
@@ -7840,22 +7920,7 @@ export default function MassIQ() {
             explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
           });
         } catch (dlErr) {
-          console.error('[decision:log] sub-step FAILED', { user_id: userId, error: dlErr?.message, raw: String(dlErr) });
-        }
-
-        try {
-          await persistPersonalizationArtifacts(token, userId, {
-            scanId: savedScanEntry.dbId,
-            planId: planId || null,
-            previousPhase: previousPlan?.phase ?? null,
-            engineOutput: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
-            inputSummary: {
-              adherence: savedScanEntry.adherenceContextSnapshot || null,
-            },
-          });
-        } catch (peErr) {
-          console.error('[personalization] persistPersonalizationArtifacts FAILED', peErr?.message, peErr);
-          setToast('Scan saved, but personalization metadata failed to sync. Check migration 016, RLS, and connection.');
+          console.error('[db:decision-log] sub-step FAILED', { user_id: userId, error: dlErr?.message, raw: String(dlErr) });
         }
 
         try {
@@ -7888,17 +7953,17 @@ export default function MassIQ() {
                 explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
               });
             } catch (paErr) {
-              console.error('[plan:adjustment] sub-step FAILED', { user_id: userId, error: paErr?.message, raw: String(paErr) });
+              console.error('[db:plan-adjustment] sub-step FAILED', { user_id: userId, error: paErr?.message, raw: String(paErr) });
             }
           } else {
-            console.info('[plan:adjustment] skip — plan audit snapshot unchanged vs prior active plan', {
+            console.info('[db:plan-adjustment] skip — plan audit snapshot unchanged vs prior active plan', {
               user_id: userId,
               plan_id: planId,
               scan_id: savedScanEntry.dbId,
             });
           }
         } else {
-          console.info('[plan:adjustment] skip — missing planId or previousPlan or nextPlan', {
+          console.info('[db:plan-adjustment] skip — missing planId or previousPlan or nextPlan', {
             user_id: userId,
             has_plan_id: Boolean(planId),
             has_previous: Boolean(previousPlan),
@@ -8311,12 +8376,28 @@ export default function MassIQ() {
     </>
   );
 
+  const refreshEntitlementsForScan = async () => {
+    if (!session?.access_token) return null;
+    const uid = session?.user?.id ?? session?.user_id;
+    if (!uid) return null;
+    const ent = await ensureEntitlements(session.access_token, uid);
+    setEntitlements(ent);
+    if (ent) {
+      console.info('[entitlements] hydrated from DB', {
+        free_scans_used: ent.free_scans_used,
+        free_scan_limit: ent.free_scan_limit,
+        lifetime_scan_count: ent.lifetime_scan_count,
+      });
+    }
+    return ent;
+  };
+
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); }} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
