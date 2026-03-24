@@ -497,13 +497,14 @@ export async function fetchUser(token) {
 
 export async function upsertProfile(token, userId, profile) {
   const row = serializeProfile(userId, profile);
-  // [onboarding:debug] — remove after verifying end-to-end mapping
-  console.info('[onboarding:debug] serialized row for DB write', JSON.stringify({
-    id: row.id, name: row.name, goal: row.goal, unit_system: row.unit_system,
-    age: row.age, weight: row.weight, height: row.height, gender: row.gender,
-    activity_level: row.activity_level, diet_prefs: row.diet_prefs,
-    cuisines: row.cuisines, avoid: row.avoid,
-  }));
+  if (process.env.NODE_ENV !== 'production') {
+    console.info('[onboarding:debug] serialized row for DB write', JSON.stringify({
+      id: row.id, name: row.name, goal: row.goal, unit_system: row.unit_system,
+      age: row.age, weight: row.weight, height: row.height, gender: row.gender,
+      activity_level: row.activity_level, diet_prefs: row.diet_prefs,
+      cuisines: row.cuisines, avoid: row.avoid,
+    }));
+  }
   try {
     const result = await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
       method: 'POST',
@@ -514,7 +515,9 @@ export async function upsertProfile(token, userId, profile) {
       body: JSON.stringify(row),
     });
     console.info('[db:profile] ok', { user_id: userId });
-    console.info('[onboarding:debug] DB response after profile upsert', result);
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[onboarding:debug] DB response after profile upsert', result);
+    }
     return result;
   } catch (err) {
     if (isColumnError(err)) {
@@ -528,7 +531,9 @@ export async function upsertProfile(token, userId, profile) {
         body: JSON.stringify(base),
       });
       console.info('[db:profile] ok (fallback cols)', { user_id: userId });
-      console.info('[onboarding:debug] DB response after profile upsert (fallback cols)', result);
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[onboarding:debug] DB response after profile upsert (fallback cols)', result);
+      }
       return result;
     }
     console.error('[db:profile] FAILED', { user_id: userId, error: err?.message });
@@ -1397,29 +1402,31 @@ export async function getSubscription(token, userId) {
   }
 }
 
+const USER_ENTITLEMENTS_SELECT =
+  'user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today';
+
 /**
- * Fetch or lazily create the user's entitlement row.
- * Returns null when the row cannot be read or created — do not invent counters client-side.
+ * Read user_entitlements only (no insert). Source of truth for free scan UI.
  */
-export async function ensureEntitlements(token, userId) {
+export async function fetchUserEntitlements(token, userId) {
   if (!token || !userId) return null;
-  console.info('[entitlements] ensure start', { user_id: userId });
-  let row = null;
   try {
     const rows = await supabaseFetch(
-      `/rest/v1/user_entitlements?user_id=eq.${userId}&select=user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today&limit=1`,
+      `/rest/v1/user_entitlements?user_id=eq.${userId}&select=${USER_ENTITLEMENTS_SELECT}&limit=1`,
       { method: 'GET', headers: authHeaders(token) },
     );
-    row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (row) console.info('[entitlements] fetch ok', { user_id: userId });
+    return row;
   } catch (err) {
     console.warn('[entitlements] fetch failed', { user_id: userId, error: err?.message });
     return null;
   }
-  if (row) {
-    console.info('[entitlements] ok', { user_id: userId });
-    return row;
-  }
-  console.info('[entitlements] no row — inserting default', { user_id: userId });
+}
+
+/** Insert 0-used row — only when server confirms user has zero non-duplicate scans. */
+export async function insertDefaultUserEntitlementsRow(token, userId) {
+  if (!token || !userId) return null;
   try {
     const ins = await supabaseFetch('/rest/v1/user_entitlements', {
       method: 'POST',
@@ -1432,29 +1439,63 @@ export async function ensureEntitlements(token, userId) {
       }),
     });
     const created = Array.isArray(ins) && ins[0] ? ins[0] : null;
-    if (created) {
-      console.info('[entitlements] created default row', { user_id: userId });
-      return created;
-    }
+    if (created) console.info('[entitlements] inserted default row (0 scans)', { user_id: userId });
+    return created;
   } catch (e) {
     if (isConflictError(e)) {
-      try {
-        const rows = await supabaseFetch(
-          `/rest/v1/user_entitlements?user_id=eq.${userId}&select=user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today&limit=1`,
-          { method: 'GET', headers: authHeaders(token) },
-        );
-        const again = Array.isArray(rows) && rows[0] ? rows[0] : null;
-        if (again) return again;
-      } catch {}
+      return fetchUserEntitlements(token, userId);
     }
-    console.warn('[entitlements] insert failed', { user_id: userId, error: e?.message });
+    console.warn('[entitlements] default insert failed', { user_id: userId, error: e?.message });
+    return null;
   }
-  return null;
 }
 
-/** @deprecated use ensureEntitlements */
+/**
+ * After login: load row, or create 0-used row only if there are no qualifying scans,
+ * or reconcile counts from scans if rows exist without a correct entitlement row.
+ */
+export async function hydrateUserEntitlements(token, userId, nonDuplicateScanCount = 0) {
+  if (!token || !userId) return null;
+  const existing = await fetchUserEntitlements(token, userId);
+  if (existing) return existing;
+  const n = Math.max(0, Number(nonDuplicateScanCount) || 0);
+  if (n === 0) {
+    return insertDefaultUserEntitlementsRow(token, userId);
+  }
+  try {
+    await supabaseFetch('/rest/v1/rpc/reconcile_body_scan_entitlements', {
+      method: 'POST',
+      headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+  } catch (err) {
+    console.warn('[entitlements] reconcile RPC failed', { user_id: userId, error: err?.message });
+    return null;
+  }
+  return fetchUserEntitlements(token, userId);
+}
+
+/**
+ * After a successful non-duplicate scans INSERT — increments free_scans_used (migration 024 RPC).
+ */
+export async function applyBodyScanEntitlement(token, scanId) {
+  if (!token || !scanId) return null;
+  const out = await supabaseFetch('/rest/v1/rpc/apply_body_scan_entitlement', {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_scan_id: scanId }),
+  });
+  return out && typeof out === 'object' ? out : null;
+}
+
+/** @deprecated Use fetchUserEntitlements (read-only) or hydrateUserEntitlements after login. */
+export async function ensureEntitlements(token, userId) {
+  return fetchUserEntitlements(token, userId);
+}
+
+/** @deprecated use fetchUserEntitlements */
 export async function getEntitlements(token, userId) {
-  return ensureEntitlements(token, userId);
+  return fetchUserEntitlements(token, userId);
 }
 
 // ─── physique_projections ───────────────────────────────────────────────────

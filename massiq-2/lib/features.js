@@ -121,7 +121,7 @@ export function hasFeature(subscription, feature) {
  */
 export function getScanCount(scanHistory) {
   if (!Array.isArray(scanHistory)) return 0;
-  return scanHistory.filter(s => s.scanStatus !== 'duplicate').length;
+  return scanHistory.filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId).length;
 }
 
 /**
@@ -136,8 +136,9 @@ export function getScanCount(scanHistory) {
 export function canScan(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return true;
   if (entitlements != null) {
-    const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
-    return entitlements.free_scans_used < limit;
+    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
+    const used = Number(entitlements.free_scans_used) || 0;
+    return used < limit;
   }
   if (isLoggedIn) return false;
   return getScanCount(scanHistory) < FREE_SCAN_LIMIT;
@@ -151,12 +152,16 @@ export function canScan(subscription, scanHistory, entitlements = null, isLogged
  * @param {object|null} entitlements - user_entitlements row from DB
  * @param {boolean}     isLoggedIn   - when true, require DB row for counts
  */
+/**
+ * @returns {number|null} null when logged in but entitlements not loaded yet (do not guess).
+ */
 export function scansRemaining(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return Infinity;
   if (entitlements != null) {
-    const limit = entitlements.free_scan_limit ?? FREE_SCAN_LIMIT;
-    return Math.max(0, limit - entitlements.free_scans_used);
+    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
+    const used = Number(entitlements.free_scans_used) || 0;
+    return Math.max(0, limit - used);
   }
-  if (isLoggedIn) return 0;
+  if (isLoggedIn) return null;
   return Math.max(0, FREE_SCAN_LIMIT - getScanCount(scanHistory));
 }

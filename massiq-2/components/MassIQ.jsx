@@ -45,7 +45,9 @@ import {
   findSimilarAsset,
   getScanByAssetId,
   getSubscription,
-  ensureEntitlements,
+  fetchUserEntitlements,
+  hydrateUserEntitlements,
+  applyBodyScanEntitlement,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
@@ -74,7 +76,7 @@ const C = {
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800;1,14..32,300..800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%;background:${C.bg}}
+  html,body{height:100%;height:100dvh;background:${C.bg}}
   ::-webkit-scrollbar{display:none}
   body{
     font-family:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;
@@ -98,6 +100,10 @@ const CSS = `
   }
   .bp:active{transform:scale(.96);opacity:.85}
   .screen{padding:28px 18px 44px;display:flex;flex-direction:column;gap:22px}
+  /* Mobile: clear fixed tab bar + food FAB + hint chip + safe area (see TabBar + HomeTab floats) */
+  @media(max-width:768px){
+    .screen{padding-bottom:calc(172px + env(safe-area-inset-bottom, 0px))}
+  }
   .screen-title{font-size:34px;font-weight:760;line-height:1.06;letter-spacing:-0.03em}
   .section-title{font-size:17px;font-weight:700;line-height:1.2;letter-spacing:-0.02em;margin-bottom:12px}
   .section-subtitle{font-size:13px;line-height:1.5;color:${C.muted}}
@@ -162,6 +168,11 @@ const CSS = `
     .app-layout{display:grid!important;grid-template-columns:220px 1fr}
     .app-content{max-width:860px;margin:0 auto;padding:34px 26px 52px}
     .ob-wrap{max-width:600px;margin:0 auto}
+    .screen{padding-bottom:44px}
+    .miq-main-scroll{padding-bottom:96px}
+  }
+  @media(max-width:768px){
+    .miq-main-scroll{padding-bottom:0}
   }
   @media(max-width:430px){
     .screen-title{font-size:31px}
@@ -420,6 +431,26 @@ const getBFDisplay = (scan) => {
   const n = parseFloat(bf);
   return isNaN(n) ? '—' : n.toFixed(1) + '%';
 };
+
+function formatRelativeScanTime(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const diffMs = Date.now() - t;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function countNonDuplicateServerScans(scanList) {
+  if (!Array.isArray(scanList)) return 0;
+  return scanList.filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId).length;
+}
 
 /** Rough total weight (lbs) from lean mass (lbs) and body fat % — for comparison deltas only */
 function estWeightLbsFromComp(leanMassLbs, bfPct) {
@@ -1283,13 +1314,14 @@ function Onboarding({ onComplete, currentUserId, isEditing }) {
       cuisines: Array.isArray(data.cuisines) ? data.cuisines : [],
       avoid: Array.isArray(data.avoid) ? data.avoid : [],
     };
-    // [onboarding:debug] — remove after verifying end-to-end mapping
-    console.info('[onboarding:debug] final profile payload (before save)', JSON.stringify({
-      name: profile.name, goal: profile.goal, unitSystem: profile.unitSystem,
-      age: profile.age, weightLbs: profile.weightLbs, heightCm: profile.heightCm,
-      gender: profile.gender, activity: profile.activity,
-      dietPrefs: profile.dietPrefs, cuisines: profile.cuisines, avoid: profile.avoid,
-    }));
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[onboarding:debug] final profile payload (before save)', JSON.stringify({
+        name: profile.name, goal: profile.goal, unitSystem: profile.unitSystem,
+        age: profile.age, weightLbs: profile.weightLbs, heightCm: profile.heightCm,
+        gender: profile.gender, activity: profile.activity,
+        dietPrefs: profile.dietPrefs, cuisines: profile.cuisines, avoid: profile.avoid,
+      }));
+    }
     LS.set(LS_KEYS.profile, profile);
 
     // Editing existing profile — skip plan gen (use explicit flag, not stale LS cache)
@@ -2148,7 +2180,8 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
   const completedCount  = focusItems.filter(i => i.met).length;
   const resolvedHistory = Array.isArray(scanHistory) && scanHistory.length ? scanHistory : LS.get(LS_KEYS.scanHistory, []);
-  const hasScan         = resolvedHistory.length > 0;
+  const realBodyScans   = resolvedHistory.filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId);
+  const hasScan         = realBodyScans.length > 0;
   const insight         = getHomeInsight(activePlan, resolvedHistory, macros, todayStats);
 
   /* Status line */
@@ -2260,12 +2293,12 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
   };
 
   return (
-    <div className="screen" style={{ paddingBottom: 120 }}>
+    <div className="screen">
 
       {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
       {(() => {
-        const lastScan  = resolvedHistory.slice(-1)[0] || null;
-        const prevScan  = resolvedHistory.slice(-2)[0] || null;
+        const lastScan  = realBodyScans.length ? realBodyScans[realBodyScans.length - 1] : null;
+        const prevScan  = realBodyScans.length > 1 ? realBodyScans[realBodyScans.length - 2] : null;
         const currentBF = lastScan?.bodyFat  ?? null;
         const targetBF  = activePlan?.targetBF ?? null;
         const startBF   = activePlan?.startBF  ?? currentBF ?? null;
@@ -2297,12 +2330,15 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                     BODY SCAN
                   </span>
                 </div>
-                {!isPremium && freeLeft > 0 && (
+                {!isPremium && freeLeft != null && freeLeft > 0 && (
                   <span style={{ fontSize: 11, color: C.dimmed }}>
                     {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} included
                   </span>
                 )}
-                {!isPremium && freeLeft <= 0 && (
+                {!isPremium && freeLeft === null && !!accessToken && (
+                  <span style={{ fontSize: 11, color: C.dimmed }}>Loading allowance…</span>
+                )}
+                {!isPremium && freeLeft != null && freeLeft <= 0 && (
                   <button className="bp" onClick={onUpgrade} style={{
                     fontSize: 11, fontWeight: 700, color: C.green, background: 'none',
                     border: 'none', cursor: 'pointer', padding: 0,
@@ -2531,7 +2567,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       {hasScan && (
         <PremiumGate feature={FEATURES.DECISION_LOG} subscription={subscription} onUpgrade={onUpgrade}>
           {(() => {
-            const latestScan = resolvedHistory[resolvedHistory.length - 1];
+            const latestScan = realBodyScans.length ? realBodyScans[realBodyScans.length - 1] : null;
             const decision   = latestScan?.adaptationDecision;
             const rationale  = latestScan?.adaptationRationale;
             const cmp        = latestScan?.scanComparison;
@@ -2588,7 +2624,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
             const traj       = activePlan.engineTrajectory;
             const weeksLeft  = traj?.timeline_weeks;
             const targetBF   = activePlan.targetBF ?? activePlan.bodyFat;
-            const currentBF  = resolvedHistory.slice(-1)[0]?.bodyFat ?? null;
+            const currentBF  = realBodyScans.length ? realBodyScans[realBodyScans.length - 1]?.bodyFat ?? null : null;
             const weeklyRate = traj?.weekly_change;
             if (!weeksLeft) return null;
             return (
@@ -2622,7 +2658,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       )}
 
       {/* ══ TODAY'S FOCUS (only after first scan) ════════════════════════════ */}
-      {activePlan && resolvedHistory.length > 0 && (
+      {activePlan && hasScan && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: C.dimmed, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
@@ -2713,10 +2749,13 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
           <>
             {!premium && (
               <div style={{
-                position: 'fixed', bottom: 144, left: '50%', transform: 'translateX(-50%)',
-                zIndex: 49, fontSize: 11, color: C.muted, background: 'rgba(10,13,10,0.85)',
+                position: 'fixed',
+                bottom: 'calc(140px + env(safe-area-inset-bottom, 0px))',
+                left: '50%', transform: 'translateX(-50%)',
+                zIndex: 115, fontSize: 11, color: C.muted, background: 'rgba(10,13,10,0.85)',
                 backdropFilter: 'blur(8px)', padding: '4px 14px', borderRadius: 99,
-                border: `1px solid ${C.border}`, whiteSpace: 'nowrap',
+                border: `1px solid ${C.border}`, whiteSpace: 'nowrap', maxWidth: 'calc(100vw - 24px)',
+                pointerEvents: 'auto',
               }}>
                 {limitHit ? (
                   <>
@@ -2740,13 +2779,16 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
               }}
               disabled={scanning}
               style={{
-                position: 'fixed', bottom: 88, left: '50%', transform: 'translateX(-50%)',
-                zIndex: 50, height: 50, paddingInline: 28, borderRadius: 25,
+                position: 'fixed',
+                bottom: 'calc(82px + env(safe-area-inset-bottom, 0px))',
+                left: '50%', transform: 'translateX(-50%)',
+                zIndex: 120, height: 50, paddingInline: 28, borderRadius: 25,
                 background: scanning ? C.greenDim : limitHit ? C.dimmed : C.green, border: 'none',
                 color: limitHit ? C.muted : '#0A0D0A', fontSize: 14, fontWeight: 700,
                 display: 'flex', alignItems: 'center', gap: 7,
                 cursor: scanning ? 'default' : 'pointer',
                 whiteSpace: 'nowrap', opacity: scanning ? 0.7 : 1,
+                boxShadow: '0 6px 24px rgba(0,0,0,0.35)', pointerEvents: 'auto',
               }}
             >
               <span style={{ fontSize: 16, lineHeight: 1 }}>⊙</span>
@@ -2759,7 +2801,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       {/* Scan result confirm sheet */}
       {scanResult && (
         <div
-          style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end' }}
+          style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', pointerEvents: 'auto' }}
           onClick={() => setScanResult(null)}
         >
           <div
@@ -2767,7 +2809,10 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
             style={{
               width: '100%', maxWidth: 480, margin: '0 auto',
               background: C.card, borderRadius: '20px 20px 0 0', padding: '28px 22px',
+              paddingBottom: 'max(28px, calc(22px + env(safe-area-inset-bottom, 0px)))',
               border: `1px solid ${C.border}`,
+              maxHeight: 'min(88dvh, calc(100dvh - env(safe-area-inset-top, 0px) - 24px))',
+              overflowY: 'auto', WebkitOverflowScrolling: 'touch',
             }}
           >
             <div style={{ fontSize: 17, fontWeight: 700, color: C.white, marginBottom: 3 }}>
@@ -4568,10 +4613,13 @@ function Toast({ msg, onDone }) {
   useEffect(() => { const t = setTimeout(onDone, 2800); return () => clearTimeout(t); }, [onDone]);
   return (
     <div className="su" style={{
-      position: 'fixed', bottom: 100, left: '50%', transform: 'translateX(-50%)',
+      position: 'fixed',
+      bottom: 'calc(150px + env(safe-area-inset-bottom, 0px))',
+      left: '50%', transform: 'translateX(-50%)',
       background: C.green, color: '#000', fontWeight: 700, fontSize: 14,
-      padding: '10px 22px', borderRadius: 99, zIndex: 500, whiteSpace: 'nowrap',
-      boxShadow: '0 4px 20px rgba(0,200,83,0.4)',
+      padding: '10px 22px', borderRadius: 99, zIndex: 520, whiteSpace: 'nowrap',
+      maxWidth: 'calc(100vw - 32px)', textAlign: 'center', lineHeight: 1.35,
+      boxShadow: '0 4px 20px rgba(0,200,83,0.4)', pointerEvents: 'none',
     }}>{msg}</div>
   );
 }
@@ -4685,8 +4733,8 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null }) {
-  const rawScanHistory = LS.get(LS_KEYS.scanHistory, []);
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null, scanHistoryFromDb = [], latestDecisionSummary = null }) {
+  const rawScanHistory = Array.isArray(scanHistoryFromDb) && scanHistoryFromDb.length > 0 ? scanHistoryFromDb : LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
   const [confirmDeleteHistory, setConfirmDeleteHistory] = useState(false);
@@ -4702,8 +4750,11 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
     checkpoint: { enabled: true, time: '09:00' },
   }));
 
-  /* Health score from last scan or profile defaults */
-  const lastScan    = scanHistory[scanHistory.length - 1];
+  /* Health score from latest non-duplicate scan (or last row) */
+  const lastScan =
+    [...scanHistory].filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId).slice(-1)[0]
+    || scanHistory[scanHistory.length - 1]
+    || null;
   const bf          = getBF(lastScan) || 20;
 
   // leanMass is stored in lbs (from Claude scan). Convert to kg for display and scoring.
@@ -4812,19 +4863,60 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
   return (
     <div className="screen">
       <h1 className="screen-title">Profile</h1>
-      {(latestMetric || latestPlanAdjustment) && (
+
+      {/* ── Latest scan (DB-backed when logged in) ─────────────────────── */}
+      {lastScan && (
         <Card className="su" style={{ animationDelay: '.005s' }}>
-          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 6 }}>Backend Progress Context</div>
-          {latestMetric && (
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55, marginBottom: latestPlanAdjustment ? 8 : 0 }}>
-              Source: `progress_metrics` · as_of {latestMetric.as_of_date} · weekly BF change {latestMetric.weekly_body_fat_change ?? '—'}% · trend {latestMetric.trend_status || 'unknown'}.
-            </div>
-          )}
-          {latestPlanAdjustment && (
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
-              Source: `plan_adjustments` · reason: {latestPlanAdjustment.explanation || latestPlanAdjustment.trigger_reason || 'No explanation recorded'}.
-            </div>
-          )}
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>Latest scan</div>
+          <div style={{ fontSize: 14, color: C.white, fontWeight: 600, marginBottom: 6 }}>
+            {lastScan.date ? new Date(lastScan.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+            Body fat {getBFDisplay(lastScan)}
+            {lastScan.physiqueScore != null && <span> · Physique {Math.round(lastScan.physiqueScore)}</span>}
+            {lastScan.symmetryScore != null && <span> · Symmetry {Math.round(lastScan.symmetryScore)}</span>}
+            {lastScan.leanMass != null && <span> · Lean mass {Number(lastScan.leanMass).toFixed(1)} lbs</span>}
+          </div>
+        </Card>
+      )}
+
+      {/* ── Current plan ───────────────────────────────────────────────── */}
+      {activePlan && (
+        <Card className="su" style={{ animationDelay: '.008s' }}>
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>Current plan</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.white, marginBottom: 6 }}>{activePlan.phase || profile?.goal || 'Plan'}</div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+            {activePlan.startBF != null && activePlan.targetBF != null
+              ? `Working from ~${Number(activePlan.startBF).toFixed(1)}% body fat toward ~${Number(activePlan.targetBF).toFixed(1)}%.`
+              : 'Macros and training adapt from your scans and goal.'}
+          </div>
+        </Card>
+      )}
+
+      {/* ── Next decision ──────────────────────────────────────────────── */}
+      {(latestDecisionSummary || latestPlanAdjustment?.explanation || latestPlanAdjustment?.trigger_reason) && (
+        <Card className="su" style={{ animationDelay: '.01s' }}>
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>Next decision</div>
+          <p style={{ fontSize: 13, color: C.white, lineHeight: 1.55, margin: 0 }}>
+            {latestDecisionSummary
+              || latestPlanAdjustment?.explanation
+              || latestPlanAdjustment?.trigger_reason
+              || 'Your plan updates after each scan.'}
+          </p>
+        </Card>
+      )}
+
+      {/* ── Progress (compact) ───────────────────────────────────────────── */}
+      {latestMetric && (
+        <Card className="su" style={{ animationDelay: '.012s' }}>
+          <div style={{ fontSize: 11, color: C.dimmed, textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>Progress</div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+            As of {latestMetric.as_of_date ? String(latestMetric.as_of_date).slice(0, 10) : '—'}
+            {latestMetric.weekly_body_fat_change != null && (
+              <span> · Weekly body fat change {latestMetric.weekly_body_fat_change}%</span>
+            )}
+            {latestMetric.trend_status && <span> · Trend: {latestMetric.trend_status}</span>}
+          </div>
         </Card>
       )}
 
@@ -5398,6 +5490,14 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
+  useEffect(() => {
+    if (!isLoggedIn || !Array.isArray(parentScanHistory)) return;
+    setScanHistory(parentScanHistory);
+    try {
+      LS.set(LS_KEYS.scanHistory, parentScanHistory);
+    } catch {}
+  }, [isLoggedIn, parentScanHistory]);
+
   const [scanning,          setScanning]          = useState(false);
   const [applying,          setApplying]          = useState(false);
   const [result,            setResult]            = useState(null);
@@ -5534,6 +5634,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           if (existingAsset) {
             console.info('[scan] Exact duplicate detected (SHA-256 match):', existingAsset.id);
             console.info('[entitlements] duplicate scan skip (same photo SHA — no new scan, no usage)');
+            console.info('[entitlement:update]', { increment_applied: false, reason: 'duplicate_skip' });
             // Retrieve the scan that was linked to this asset
             const priorScan = await getScanByAssetId(session.access_token, existingAsset.id).catch(() => null);
             if (priorScan) {
@@ -5576,6 +5677,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
             console.info('[scan] returning localStorage-cached result for same photo');
             console.info('[entitlements] duplicate scan skip (same photo — local cache, no new scan)');
+            console.info('[entitlement:update]', { increment_applied: false, reason: 'duplicate_skip' });
             const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
             const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
             const scanTargets = calcTargets(profile, { leanMass: cachedVisual.leanMass });
@@ -6546,8 +6648,12 @@ Return ONLY this JSON (no markdown, no extra text):
 
   /* ── Pre-scan state ── */
   const isPremium = isPremiumActive(subscription);
+  const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
+  const completedScans = historyForUi.filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId);
+  const latestCompleted = completedScans[completedScans.length - 1] || null;
   const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
   const scanLocked = !canScan(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
 
   return (
     <div className="screen">
@@ -6583,8 +6689,26 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       </Card>
 
+      {latestCompleted && (
+        <Card style={{ background: C.card, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.dimmed, textTransform: 'uppercase', marginBottom: 8 }}>Your latest scan</div>
+          <div style={{ fontSize: 14, color: C.white, fontWeight: 600, marginBottom: 6 }}>
+            Last scan: <span style={{ color: C.muted, fontWeight: 500 }}>{formatRelativeScanTime(latestCompleted.date)}</span>
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+            Body fat {getBFDisplay(latestCompleted)}
+            {latestCompleted.physiqueScore != null && (
+              <span> · Physique score {Math.round(latestCompleted.physiqueScore)}</span>
+            )}
+            {latestCompleted.symmetryScore != null && (
+              <span> · Symmetry {Math.round(latestCompleted.symmetryScore)}</span>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* ── Free scan remaining notice ── */}
-      {!scanLocked && remaining < Infinity && (
+      {!scanLocked && !isPremium && remaining != null && remaining < Infinity && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10,
           background: remaining === 1 ? 'rgba(212,114,74,0.08)' : 'rgba(114,184,149,0.06)',
@@ -6598,6 +6722,9 @@ Return ONLY this JSON (no markdown, no extra text):
               : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining.`}
           </span>
         </div>
+      )}
+      {!scanLocked && !isPremium && isLoggedIn && remaining === null && (
+        <div style={{ fontSize: 13, color: C.dimmed, padding: '8px 4px' }}>Loading scan allowance from your account…</div>
       )}
 
       {/* ── Scan limit reached — upgrade gate ── */}
@@ -6619,7 +6746,7 @@ Return ONLY this JSON (no markdown, no extra text):
             </div>
           </div>
           <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.65 }}>
-            You&apos;ve used your {FREE_SCAN_LIMIT} free scans. Premium gives you unlimited scans — plus adaptive macros, progress tracking, and a timeline to your goal.
+            You&apos;ve used your {dbFreeLimit} free scans. Premium gives you unlimited scans — plus adaptive macros, progress tracking, and a timeline to your goal.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {[
@@ -7019,6 +7146,7 @@ function TabBar({ active, setTab }) {
       background: 'rgba(12,18,14,0.9)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
       borderTop: `1px solid ${C.border}`,
       display: 'flex', padding: '10px 0 max(10px, env(safe-area-inset-bottom))',
+      pointerEvents: 'auto',
     }}>
       {TABS.map(t => {
         const isActive = active === t.key;
@@ -7124,6 +7252,17 @@ export default function MassIQ() {
     const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
     return calcTargets(profile, latestScan);
   }, [profile, activePlan]);
+
+  const latestDecisionSummary = useMemo(() => {
+    const list = Array.isArray(scanHistory) ? scanHistory : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const s = list[i];
+      if (!s || s.scanStatus === 'duplicate' || s.duplicateOfScanId) continue;
+      const t = s.adaptationRationale || s.dbDecision?.decision_reason || s.dbDecisionLog?.explanation || s.limitingFactor;
+      if (t) return String(t);
+    }
+    return null;
+  }, [scanHistory]);
   // ──────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -7379,9 +7518,10 @@ export default function MassIQ() {
           // Non-fatal: free tier assumed
         }
 
-        // Load entitlements (non-fatal — null means no scans yet, free limit applies)
+        // Entitlements: hydrate from DB — insert 0-used row only if server has zero scans; else reconcile from scans count
         try {
-          const ent = await ensureEntitlements(session.access_token, userId);
+          const nd = countNonDuplicateServerScans(loadedScanHistory);
+          const ent = await hydrateUserEntitlements(session.access_token, userId, nd);
           if (mounted) {
             setEntitlements(ent);
             if (ent != null && ent.free_food_scans_date) {
@@ -7396,11 +7536,11 @@ export default function MassIQ() {
               lifetime_scan_count: ent.lifetime_scan_count,
             });
           } else {
-            console.warn('[sync] entitlements:null — free tier may be blocked until DB row loads');
+            console.warn('[sync] entitlements:null — run migration 024 (RPC) or check connection');
           }
           console.info('[sync] entitlements:ok', { free_scans_used: ent?.free_scans_used ?? 0, free_food_scans_used: ent?.free_food_scans_used ?? 0 });
         } catch {
-          // Non-fatal: migration 003 may not be applied yet
+          // Non-fatal
         }
 
         if (loadedProfile && loadedProfile.age && loadedProfile.weightLbs && loadedProfile.heightCm && !loadedPlan && loadedScanHistory.length > 0) {
@@ -7608,7 +7748,7 @@ export default function MassIQ() {
               if (!cancelled) {
                 setSubscription(sub);
                 try {
-                  const ent = await ensureEntitlements(session.access_token, userId);
+                  const ent = await fetchUserEntitlements(session.access_token, userId);
                   if (!cancelled) {
                     setEntitlements(ent);
                     if (ent != null && ent.free_food_scans_date) {
@@ -7686,6 +7826,7 @@ export default function MassIQ() {
           }
         }
         console.info('[entitlements] duplicate scan skip — no DB scan row, counters unchanged');
+        console.info('[entitlement:update]', { user_id: userId, increment_applied: false, reason: 'duplicate_skip' });
         setToast('Plan saved. Same photo as a previous scan — no new scan was recorded and free scans were not used.');
         return;
       }
@@ -7693,6 +7834,7 @@ export default function MassIQ() {
       // ── Step 2: Scan first — capture scans.id from insert response only ─
       let scanId = null;
       let savedScanEntry = null;
+      let insertedNewBodyScan = false;
       const historyBeforeInsert = LS.get(LS_KEYS.scanHistory, []);
 
       if (newScanEntry) {
@@ -7713,7 +7855,7 @@ export default function MassIQ() {
             if (/body_scan_free_limit|free_limit_reached/i.test(full)) {
               console.info('[entitlements] limit reached', { source: 'db_insert_guard', detail: full.trim() });
               try {
-                const ent = await ensureEntitlements(session.access_token, userId);
+                const ent = await fetchUserEntitlements(session.access_token, userId);
                 setEntitlements(ent);
               } catch {}
               setToast('Free scan limit reached. Upgrade for unlimited scans.');
@@ -7725,6 +7867,7 @@ export default function MassIQ() {
           if (!scanId) {
             throw new Error('[sync] step2:createScan: Supabase returned no id — scan not saved');
           }
+          insertedNewBodyScan = true;
           savedScanEntry = { ...newScanEntry, dbId: scanId };
           const newHistory = [...historyBeforeInsert, savedScanEntry];
           LS.set(LS_KEYS.scanHistory, newHistory);
@@ -7759,12 +7902,29 @@ export default function MassIQ() {
         }
       }
 
-      if (newScanEntry && newScanEntry.scanStatus !== 'duplicate' && scanId) {
+      if (insertedNewBodyScan && newScanEntry?.scanStatus !== 'duplicate' && scanId) {
         try {
-          const ent = await ensureEntitlements(session.access_token, userId);
+          const rpc = await applyBodyScanEntitlement(session.access_token, scanId);
+          console.info('[entitlement:update]', {
+            user_id: userId,
+            increment_applied: rpc?.increment_applied === true,
+            reason: rpc?.reason || (rpc?.ok === false ? 'rpc_failed' : 'new_scan'),
+            free_scans_used: rpc?.free_scans_used,
+            lifetime_scan_count: rpc?.lifetime_scan_count,
+          });
+        } catch (rpcErr) {
+          console.warn('[entitlement:update]', {
+            user_id: userId,
+            increment_applied: false,
+            reason: 'rpc_error',
+            error: rpcErr?.message,
+          });
+        }
+        try {
+          const ent = await fetchUserEntitlements(session.access_token, userId);
           if (ent) {
             setEntitlements(ent);
-            console.info('[entitlements] increment success', {
+            console.info('[entitlements] refreshed after body scan save', {
               free_scans_used: ent.free_scans_used,
               free_scan_limit: ent.free_scan_limit,
               lifetime_scan_count: ent.lifetime_scan_count,
@@ -7882,10 +8042,10 @@ export default function MassIQ() {
             },
           });
         } catch (peErr) {
-          console.error('[personalization] persistPersonalizationArtifacts FAILED', peErr?.message, peErr);
           const tbl = peErr?.personalizationTable || 'personalization';
           const detail = peErr?.postgrestMessage || peErr?.message || String(peErr);
-          setToast(`${tbl} insert failed: ${detail}`);
+          console.error('[personalization] persistPersonalizationArtifacts FAILED', { table: tbl, detail, err: peErr });
+          setToast("We couldn't save one part of your scan insights. Your scan and plan are still saved.");
           throw peErr;
         }
 
@@ -7942,8 +8102,8 @@ export default function MassIQ() {
         } catch (sdErr) {
           const tbl = sdErr?.personalizationTable || 'scan_decisions';
           const detail = sdErr?.postgrestMessage || sdErr?.message || String(sdErr);
-          console.error('[db:scan-decision] insert FAILED', { user_id: userId, error: detail });
-          setToast(`${tbl} insert failed: ${detail}`);
+          console.error('[db:scan-decision] insert FAILED', { user_id: userId, table: tbl, detail });
+          setToast("We couldn't save your adaptation record. Your scan and plan are still saved.");
         }
 
         try {
@@ -7963,8 +8123,8 @@ export default function MassIQ() {
         } catch (dlErr) {
           const tbl = dlErr?.personalizationTable || 'decision_log';
           const detail = dlErr?.postgrestMessage || dlErr?.message || String(dlErr);
-          console.error('[db:decision-log] insert FAILED', { user_id: userId, error: detail });
-          setToast(`${tbl} insert failed: ${detail}`);
+          console.error('[db:decision-log] insert FAILED', { user_id: userId, table: tbl, detail });
+          setToast("We couldn't save your decision log. Your scan and plan are still saved.");
         }
 
         try {
@@ -7999,8 +8159,8 @@ export default function MassIQ() {
             } catch (paErr) {
               const tbl = paErr?.personalizationTable || 'plan_adjustments';
               const detail = paErr?.postgrestMessage || paErr?.message || String(paErr);
-              console.error('[db:plan-adjustment] insert FAILED', { user_id: userId, error: detail });
-              setToast(`${tbl} insert failed: ${detail}`);
+              console.error('[db:plan-adjustment] insert FAILED', { user_id: userId, table: tbl, detail });
+              setToast("We couldn't save a plan adjustment record. Your plan update is still saved.");
             }
           } else {
             console.info('[db:plan-adjustment] skip — plan audit snapshot unchanged vs prior active plan', {
@@ -8281,13 +8441,14 @@ export default function MassIQ() {
     }
     setEditing(false);
 
-    // [onboarding:debug] — remove after verifying end-to-end mapping
-    console.info('[onboarding:debug] payload about to persist', JSON.stringify({
-      name: profileWithId.name, goal: profileWithId.goal, unitSystem: profileWithId.unitSystem,
-      age: profileWithId.age, weightLbs: profileWithId.weightLbs, heightCm: profileWithId.heightCm,
-      gender: profileWithId.gender, activity: profileWithId.activity,
-      dietPrefs: profileWithId.dietPrefs, cuisines: profileWithId.cuisines, avoid: profileWithId.avoid,
-    }));
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[onboarding:debug] payload about to persist', JSON.stringify({
+        name: profileWithId.name, goal: profileWithId.goal, unitSystem: profileWithId.unitSystem,
+        age: profileWithId.age, weightLbs: profileWithId.weightLbs, heightCm: profileWithId.heightCm,
+        gender: profileWithId.gender, activity: profileWithId.activity,
+        dietPrefs: profileWithId.dietPrefs, cuisines: profileWithId.cuisines, avoid: profileWithId.avoid,
+      }));
+    }
 
     // ── Critical persistence ─────────────────────────────────────────────────
     // Start the DB write immediately and hold the Promise in a ref.
@@ -8342,7 +8503,7 @@ export default function MassIQ() {
     }
     if (session?.user?.id) {
       try {
-        const ent = await ensureEntitlements(session.access_token, session.user.id);
+        const ent = await fetchUserEntitlements(session.access_token, session.user.id);
         setEntitlements(ent);
       } catch {}
     }
@@ -8386,17 +8547,19 @@ export default function MassIQ() {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     const checkoutOrigin = typeof window !== 'undefined' ? localStorage.getItem('massiq:checkout-origin') : null;
     const originMismatch = !!(checkoutOrigin && origin && checkoutOrigin !== origin);
-    console.info('[auth:login-render] showing login — exact condition', {
-      checkout_success: hasCheckoutSuccess,
-      authReady,
-      checkoutRetryExhausted,
-      getSession_result: !!session,
-      hasStoredSession: !!stored,
-      url: typeof window !== 'undefined' ? window.location.href : '',
-      origin,
-      checkout_origin_stored: checkoutOrigin,
-      origin_mismatch: originMismatch,
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[auth:login-render] showing login — exact condition', {
+        checkout_success: hasCheckoutSuccess,
+        authReady,
+        checkoutRetryExhausted,
+        getSession_result: !!session,
+        hasStoredSession: !!stored,
+        url: typeof window !== 'undefined' ? window.location.href : '',
+        origin,
+        checkout_origin_stored: checkoutOrigin,
+        origin_mismatch: originMismatch,
+      });
+    }
     const loginNotice = hasCheckoutSuccess && originMismatch
       ? 'You may have returned to a different URL. Sign in to activate premium.'
       : authNotice;
@@ -8407,15 +8570,17 @@ export default function MassIQ() {
   if (!ready) return <div style={{ background: C.bg, minHeight: '100dvh' }} />;
 
   const profileComplete = profile && (profile.name || '').trim() && profile.age && profile.weightLbs && profile.heightCm;
-  console.info('[route:decision]', {
-    userId:           session?.user?.id ?? null,
-    sessionPresent:   !!session?.access_token,
-    hydrationComplete: ready,
-    profileFound:     !!profile,
-    profileComplete:  !!profileComplete,
-    premium:          subscription?.status ?? 'none',
-    decision:         !session?.access_token ? 'auth' : profileComplete && !editing ? 'app' : 'onboarding',
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    console.info('[route:decision]', {
+      userId:           session?.user?.id ?? null,
+      sessionPresent:   !!session?.access_token,
+      hydrationComplete: ready,
+      profileFound:     !!profile,
+      profileComplete:  !!profileComplete,
+      premium:          subscription?.status ?? 'none',
+      decision:         !session?.access_token ? 'auth' : profileComplete && !editing ? 'app' : 'onboarding',
+    });
+  }
   if (!profileComplete || editing) return (
     <>
       <style>{CSS}</style>
@@ -8427,9 +8592,9 @@ export default function MassIQ() {
     if (!session?.access_token) return null;
     const uid = session?.user?.id ?? session?.user_id;
     if (!uid) return null;
-    const ent = await ensureEntitlements(session.access_token, uid);
+    const ent = await fetchUserEntitlements(session.access_token, uid);
     setEntitlements(ent);
-    if (ent) {
+    if (ent && process.env.NODE_ENV !== 'production') {
       console.info('[entitlements] hydrated from DB', {
         free_scans_used: ent.free_scans_used,
         free_scan_limit: ent.free_scan_limit,
@@ -8452,6 +8617,8 @@ export default function MassIQ() {
             activePlan={activePlan}
             progressMetrics={progressMetrics}
             latestPlanAdjustment={latestPlanAdjustment}
+            scanHistoryFromDb={scanHistory}
+            latestDecisionSummary={latestDecisionSummary}
             setTab={setTab}
             onEditProfile={handleEditProfile}
             onDeleteScanHistory={handleDeleteScanHistory}
@@ -8486,7 +8653,7 @@ export default function MassIQ() {
         <div className="desktop-sidebar" style={{ width: 220, flexShrink: 0 }} />
 
         {/* Content */}
-        <div style={{ flex: 1, paddingBottom: 96, minWidth: 0 }}>
+        <div className="miq-main-scroll" style={{ flex: 1, minWidth: 0 }}>
           <div className="app-content" style={{ maxWidth: 480, margin: '0 auto' }}>
             {renderTab()}
           </div>
