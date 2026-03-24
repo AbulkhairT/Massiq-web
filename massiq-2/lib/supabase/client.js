@@ -21,6 +21,12 @@ function authHeaders(token) {
  */
 export function logPostgrestFailure(label, err, payloadSent = null) {
   const e = err && typeof err === 'object' ? err : {};
+  let payload_json = null;
+  try {
+    payload_json = payloadSent != null ? JSON.stringify(payloadSent) : null;
+  } catch {
+    payload_json = '[stringify failed]';
+  }
   console.error(label, {
     code: e.postgrestCode ?? e.code,
     message: e.message,
@@ -29,6 +35,7 @@ export function logPostgrestFailure(label, err, payloadSent = null) {
     httpStatus: e.httpStatus,
     path: e.requestPath,
     payload: payloadSent,
+    payload_json,
   });
 }
 
@@ -931,6 +938,8 @@ export async function createScanDecision(token, userId, payload) {
     payload: payload.payload || {},
   };
   console.info('[db:scan-decision] payload', {
+    insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
@@ -971,12 +980,14 @@ export async function createDecisionLog(token, userId, payload) {
     explanation: payload.explanation || null,
   };
   console.info('[db:decision-log] payload', {
+    insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
     scan_id_null: row.scan_id == null,
     plan_id_null: row.plan_id == null,
-    category: row.decision_category,
+    decision_category: row.decision_category,
   });
   try {
     const rows = await supabaseFetch('/rest/v1/decision_log', {
@@ -1012,6 +1023,8 @@ export async function createPlanAdjustment(token, userId, payload) {
     explanation: payload.explanation || null,
   };
   console.info('[db:plan-adjustment] payload', {
+    insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
@@ -1586,29 +1599,40 @@ export async function probeMinimalDecisionEngineRun(token, userId, scanId, planI
   }
 }
 
+function jsonbObjectOrEmpty(v) {
+  if (v != null && typeof v === 'object' && !Array.isArray(v)) return v;
+  return {};
+}
+
 export async function createDecisionEngineRun(token, userId, payload) {
   const rawTrigger = payload.triggerType;
   if (rawTrigger == null || String(rawTrigger).trim() === '') {
-    throw personalizationTableError('decision_engine_runs', 'triggerType is required', null);
+    throw personalizationTableError('decision_engine_runs', 'triggerType is required (maps to trigger_type, NOT NULL)', null);
   }
-  const safeTriggerType = String(rawTrigger).trim() || 'unknown';
+  const safeTriggerType = String(rawTrigger).trim();
+
+  const inputSummary = jsonbObjectOrEmpty(payload.inputSummary);
+  const outputJson = jsonbObjectOrEmpty(payload.outputJson);
+  const inputSnapshot = jsonbObjectOrEmpty(payload.inputSnapshot ?? inputSummary);
+  const outputSnapshot = jsonbObjectOrEmpty(payload.outputSnapshot ?? outputJson);
+
+  const engineVersion = String(payload.engineVersion || '2.0.0').trim() || '2.0.0';
 
   const baseRow = {
     user_id: userId,
     scan_id: payload.scanId || null,
     plan_id: payload.planId || null,
-    engine_version: payload.engineVersion || '2.0.0',
+    engine_version: engineVersion,
     trigger_type: safeTriggerType,
-    input_summary: payload.inputSummary || {},
-    output_json: payload.outputJson || {},
+    input_summary: inputSummary,
+    output_json: outputJson,
+    input_snapshot: inputSnapshot,
+    output_snapshot: outputSnapshot,
   };
-  const logPayloadKeys = () => ({
-    keys: Object.keys(baseRow),
-    input_summary_size: JSON.stringify(baseRow.input_summary || {}).length,
-    output_json_size: JSON.stringify(baseRow.output_json || {}).length,
-  });
 
   console.info('[db:decision-engine-run] payload', {
+    insert_keys: Object.keys(baseRow),
+    payload_json: JSON.stringify(baseRow),
     user_id: userId,
     scan_id: baseRow.scan_id,
     plan_id: baseRow.plan_id,
@@ -1617,8 +1641,6 @@ export async function createDecisionEngineRun(token, userId, payload) {
     engine_version: baseRow.engine_version,
     trigger_type: safeTriggerType,
     trigger_type_raw: rawTrigger,
-    input_summary_defined: payload.inputSummary !== undefined,
-    output_json_defined: payload.outputJson !== undefined,
   });
 
   const postRow = async (row) => {
@@ -1650,42 +1672,10 @@ export async function createDecisionEngineRun(token, userId, payload) {
       return null;
     }
     const missing = parseMissingColumnName(err?.message);
-    if (isPostgrestColumnOrSchemaCacheError(err) && (missing === 'input_summary' || String(err?.message || '').includes('input_summary'))) {
-      const mergedOutput = {
-        ...(baseRow.output_json || {}),
-        _embedded_input_summary: baseRow.input_summary || {},
-      };
-      const compatRow = {
-        user_id: baseRow.user_id,
-        scan_id: baseRow.scan_id,
-        plan_id: baseRow.plan_id,
-        engine_version: baseRow.engine_version,
-        trigger_type: baseRow.trigger_type,
-        output_json: mergedOutput,
-      };
-      console.warn('[db:decision-engine-run] schema mismatch — retrying without input_summary', {
-        table: 'decision_engine_runs',
-        missing_column: 'input_summary',
-        ...logPayloadKeys(),
-      });
-      try {
-        const out = await postRow(compatRow);
-        console.info('[db:decision-engine-run] ok (compat omit input_summary)', { id: out.id });
-        return out;
-      } catch (err2) {
-        logPostgrestFailure('[db:decision-engine-run] compat retry FAILED', err2, compatRow);
-        throw personalizationTableError(
-          'decision_engine_runs',
-          `column mismatch after retry: ${err2?.message || err2}`,
-          err2,
-        );
-      }
-    }
     if (isPostgrestColumnOrSchemaCacheError(err)) {
-      console.error('[db:decision-engine-run] schema/column mismatch (no safe retry)', {
+      console.error('[db:decision-engine-run] schema/column mismatch', {
         table: 'decision_engine_runs',
         missing_column: missing,
-        payload: logPayloadKeys(),
         error: err?.message,
       });
       throw personalizationTableError('decision_engine_runs', err?.message || String(err), err);
@@ -1705,6 +1695,8 @@ export async function createPhaseHistoryRow(token, userId, payload) {
     reason: payload.reason || null,
   };
   console.info('[db:phase-history] payload', {
+    insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
@@ -1730,28 +1722,29 @@ export async function createPhaseHistoryRow(token, userId, payload) {
 }
 
 export async function createMusclePriorityRow(token, userId, payload) {
-  const rawMuscle = payload.muscle ?? payload.muscleKey;
+  const rawMuscle = payload.muscle;
   const muscle = rawMuscle != null ? String(rawMuscle).trim() : '';
   if (!muscle) {
     throw personalizationTableError('muscle_priorities', 'muscle is required', null);
   }
-  const priorityLevel = String(payload.priorityLevel ?? payload.priorityTier ?? 'medium').trim() || 'medium';
-  const rationale = payload.rationale ?? payload.notes ?? null;
+  const priorityLevel = String(payload.priorityLevel ?? 'medium').trim() || 'medium';
+  const rationale = payload.rationale != null ? String(payload.rationale) : null;
 
   const row = {
     user_id: userId,
     scan_id: payload.scanId || null,
     muscle,
     priority_level: priorityLevel,
-    rationale: rationale ?? null,
+    rationale,
   };
 
   console.info('[db:muscle-priority] payload', {
+    insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     scan_id_null: row.scan_id == null,
     muscle: row.muscle,
-    muscle_null: row.muscle == null || row.muscle === '',
     priority_level: row.priority_level,
     rationale: row.rationale,
   });
@@ -1772,35 +1765,32 @@ export async function createMusclePriorityRow(token, userId, payload) {
 }
 
 export async function createPlanDirectiveRow(token, userId, payload) {
-  const rawType = payload.directiveType ?? payload.category;
+  const rawType = payload.directiveType;
   const directiveType = rawType != null ? String(rawType).trim() : '';
   if (!directiveType) {
     throw personalizationTableError(
       'plan_directives',
-      'directive_type is required (pass directiveType or legacy category)',
+      'directive_type is required (pass directiveType)',
       null,
     );
   }
-  const bodyPayload = payload.payload != null && typeof payload.payload === 'object' ? payload.payload : {};
+  const directives = jsonbObjectOrEmpty(payload.directives);
   const row = {
     user_id: userId,
     plan_id: payload.planId || null,
     scan_id: payload.scanId || null,
     directive_type: directiveType,
-    directive_key: payload.directiveKey ?? null,
-    payload: bodyPayload,
+    directives,
   };
   console.info('[db:plan-directive] payload', {
     insert_keys: Object.keys(row),
+    payload_json: JSON.stringify(row),
     user_id: row.user_id,
     scan_id: row.scan_id,
     plan_id: row.plan_id,
     scan_id_null: row.scan_id == null,
     plan_id_null: row.plan_id == null,
     directive_type: row.directive_type,
-    directive_key: row.directive_key,
-    directive_key_null: row.directive_key == null,
-    payload_json: JSON.stringify(row.payload),
   });
   try {
     const rows = await supabaseFetch('/rest/v1/plan_directives', {
@@ -1810,7 +1800,7 @@ export async function createPlanDirectiveRow(token, userId, payload) {
     });
     const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (!out?.id) throw new Error('[plan_directives] insert returned no id');
-    console.info('[db:plan-directive] ok', { id: out.id, directive_type: row.directive_type, directive_key: row.directive_key });
+    console.info('[db:plan-directive] ok', { id: out.id, directive_type: row.directive_type });
     return out;
   } catch (err) {
     logPostgrestFailure('[db:plan-directive] insert FAILED', err, row);
@@ -1907,8 +1897,7 @@ export async function persistPersonalizationArtifacts(token, userId, {
     planId,
     scanId,
     directiveType: 'nutrition',
-    directiveKey: 'macro_directives',
-    payload: {
+    directives: {
       deficit_aggressiveness: na.deficit_aggressiveness,
       carb_timing: na.carb_timing,
       simplify_meals: na.simplify_meals,
@@ -1920,8 +1909,7 @@ export async function persistPersonalizationArtifacts(token, userId, {
     planId,
     scanId,
     directiveType: 'training',
-    directiveKey: 'volume_frequency',
-    payload: {
+    directives: {
       weekly_set_targets: ta.weekly_set_targets,
       frequency_targets: ta.frequency_targets,
       volume_delta_sets: ta.volume_delta_sets,

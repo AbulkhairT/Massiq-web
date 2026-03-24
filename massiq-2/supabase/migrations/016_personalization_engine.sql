@@ -12,8 +12,11 @@ CREATE TABLE IF NOT EXISTS decision_engine_runs (
   scan_id          uuid REFERENCES scans(id) ON DELETE SET NULL,
   plan_id          uuid REFERENCES plans(id) ON DELETE SET NULL,
   engine_version   text NOT NULL DEFAULT '2.0.0',
+  trigger_type     text NOT NULL DEFAULT 'unknown',
   input_summary    jsonb NOT NULL DEFAULT '{}',
   output_json      jsonb NOT NULL DEFAULT '{}',
+  input_snapshot   jsonb NOT NULL DEFAULT '{}',
+  output_snapshot  jsonb NOT NULL DEFAULT '{}',
   created_at       timestamptz NOT NULL DEFAULT now()
 );
 
@@ -38,15 +41,13 @@ CREATE INDEX IF NOT EXISTS phase_history_user_idx ON phase_history (user_id, cre
 -- ─── 3. muscle_priorities ────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS muscle_priorities (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id        uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  plan_id        uuid REFERENCES plans(id) ON DELETE SET NULL,
-  scan_id        uuid REFERENCES scans(id) ON DELETE SET NULL,
-  muscle_key     text NOT NULL,
-  priority_tier  text NOT NULL DEFAULT 'medium',
-  rank           smallint,
-  notes          text,
-  created_at     timestamptz NOT NULL DEFAULT now()
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  scan_id          uuid REFERENCES scans(id) ON DELETE SET NULL,
+  muscle           text NOT NULL,
+  priority_level   text NOT NULL DEFAULT 'medium',
+  rationale        text,
+  created_at       timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS muscle_priorities_user_scan_idx ON muscle_priorities (user_id, scan_id);
@@ -54,14 +55,13 @@ CREATE INDEX IF NOT EXISTS muscle_priorities_user_scan_idx ON muscle_priorities 
 -- ─── 4. plan_directives ─────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS plan_directives (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id        uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  plan_id        uuid REFERENCES plans(id) ON DELETE SET NULL,
-  scan_id        uuid REFERENCES scans(id) ON DELETE SET NULL,
-  directive_type text NOT NULL,
-  directive_key  text,
-  payload        jsonb NOT NULL DEFAULT '{}',
-  created_at     timestamptz NOT NULL DEFAULT now()
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  plan_id          uuid REFERENCES plans(id) ON DELETE SET NULL,
+  scan_id          uuid REFERENCES scans(id) ON DELETE SET NULL,
+  directive_type   text NOT NULL,
+  directives       jsonb NOT NULL DEFAULT '{}',
+  created_at       timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS plan_directives_user_idx ON plan_directives (user_id, created_at DESC);
