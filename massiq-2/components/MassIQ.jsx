@@ -37,6 +37,7 @@ import {
   getProgressMetrics,
   createProjection,
   persistPersonalizationArtifacts,
+  probeMinimalDecisionEngineRun,
   getFoodLogsRecentForAdherence,
   uploadScanPhoto,
   createScanAsset,
@@ -7670,63 +7671,77 @@ export default function MassIQ() {
         }
       }
 
-      // ── Step 2: Plan — capture planId ───────────────────────────────────
-      let planId = null;
-      if (nextPlan) {
-        try {
-          console.info('[sync] step2:upsertPlan:start', { phase: nextPlan?.phase });
-          const planRow = await upsertPlan(session.access_token, userId, nextPlan);
-          planId = planRow?.id ?? null;
-          console.info('[sync] step2:upsertPlan:ok', { planId, row: planRow || null });
-          if (!planId) {
-            console.error('[sync] step2:upsertPlan: returned no id — projection will be skipped');
-          }
-        } catch (planErr) {
-          console.error('[sync] step2:upsertPlan:error', planErr?.message, planErr);
-          // For Apply Plan path, fail fast to avoid silent "applied" state without DB plan.
-          if (newScanEntry) throw planErr;
-        }
-      }
-
-      // Duplicate photo apply: save plan/profile only — no new scans row, no entitlement trigger
+      // Duplicate photo apply: profile already written — persist plan only (no scan row)
       if (newScanEntry?.scanStatus === 'duplicate') {
+        let dupPlanId = null;
+        if (nextPlan) {
+          try {
+            console.info('[sync] duplicate apply: upsertPlan:start', { phase: nextPlan?.phase });
+            const planRow = await upsertPlan(session.access_token, userId, nextPlan);
+            dupPlanId = planRow?.id ?? null;
+            console.info('[sync] duplicate apply: upsertPlan:ok', { persistedPlanId: dupPlanId });
+          } catch (planErr) {
+            console.error('[sync] duplicate apply: upsertPlan:error', planErr?.message, planErr);
+            throw planErr;
+          }
+        }
         console.info('[entitlements] duplicate scan skip — no DB scan row, counters unchanged');
         setToast('Plan saved. Same photo as a previous scan — no new scan was recorded and free scans were not used.');
         return;
       }
 
-      // ── Step 3: Scan — capture scanId ───────────────────────────────────
-      // newScanEntry is the single new scan object (no dbId yet).
-      // We insert it, stamp the returned DB id, then append to LS history.
-      // Errors are NOT swallowed — they propagate so the caller can show the user.
+      // ── Step 2: Scan first — capture scans.id from insert response only ─
       let scanId = null;
       let savedScanEntry = null;
       const historyBeforeInsert = LS.get(LS_KEYS.scanHistory, []);
 
       if (newScanEntry) {
         if (newScanEntry.dbId) {
-          // Already persisted in a previous sync (e.g. retry after partial failure)
           scanId = newScanEntry.dbId;
           savedScanEntry = newScanEntry;
-          console.info('[sync] step3:createScan:skipped (already saved)', { scanId });
+          console.info('[sync] step2:createScan:skipped (already saved)', { scanId });
         } else {
-          console.info('[sync] step3:createScan:start', {
+          console.info('[sync] step2:createScan:start', {
             bodyFat: newScanEntry.bodyFat,
             leanMass: newScanEntry.leanMass,
           });
-          // No try/catch here — let failures propagate to the outer catch
           const saved = await createScan(session.access_token, userId, newScanEntry);
           scanId = saved?.id ?? null;
-          console.info('[sync] step3:createScan:response', { scanId, raw: saved });
+          console.info('[sync] step2:createScan:response', { scanId, raw: saved });
           if (!scanId) {
-            throw new Error('[sync] step3:createScan: Supabase returned no id — scan not saved');
+            throw new Error('[sync] step2:createScan: Supabase returned no id — scan not saved');
           }
-          // Stamp dbId and append confirmed entry to LS history + root state
           savedScanEntry = { ...newScanEntry, dbId: scanId };
           const newHistory = [...historyBeforeInsert, savedScanEntry];
           LS.set(LS_KEYS.scanHistory, newHistory);
           setScanHistory(newHistory);
-          console.info('[sync] step3:createScan:ok — history updated', { scanId, total: newHistory.length });
+          console.info('[sync] step2:createScan:ok — history updated', { scanId, total: newHistory.length });
+        }
+      }
+
+      // ── Step 3: Plan — plans.id only from upsertPlan return (never local id) ─
+      let persistedPlanId = null;
+      if (nextPlan) {
+        try {
+          console.info('[sync] step3:upsertPlan:start', { phase: nextPlan?.phase });
+          const planRow = await upsertPlan(session.access_token, userId, nextPlan);
+          persistedPlanId = planRow?.id ?? null;
+          console.info('[sync] step3:upsertPlan:ok', { persistedPlanId, row: planRow || null });
+          if (!persistedPlanId && newScanEntry) {
+            console.error('[sync] step3:upsertPlan: returned no id — personalization FK may fail');
+          }
+        } catch (planErr) {
+          console.error('[sync] step3:upsertPlan:error', planErr?.message, planErr);
+          if (newScanEntry) throw planErr;
+        }
+      }
+
+      // Optional debug: minimal decision_engine_runs row (NEXT_PUBLIC_DEBUG_DECISION_ENGINE_PROBE=1 or localStorage massiq:debug:decision_engine_probe=1)
+      if (scanId && newScanEntry) {
+        try {
+          await probeMinimalDecisionEngineRun(session.access_token, userId, scanId, persistedPlanId);
+        } catch (probeErr) {
+          console.warn('[sync] decision_engine_runs PROBE failed (see logs above)', probeErr?.message);
         }
       }
 
@@ -7747,13 +7762,13 @@ export default function MassIQ() {
         }
       }
 
-      // ── Step 4: Physique projection — requires both planId and scanId ───
+      // ── Step 4: Physique projection — requires both persisted plans.id and scans.id ───
       const projectionAlreadySaved = savedScanEntry?.projectionSaved ?? false;
-      if (planId && scanId && savedScanEntry && !projectionAlreadySaved) {
+      if (persistedPlanId && scanId && savedScanEntry && !projectionAlreadySaved) {
         try {
-          console.info('[sync] step4:createProjection:start', { planId, scanId });
+          console.info('[sync] step4:createProjection:start', { persistedPlanId, scanId });
           const proj = await createProjection(
-            session.access_token, userId, scanId, planId,
+            session.access_token, userId, scanId, persistedPlanId,
             nextPlan, savedScanEntry, nextProfile,
           );
           console.info('[sync] step4:createProjection:ok', { projectionId: proj?.id });
@@ -7768,8 +7783,8 @@ export default function MassIQ() {
           console.error('[sync] step4:createProjection:error', projErr?.message, projErr);
           // Non-critical — app functions fine without projection row
         }
-      } else if (newScanEntry && (!planId || !scanId)) {
-        console.warn('[sync] step4:createProjection:skipped — missing planId or scanId', { planId, scanId });
+      } else if (newScanEntry && (!persistedPlanId || !scanId)) {
+        console.warn('[sync] step4:createProjection:skipped — missing persistedPlanId or scanId', { persistedPlanId, scanId });
       }
 
       // ── Step 5: Scan intelligence — each sub-step isolated (one failure must not block others) ─
@@ -7835,10 +7850,18 @@ export default function MassIQ() {
 
         const prevIdForCompare = priorScan?.dbId || priorScan?.id;
 
+        console.info('[db:personalization] resolved ids for pipeline', {
+          user_id: userId,
+          scan_id: savedScanEntry.dbId,
+          persisted_plan_id: persistedPlanId || null,
+          scan_id_null: savedScanEntry.dbId == null,
+          plan_id_null: persistedPlanId == null,
+        });
+
         try {
           await persistPersonalizationArtifacts(token, userId, {
             scanId: savedScanEntry.dbId,
-            planId: planId || null,
+            planId: persistedPlanId || null,
             previousPhase: previousPlan?.phase ?? null,
             engineOutput: savedScanEntry.decisionEngine || savedScanEntry.scanContext?.decision_engine || null,
             inputSummary: {
@@ -7847,7 +7870,9 @@ export default function MassIQ() {
           });
         } catch (peErr) {
           console.error('[personalization] persistPersonalizationArtifacts FAILED', peErr?.message, peErr);
-          setToast('Scan saved, but personalization metadata failed to sync. Check migration 016 / 017, RLS, and connection.');
+          const tbl = peErr?.personalizationTable || 'personalization';
+          const detail = peErr?.postgrestMessage || peErr?.message || String(peErr);
+          setToast(`${tbl} insert failed: ${detail}`);
           throw peErr;
         }
 
@@ -7889,7 +7914,7 @@ export default function MassIQ() {
         try {
           await createScanDecision(token, userId, {
             scanId: savedScanEntry.dbId,
-            planId: planId || null,
+            planId: persistedPlanId || null,
             decisionType: savedScanEntry.adaptationDecision || 'keep_plan',
             decisionReason: savedScanEntry.adaptationRationale || null,
             payload: {
@@ -7902,13 +7927,16 @@ export default function MassIQ() {
             },
           });
         } catch (sdErr) {
-          console.error('[db:scan-decision] sub-step FAILED', { user_id: userId, error: sdErr?.message, raw: String(sdErr) });
+          const tbl = sdErr?.personalizationTable || 'scan_decisions';
+          const detail = sdErr?.postgrestMessage || sdErr?.message || String(sdErr);
+          console.error('[db:scan-decision] insert FAILED', { user_id: userId, error: detail });
+          setToast(`${tbl} insert failed: ${detail}`);
         }
 
         try {
           await createDecisionLog(token, userId, {
             scanId: savedScanEntry.dbId,
-            planId: planId || null,
+            planId: persistedPlanId || null,
             decisionCategory: 'scan_adaptation',
             decision: {
               type: savedScanEntry.adaptationDecision || 'keep_plan',
@@ -7920,7 +7948,10 @@ export default function MassIQ() {
             explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
           });
         } catch (dlErr) {
-          console.error('[db:decision-log] sub-step FAILED', { user_id: userId, error: dlErr?.message, raw: String(dlErr) });
+          const tbl = dlErr?.personalizationTable || 'decision_log';
+          const detail = dlErr?.postgrestMessage || dlErr?.message || String(dlErr);
+          console.error('[db:decision-log] insert FAILED', { user_id: userId, error: detail });
+          setToast(`${tbl} insert failed: ${detail}`);
         }
 
         try {
@@ -7937,14 +7968,14 @@ export default function MassIQ() {
           console.error('[progress:metrics] sub-step FAILED', { user_id: userId, error: pmErr?.message, raw: String(pmErr) });
         }
 
-        if (planId && previousPlan && nextPlan) {
+        if (persistedPlanId && previousPlan && nextPlan) {
           const oldSnap = planAuditSnapshot(previousPlan);
           const newSnap = planAuditSnapshot(nextPlan);
           const planChanged = JSON.stringify(oldSnap) !== JSON.stringify(newSnap);
           if (planChanged) {
             try {
               await createPlanAdjustment(token, userId, {
-                planId,
+                planId: persistedPlanId,
                 scanId: savedScanEntry.dbId,
                 adjustmentType: 'plan_update',
                 oldValue: oldSnap,
@@ -7953,19 +7984,22 @@ export default function MassIQ() {
                 explanation: savedScanEntry.decisionExplanation || savedScanEntry.adaptationRationale || null,
               });
             } catch (paErr) {
-              console.error('[db:plan-adjustment] sub-step FAILED', { user_id: userId, error: paErr?.message, raw: String(paErr) });
+              const tbl = paErr?.personalizationTable || 'plan_adjustments';
+              const detail = paErr?.postgrestMessage || paErr?.message || String(paErr);
+              console.error('[db:plan-adjustment] insert FAILED', { user_id: userId, error: detail });
+              setToast(`${tbl} insert failed: ${detail}`);
             }
           } else {
             console.info('[db:plan-adjustment] skip — plan audit snapshot unchanged vs prior active plan', {
               user_id: userId,
-              plan_id: planId,
+              plan_id: persistedPlanId,
               scan_id: savedScanEntry.dbId,
             });
           }
         } else {
-          console.info('[db:plan-adjustment] skip — missing planId or previousPlan or nextPlan', {
+          console.info('[db:plan-adjustment] skip — missing persistedPlanId or previousPlan or nextPlan', {
             user_id: userId,
-            has_plan_id: Boolean(planId),
+            has_plan_id: Boolean(persistedPlanId),
             has_previous: Boolean(previousPlan),
             has_next: Boolean(nextPlan),
           });

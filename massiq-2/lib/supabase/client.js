@@ -15,19 +15,60 @@ function authHeaders(token) {
   };
 }
 
+/**
+ * PostgREST / Supabase REST errors expose `code`, `details`, `hint`, `message` in JSON body.
+ * We attach them on the Error for client debugging (RLS, FK, constraint names).
+ */
+export function logPostgrestFailure(label, err, payloadSent = null) {
+  const e = err && typeof err === 'object' ? err : {};
+  console.error(label, {
+    code: e.postgrestCode ?? e.code,
+    message: e.message,
+    details: e.postgrestDetails ?? e.details,
+    hint: e.postgrestHint ?? e.hint,
+    httpStatus: e.httpStatus,
+    path: e.requestPath,
+    payload: payloadSent,
+  });
+}
+
+function attachPostgrestMeta(err, path, res, payload) {
+  if (!err || typeof err !== 'object') return;
+  err.requestPath = path;
+  err.httpStatus = res.status;
+  if (payload && typeof payload === 'object') {
+    err.postgrestCode = payload.code;
+    err.postgrestDetails = payload.details;
+    err.postgrestHint = payload.hint;
+    err.postgrestMessage = payload.message;
+  }
+}
+
 async function supabaseFetch(path, opts = {}, retries = 1) {
   if (!hasConfig()) throw new Error('Supabase env is missing (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).');
   const res = await fetch(`${SUPABASE_URL}${path}`, opts);
   const text = await res.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { message: text || 'non-json error body' };
+  }
   if (!res.ok) {
     const isTransient = res.status >= 500 || res.status === 429;
     if (isTransient && retries > 0) {
       await new Promise(r => setTimeout(r, 350));
       return supabaseFetch(path, opts, retries - 1);
     }
-    const message = payload?.msg || payload?.error_description || payload?.message || `Request failed (${res.status})`;
-    throw new Error(`[supabase:${path}] ${message}`);
+    const message =
+      payload?.msg ||
+      payload?.error_description ||
+      payload?.message ||
+      (typeof payload === 'string' ? payload : null) ||
+      `Request failed (${res.status})`;
+    const err = new Error(`[supabase:${path}] ${message}`);
+    attachPostgrestMeta(err, path, res, payload);
+    throw err;
   }
   return payload;
 }
@@ -889,7 +930,14 @@ export async function createScanDecision(token, userId, payload) {
     decision_reason: payload.decisionReason || null,
     payload: payload.payload || {},
   };
-  console.info('[db:scan-decision] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, decision_type: row.decision_type });
+  console.info('[db:scan-decision] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    decision_type: row.decision_type,
+  });
   try {
     const rows = await supabaseFetch('/rest/v1/scan_decisions', {
       method: 'POST',
@@ -900,8 +948,15 @@ export async function createScanDecision(token, userId, payload) {
     console.info('[db:scan-decision] ok', { user_id: userId, scan_decision_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[db:scan-decision] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
-    throw err;
+    logPostgrestFailure('[db:scan-decision] insert FAILED', err, row);
+    const e = new Error(`scan_decisions: ${err?.message || err}`);
+    e.personalizationTable = 'scan_decisions';
+    e.cause = err;
+    e.postgrestCode = err?.postgrestCode;
+    e.postgrestDetails = err?.postgrestDetails;
+    e.postgrestHint = err?.postgrestHint;
+    e.postgrestMessage = err?.postgrestMessage || err?.message;
+    throw e;
   }
 }
 
@@ -915,7 +970,14 @@ export async function createDecisionLog(token, userId, payload) {
     confidence: payload.confidence || null,
     explanation: payload.explanation || null,
   };
-  console.info('[db:decision-log] write', { user_id: userId, scan_id: row.scan_id, plan_id: row.plan_id, category: row.decision_category });
+  console.info('[db:decision-log] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    category: row.decision_category,
+  });
   try {
     const rows = await supabaseFetch('/rest/v1/decision_log', {
       method: 'POST',
@@ -926,8 +988,15 @@ export async function createDecisionLog(token, userId, payload) {
     console.info('[db:decision-log] ok', { user_id: userId, decision_log_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[db:decision-log] FAILED', { user_id: userId, scan_id: row.scan_id, error: err?.message });
-    throw err;
+    logPostgrestFailure('[db:decision-log] insert FAILED', err, row);
+    const e = new Error(`decision_log: ${err?.message || err}`);
+    e.personalizationTable = 'decision_log';
+    e.cause = err;
+    e.postgrestCode = err?.postgrestCode;
+    e.postgrestDetails = err?.postgrestDetails;
+    e.postgrestHint = err?.postgrestHint;
+    e.postgrestMessage = err?.postgrestMessage || err?.message;
+    throw e;
   }
 }
 
@@ -942,7 +1011,14 @@ export async function createPlanAdjustment(token, userId, payload) {
     trigger_reason: payload.triggerReason || null,
     explanation: payload.explanation || null,
   };
-  console.info('[db:plan-adjustment] write', { user_id: userId, plan_id: row.plan_id, scan_id: row.scan_id });
+  console.info('[db:plan-adjustment] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    adjustment_type: row.adjustment_type,
+  });
   try {
     const rows = await supabaseFetch('/rest/v1/plan_adjustments', {
       method: 'POST',
@@ -953,8 +1029,15 @@ export async function createPlanAdjustment(token, userId, payload) {
     console.info('[db:plan-adjustment] ok', { user_id: userId, plan_adjustment_id: out?.id ?? null });
     return out;
   } catch (err) {
-    console.error('[db:plan-adjustment] FAILED', { user_id: userId, plan_id: row.plan_id, error: err?.message });
-    throw err;
+    logPostgrestFailure('[db:plan-adjustment] insert FAILED', err, row);
+    const e = new Error(`plan_adjustments: ${err?.message || err}`);
+    e.personalizationTable = 'plan_adjustments';
+    e.cause = err;
+    e.postgrestCode = err?.postgrestCode;
+    e.postgrestDetails = err?.postgrestDetails;
+    e.postgrestHint = err?.postgrestHint;
+    e.postgrestMessage = err?.postgrestMessage || err?.message;
+    throw e;
   }
 }
 
@@ -1460,6 +1543,49 @@ export async function getFoodLogsRecentForAdherence(token, userId, limit = 150) 
  * Insert decision_engine_run. Returns null only if migration 016 is not applied; otherwise throws on failure.
  * Column/schema-cache mismatches are logged (table + column + payload) and retried once with a compatible shape.
  */
+function personalizationTableError(table, message, cause) {
+  const e = new Error(`${table}: ${message}`);
+  e.personalizationTable = table;
+  if (cause) {
+    e.cause = cause;
+    if (cause.postgrestCode != null) e.postgrestCode = cause.postgrestCode;
+    if (cause.postgrestDetails != null) e.postgrestDetails = cause.postgrestDetails;
+    if (cause.postgrestHint != null) e.postgrestHint = cause.postgrestHint;
+    e.postgrestMessage = cause.postgrestMessage || cause.message || message;
+  }
+  return e;
+}
+
+/**
+ * Optional debug: minimal row to verify client JWT + ids + RLS (may insert an extra row when enabled).
+ * Enable: NEXT_PUBLIC_DEBUG_DECISION_ENGINE_PROBE=1 or localStorage massiq:debug:decision_engine_probe=1
+ */
+export async function probeMinimalDecisionEngineRun(token, userId, scanId, planId) {
+  const envOn = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_DEBUG_DECISION_ENGINE_PROBE === '1';
+  const lsOn = typeof window !== 'undefined' && window.localStorage?.getItem('massiq:debug:decision_engine_probe') === '1';
+  if (!envOn && !lsOn) return null;
+  console.info('[db:decision-engine-run] PROBE — minimal insert (empty JSON)');
+  try {
+    const out = await createDecisionEngineRun(token, userId, {
+      scanId,
+      planId,
+      engineVersion: 'debug-probe',
+      triggerType: 'probe',
+      inputSummary: {},
+      outputJson: {},
+    });
+    console.info('[db:decision-engine-run] PROBE success — DB response', out);
+    return out;
+  } catch (err) {
+    logPostgrestFailure('[db:decision-engine-run] PROBE failed', err, {
+      user_id: userId,
+      scan_id: scanId,
+      plan_id: planId,
+    });
+    throw err;
+  }
+}
+
 export async function createDecisionEngineRun(token, userId, payload) {
   const baseRow = {
     user_id: userId,
@@ -1473,6 +1599,18 @@ export async function createDecisionEngineRun(token, userId, payload) {
     keys: Object.keys(baseRow),
     input_summary_size: JSON.stringify(baseRow.input_summary || {}).length,
     output_json_size: JSON.stringify(baseRow.output_json || {}).length,
+  });
+
+  console.info('[db:decision-engine-run] payload', {
+    user_id: userId,
+    scan_id: baseRow.scan_id,
+    plan_id: baseRow.plan_id,
+    scan_id_null: baseRow.scan_id == null,
+    plan_id_null: baseRow.plan_id == null,
+    engine_version: baseRow.engine_version,
+    trigger_type: payload.triggerType ?? null,
+    input_summary_defined: payload.inputSummary !== undefined,
+    output_json_defined: payload.outputJson !== undefined,
   });
 
   const postRow = async (row) => {
@@ -1494,6 +1632,7 @@ export async function createDecisionEngineRun(token, userId, payload) {
     console.info('[db:decision-engine-run] ok', { id: out.id });
     return out;
   } catch (err) {
+    logPostgrestFailure('[db:decision-engine-run] insert FAILED', err, baseRow);
     if (isPersonalizationTableMissingError(err)) {
       console.warn('[db:decision-engine-run] migration 016 not applied — personalization tables skipped', err?.message);
       return null;
@@ -1521,13 +1660,12 @@ export async function createDecisionEngineRun(token, userId, payload) {
         console.info('[db:decision-engine-run] ok (compat omit input_summary)', { id: out.id });
         return out;
       } catch (err2) {
-        console.error('[db:decision-engine-run] compat retry FAILED', {
-          table: 'decision_engine_runs',
-          missing_column: missing || 'unknown',
-          payload: logPayloadKeys(),
-          error: err2?.message,
-        });
-        throw new Error(`[personalization] decision_engine_runs column mismatch after retry: ${err2?.message || err2}`);
+        logPostgrestFailure('[db:decision-engine-run] compat retry FAILED', err2, compatRow);
+        throw personalizationTableError(
+          'decision_engine_runs',
+          `column mismatch after retry: ${err2?.message || err2}`,
+          err2,
+        );
       }
     }
     if (isPostgrestColumnOrSchemaCacheError(err)) {
@@ -1537,10 +1675,10 @@ export async function createDecisionEngineRun(token, userId, payload) {
         payload: logPayloadKeys(),
         error: err?.message,
       });
-      throw new Error(`[personalization] decision_engine_runs: ${err?.message || err}`);
+      throw personalizationTableError('decision_engine_runs', err?.message || String(err), err);
     }
     console.error('[db:decision-engine-run] FAILED', err?.message);
-    throw new Error(`[personalization] decision_engine_runs: ${err?.message || err}`);
+    throw personalizationTableError('decision_engine_runs', err?.message || String(err), err);
   }
 }
 
@@ -1553,16 +1691,29 @@ export async function createPhaseHistoryRow(token, userId, payload) {
     to_phase: payload.toPhase,
     reason: payload.reason || null,
   };
-  console.info('[db:phase-history] write start', { user_id: userId, from: row.from_phase, to: row.to_phase });
-  const rows = await supabaseFetch('/rest/v1/phase_history', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify(row),
+  console.info('[db:phase-history] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    from_phase: row.from_phase,
+    to_phase: row.to_phase,
   });
-  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-  if (!out?.id) throw new Error('[phase_history] insert returned no id');
-  console.info('[db:phase-history] ok', { id: out.id });
-  return out;
+  try {
+    const rows = await supabaseFetch('/rest/v1/phase_history', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!out?.id) throw new Error('[phase_history] insert returned no id');
+    console.info('[db:phase-history] ok', { id: out.id });
+    return out;
+  } catch (err) {
+    logPostgrestFailure('[db:phase-history] insert FAILED', err, row);
+    throw personalizationTableError('phase_history', err?.message || String(err), err);
+  }
 }
 
 export async function createMusclePriorityRow(token, userId, payload) {
@@ -1575,16 +1726,29 @@ export async function createMusclePriorityRow(token, userId, payload) {
     rank: payload.rank ?? null,
     notes: payload.notes || null,
   };
-  console.info('[db:muscle-priority] write', { user_id: userId, muscle: row.muscle_key, tier: row.priority_tier });
-  const rows = await supabaseFetch('/rest/v1/muscle_priorities', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify(row),
+  console.info('[db:muscle-priority] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    muscle_key: row.muscle_key,
+    tier: row.priority_tier,
   });
-  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-  if (!out?.id) throw new Error('[muscle_priorities] insert returned no id');
-  console.info('[db:muscle-priority] ok', { id: out.id });
-  return out;
+  try {
+    const rows = await supabaseFetch('/rest/v1/muscle_priorities', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!out?.id) throw new Error('[muscle_priorities] insert returned no id');
+    console.info('[db:muscle-priority] ok', { id: out.id });
+    return out;
+  } catch (err) {
+    logPostgrestFailure('[db:muscle-priority] insert FAILED', err, row);
+    throw personalizationTableError('muscle_priorities', err?.message || String(err), err);
+  }
 }
 
 export async function createPlanDirectiveRow(token, userId, payload) {
@@ -1596,16 +1760,29 @@ export async function createPlanDirectiveRow(token, userId, payload) {
     directive_key: payload.directiveKey || null,
     payload: payload.payload || {},
   };
-  console.info('[db:plan-directive] write', { user_id: userId, category: row.category, key: row.directive_key });
-  const rows = await supabaseFetch('/rest/v1/plan_directives', {
-    method: 'POST',
-    headers: { ...authHeaders(token), Prefer: 'return=representation' },
-    body: JSON.stringify(row),
+  console.info('[db:plan-directive] payload', {
+    user_id: row.user_id,
+    scan_id: row.scan_id,
+    plan_id: row.plan_id,
+    scan_id_null: row.scan_id == null,
+    plan_id_null: row.plan_id == null,
+    category: row.category,
+    directive_key: row.directive_key,
   });
-  const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
-  if (!out?.id) throw new Error('[plan_directives] insert returned no id');
-  console.info('[db:plan-directive] ok', { id: out.id });
-  return out;
+  try {
+    const rows = await supabaseFetch('/rest/v1/plan_directives', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    const out = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!out?.id) throw new Error('[plan_directives] insert returned no id');
+    console.info('[db:plan-directive] ok', { id: out.id });
+    return out;
+  } catch (err) {
+    logPostgrestFailure('[db:plan-directive] insert FAILED', err, row);
+    throw personalizationTableError('plan_directives', err?.message || String(err), err);
+  }
 }
 
 export async function createUserFeedbackEvent(token, userId, payload) {
@@ -1640,11 +1817,27 @@ export async function persistPersonalizationArtifacts(token, userId, {
   engineOutput,
   inputSummary = {},
 }) {
-  if (!scanId || !engineOutput) return;
+  if (!scanId) {
+    throw personalizationTableError('precondition', 'scan_id is missing — cannot persist personalization');
+  }
+  if (!engineOutput) {
+    throw personalizationTableError(
+      'decision_engine_runs',
+      'decision engine output missing on scan entry (expected entry.decisionEngine or scanContext.decision_engine)',
+    );
+  }
+  console.info('[db:personalization] resolved ids', {
+    user_id: userId,
+    scan_id: scanId,
+    plan_id: planId,
+    scan_id_null: scanId == null,
+    plan_id_null: planId == null,
+  });
   const run = await createDecisionEngineRun(token, userId, {
     scanId,
     planId,
     engineVersion: engineOutput.engine_version || '2.0.0',
+    triggerType: 'post_scan_apply',
     inputSummary,
     outputJson: engineOutput,
   });
