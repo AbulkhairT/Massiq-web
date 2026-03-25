@@ -87,7 +87,7 @@ export async function POST(req) {
       stripe_subscription_id: sub?.stripe_subscription_id || null,
       requested_customer_id: body?.customerId || null,
     });
-    return NextResponse.json({ error: 'No Stripe customer is linked to this account yet.' }, { status: 400 });
+    return NextResponse.json({ error: 'No billing profile found yet.' }, { status: 400 });
   }
 
   if (body?.customerId && body.customerId !== customerId) {

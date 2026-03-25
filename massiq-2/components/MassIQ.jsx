@@ -2151,6 +2151,16 @@ async function recordFoodScanSuccess(accessToken, payload) {
   return data;
 }
 
+async function fetchBodyScanAccess(accessToken) {
+  if (!accessToken) return null;
+  const res = await fetch('/api/body-scan/access', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `body-scan access ${res.status}`);
+  return data;
+}
+
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
 function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade, userId, accessToken, onFoodScanComplete }) {
   const today      = new Date().toISOString().slice(0, 10);
@@ -2368,7 +2378,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                 </div>
                 {!isPremium && freeLeft != null && freeLeft > 0 && (
                   <span style={{ fontSize: 11, color: C.dimmed }}>
-                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} included
+                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} remaining
                   </span>
                 )}
                 {!isPremium && freeLeft === null && !!accessToken && (
@@ -2378,7 +2388,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                   <button className="bp" onClick={onUpgrade} style={{
                     fontSize: 11, fontWeight: 700, color: C.green, background: 'none',
                     border: 'none', cursor: 'pointer', padding: 0,
-                  }}>Upgrade →</button>
+                  }}>No free scans remaining · Upgrade →</button>
                 )}
               </div>
 
@@ -5530,7 +5540,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory, onRefreshEntitlements, isLoggedIn }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory, onRefreshEntitlements, isLoggedIn, accessToken, onUpgrade }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5595,23 +5605,28 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
     try {
       if (isLoggedIn && onRefreshEntitlements) {
         try {
-          const entFresh = await onRefreshEntitlements();
+          console.info('[entitlements:body] entitlement fetch start');
+          const access = await fetchBodyScanAccess(accessToken);
+          const entFresh = access?.entitlements || null;
           if (entFresh == null) {
             console.warn('[entitlements:body] before scan — no DB row (cannot enforce limit safely)');
             setError('Could not load your scan allowance from the server. Check your connection and try again.');
             return;
           }
-          const allowed = canScan(subscription, parentScanHistory, entFresh, isLoggedIn);
+          await onRefreshEntitlements();
+          const allowed = Boolean(access?.canScan);
           console.info('[entitlements:body] before scan', {
             can_scan: allowed,
+            is_premium: access?.isPremium,
             free_scans_used: entFresh?.free_scans_used,
             free_scan_limit: entFresh?.free_scan_limit,
             lifetime_scan_count: entFresh?.lifetime_scan_count,
           });
           if (!allowed) {
             console.info('[entitlements:body] blocked — free body scan quota exhausted');
-            setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
-            showToast('Free scan limit reached. Upgrade for unlimited scans.');
+            setError('No free scans remaining.');
+            showToast('Free scans used. Upgrade to Premium to continue.');
+            onUpgrade?.();
             return;
           }
         } catch (refErr) {
@@ -6745,9 +6760,9 @@ Return ONLY this JSON (no markdown, no extra text):
         }}>
           <Icon name="camera" size={14} color={remaining === 1 ? C.orange : C.green} strokeWidth={2} />
           <span style={{ fontSize: 13, color: remaining === 1 ? C.orange : C.muted, flex: 1 }}>
-            {remaining === 1
-              ? 'Last free scan. Upgrade before your next check-in to keep tracking.'
-              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining.`}
+            {remaining <= 0
+              ? 'No free scans remaining'
+              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining`}
           </span>
         </div>
       )}
@@ -8246,10 +8261,16 @@ export default function MassIQ() {
     }
     let planRow;
     try {
-      planRow = await upsertPlan(session.access_token, userId, nextPlan);
+      const latest = await getPlan(session.access_token, userId);
+      if (latest?.id) {
+        planRow = latest;
+        console.info('[db:plan] persistProgramArtifacts using existing plan row', { user_id: userId, plan_id: latest.id });
+      } else {
+        console.info('[db:plan] persistProgramArtifacts no existing plan; upserting', { user_id: userId });
+        planRow = await upsertPlan(session.access_token, userId, nextPlan);
+      }
     } catch (e) {
-      console.error('[db:plan] persistProgramArtifacts upsertPlan FAILED', { user_id: userId, error: e?.message });
-      setToast('Could not save plan to server. Meal/workout sync skipped.');
+      console.error('[db:plan] persistProgramArtifacts plan lookup/upsert FAILED', { user_id: userId, error: e?.message });
       throw e;
     }
     const planId = planRow?.id;
@@ -8656,7 +8677,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} accessToken={session?.access_token} onUpgrade={() => setPaywallOpen(true)} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
