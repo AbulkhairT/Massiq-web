@@ -6123,6 +6123,21 @@ Return ONLY this JSON (no markdown, no extra text):
     setTab('plan');
   };
 
+  /* Pre-scan derived state + logging — MUST stay above any conditional returns (hooks order). */
+  const isPremium = isPremiumActive(subscription);
+  const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
+  const latestCompleted = pickLatestRealScan(historyForUi);
+  useEffect(() => {
+    if (!latestCompleted?.dbId && !latestCompleted?.id) return;
+    console.info('[latest-scan] UI refreshed', {
+      id: latestCompleted.dbId || latestCompleted.id,
+      date: latestCompleted.date,
+    });
+  }, [latestCompleted?.dbId, latestCompleted?.id, latestCompleted?.date]);
+  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
+
   /* ── Scanning spinner ── */
   if (scanning) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '80dvh', gap: 24, padding: 24 }}>
@@ -6678,21 +6693,6 @@ Return ONLY this JSON (no markdown, no extra text):
       </div>
     );
   }
-
-  /* ── Pre-scan state ── */
-  const isPremium = isPremiumActive(subscription);
-  const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
-  const latestCompleted = pickLatestRealScan(historyForUi);
-  useEffect(() => {
-    if (!latestCompleted?.dbId && !latestCompleted?.id) return;
-    console.info('[latest-scan] UI refreshed', {
-      id: latestCompleted.dbId || latestCompleted.id,
-      date: latestCompleted.date,
-    });
-  }, [latestCompleted?.dbId, latestCompleted?.id, latestCompleted?.date]);
-  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
 
   return (
     <div className="screen">
