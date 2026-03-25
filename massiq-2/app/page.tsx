@@ -496,7 +496,7 @@ export default function LandingPage() {
           </p>
           <p style={{ fontSize: 12, color: C.dim, lineHeight: 1.6 }}>
             Native app is on the way.{' '}
-            <span style={{ opacity: 0.7 }}>Add to Home Screen via Safari for the full experience.</span>
+            <span >Add to Home Screen via Safari for the full experience.</span>
           </p>
         </div>
       </div>
