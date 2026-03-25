@@ -165,3 +165,19 @@ export function scansRemaining(subscription, scanHistory, entitlements = null, i
   if (isLoggedIn) return null;
   return Math.max(0, FREE_SCAN_LIMIT - getScanCount(scanHistory));
 }
+
+/**
+ * True when a free-tier user may not start another body scan.
+ * When logged in, uses user_entitlements only (no local scanHistory fallback).
+ * When logged in but entitlements are still null, returns false so UI does not show a false "limit reached" wall.
+ */
+export function isBodyScanQuotaExhausted(subscription, scanHistory, entitlements, isLoggedIn) {
+  if (isPremiumActive(subscription)) return false;
+  if (isLoggedIn) {
+    if (entitlements == null) return false;
+    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
+    const used = Number(entitlements.free_scans_used) || 0;
+    return used >= limit;
+  }
+  return getScanCount(scanHistory) >= FREE_SCAN_LIMIT;
+}

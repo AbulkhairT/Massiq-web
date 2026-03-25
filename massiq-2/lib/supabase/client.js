@@ -1488,6 +1488,16 @@ export async function applyBodyScanEntitlement(token, scanId) {
   return out && typeof out === 'object' ? out : null;
 }
 
+/** Reconcile user_entitlements.free_scans_used from non-duplicate scan rows (auth.uid()). */
+export async function reconcileBodyScanEntitlements(token) {
+  if (!token) return;
+  await supabaseFetch('/rest/v1/rpc/reconcile_body_scan_entitlements', {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+}
+
 /** @deprecated Use fetchUserEntitlements (read-only) or hydrateUserEntitlements after login. */
 export async function ensureEntitlements(token, userId) {
   return fetchUserEntitlements(token, userId);

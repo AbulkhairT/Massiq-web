@@ -48,10 +48,11 @@ import {
   fetchUserEntitlements,
   hydrateUserEntitlements,
   applyBodyScanEntitlement,
+  reconcileBodyScanEntitlements,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
-import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT, canFoodScan, foodScansRemainingToday, FREE_FOOD_SCAN_LIMIT, getFoodScansUsedToday, setFoodScanCache } from '../lib/features';
+import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT, canFoodScan, foodScansRemainingToday, FREE_FOOD_SCAN_LIMIT, getFoodScansUsedToday, setFoodScanCache, isBodyScanQuotaExhausted } from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -432,7 +433,15 @@ const getBFDisplay = (scan) => {
   return isNaN(n) ? '—' : n.toFixed(1) + '%';
 };
 
-function formatRelativeScanTime(iso) {
+/** Prefer full ISO from DB (scan.date after save) or savedAt — date-only strings skew "hours ago" by timezone. */
+function formatRelativeScanTime(isoOrScan) {
+  let iso = typeof isoOrScan === 'string' ? isoOrScan : null;
+  if (isoOrScan && typeof isoOrScan === 'object') {
+    const s = isoOrScan;
+    const d = s.date != null ? String(s.date) : '';
+    if (s.savedAt && (d.length <= 10 || !/[Tt]\d{2}:/.test(d))) iso = s.savedAt;
+    else iso = s.date || s.savedAt || s.createdAt;
+  }
   if (!iso) return '—';
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return '—';
@@ -445,6 +454,30 @@ function formatRelativeScanTime(iso) {
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function scanInstantMs(s) {
+  if (!s) return 0;
+  const raw = s.savedAt || s.date || s.createdAt;
+  if (!raw) return 0;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function sortedRealBodyScansByTime(scanList) {
+  return (Array.isArray(scanList) ? scanList : [])
+    .filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId)
+    .sort((a, b) => scanInstantMs(a) - scanInstantMs(b));
+}
+
+function pickLatestRealScan(scanList) {
+  const s = sortedRealBodyScansByTime(scanList);
+  return s.length ? s[s.length - 1] : null;
+}
+
+function pickPreviousRealScan(scanList) {
+  const s = sortedRealBodyScansByTime(scanList);
+  return s.length >= 2 ? s[s.length - 2] : null;
 }
 
 function countNonDuplicateServerScans(scanList) {
@@ -2297,8 +2330,8 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
       {/* ══ BODY SCAN CARD ═══════════════════════════════════════════════════ */}
       {(() => {
-        const lastScan  = realBodyScans.length ? realBodyScans[realBodyScans.length - 1] : null;
-        const prevScan  = realBodyScans.length > 1 ? realBodyScans[realBodyScans.length - 2] : null;
+        const lastScan  = pickLatestRealScan(resolvedHistory);
+        const prevScan  = pickPreviousRealScan(resolvedHistory);
         const currentBF = lastScan?.bodyFat  ?? null;
         const targetBF  = activePlan?.targetBF ?? null;
         const startBF   = activePlan?.startBF  ?? currentBF ?? null;
@@ -2567,7 +2600,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       {hasScan && (
         <PremiumGate feature={FEATURES.DECISION_LOG} subscription={subscription} onUpgrade={onUpgrade}>
           {(() => {
-            const latestScan = realBodyScans.length ? realBodyScans[realBodyScans.length - 1] : null;
+            const latestScan = pickLatestRealScan(resolvedHistory);
             const decision   = latestScan?.adaptationDecision;
             const rationale  = latestScan?.adaptationRationale;
             const cmp        = latestScan?.scanComparison;
@@ -2624,7 +2657,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
             const traj       = activePlan.engineTrajectory;
             const weeksLeft  = traj?.timeline_weeks;
             const targetBF   = activePlan.targetBF ?? activePlan.bodyFat;
-            const currentBF  = realBodyScans.length ? realBodyScans[realBodyScans.length - 1]?.bodyFat ?? null : null;
+            const currentBF  = pickLatestRealScan(resolvedHistory)?.bodyFat ?? null;
             const weeklyRate = traj?.weekly_change;
             if (!weeksLeft) return null;
             return (
@@ -5553,25 +5586,25 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
         try {
           const entFresh = await onRefreshEntitlements();
           if (entFresh == null) {
-            console.warn('[entitlements] before body scan — no DB row (cannot enforce limit safely)');
+            console.warn('[entitlements:body] before scan — no DB row (cannot enforce limit safely)');
             setError('Could not load your scan allowance from the server. Check your connection and try again.');
             return;
           }
           const allowed = canScan(subscription, parentScanHistory, entFresh, isLoggedIn);
-          console.info('[entitlements] before body scan', {
+          console.info('[entitlements:body] before scan', {
             can_scan: allowed,
             free_scans_used: entFresh?.free_scans_used,
             free_scan_limit: entFresh?.free_scan_limit,
             lifetime_scan_count: entFresh?.lifetime_scan_count,
           });
           if (!allowed) {
-            console.info('[entitlements] limit reached');
+            console.info('[entitlements:body] blocked — free body scan quota exhausted');
             setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
             showToast('Free scan limit reached. Upgrade for unlimited scans.');
             return;
           }
         } catch (refErr) {
-          console.warn('[entitlements] refresh before scan failed', refErr?.message);
+          console.warn('[entitlements:body] refresh before scan failed', refErr?.message);
           setError('Could not verify scan allowance. Check your connection and try again.');
           return;
         }
@@ -5633,7 +5666,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           const existingAsset = await findAssetBySha256(session.access_token, userId, sha256Hash);
           if (existingAsset) {
             console.info('[scan] Exact duplicate detected (SHA-256 match):', existingAsset.id);
-            console.info('[entitlements] duplicate scan skip (same photo SHA — no new scan, no usage)');
+            console.info('[entitlements:body] duplicate skip (same photo SHA — no new scan, no usage)');
             console.info('[entitlement:update]', { increment_applied: false, reason: 'duplicate_skip' });
             // Retrieve the scan that was linked to this asset
             const priorScan = await getScanByAssetId(session.access_token, existingAsset.id).catch(() => null);
@@ -5676,7 +5709,7 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
           const { visualData: cachedVisual, ts } = JSON.parse(cached);
           if (Date.now() - ts < 7 * 86400 * 1000 && cachedVisual) {
             console.info('[scan] returning localStorage-cached result for same photo');
-            console.info('[entitlements] duplicate scan skip (same photo — local cache, no new scan)');
+            console.info('[entitlements:body] duplicate skip (same photo — local cache, no new scan)');
             console.info('[entitlement:update]', { increment_applied: false, reason: 'duplicate_skip' });
             const scanForEngine = { date: new Date().toISOString().slice(0, 10), bodyFat: cachedVisual.bodyFatPct, weight: profile?.weightLbs || 170, leanMass: cachedVisual.leanMass };
             const engineOutput = await callEngine(profile, [...LS.get(LS_KEYS.scanHistory, []), scanForEngine]);
@@ -6649,10 +6682,16 @@ Return ONLY this JSON (no markdown, no extra text):
   /* ── Pre-scan state ── */
   const isPremium = isPremiumActive(subscription);
   const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
-  const completedScans = historyForUi.filter((s) => s && s.scanStatus !== 'duplicate' && !s.duplicateOfScanId);
-  const latestCompleted = completedScans[completedScans.length - 1] || null;
+  const latestCompleted = pickLatestRealScan(historyForUi);
+  useEffect(() => {
+    if (!latestCompleted?.dbId && !latestCompleted?.id) return;
+    console.info('[latest-scan] UI refreshed', {
+      id: latestCompleted.dbId || latestCompleted.id,
+      date: latestCompleted.date,
+    });
+  }, [latestCompleted?.dbId, latestCompleted?.id, latestCompleted?.date]);
   const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const scanLocked = !canScan(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
   const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
 
   return (
@@ -6693,7 +6732,7 @@ Return ONLY this JSON (no markdown, no extra text):
         <Card style={{ background: C.card, border: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.dimmed, textTransform: 'uppercase', marginBottom: 8 }}>Your latest scan</div>
           <div style={{ fontSize: 14, color: C.white, fontWeight: 600, marginBottom: 6 }}>
-            Last scan: <span style={{ color: C.muted, fontWeight: 500 }}>{formatRelativeScanTime(latestCompleted.date)}</span>
+            Last scan: <span style={{ color: C.muted, fontWeight: 500 }}>{formatRelativeScanTime(latestCompleted)}</span>
           </div>
           <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
             Body fat {getBFDisplay(latestCompleted)}
@@ -6807,11 +6846,11 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       )}
 
-      {/* Scan History */}
-      {scanHistory.length > 0 && (
+      {/* Scan history — premium: browsable list; free: upsell only (no partial list) */}
+      {isPremium && scanHistory.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Previous Scans</div>
-          {isPremium ? <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[...scanHistory].reverse().map((s, i) => {
               const realIdx = scanHistory.length - 1 - i;
               const cmp = s?.dbComparison || null;
@@ -6837,17 +6876,21 @@ Return ONLY this JSON (no markdown, no extra text):
                 </div>
               </div>
             )})}
-          </div> : (
-            <Card>
-              <div style={{ marginTop: 6, padding: '12px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Unlock full analysis, plan, and progress tracking</span>
-                </div>
-              </div>
-            </Card>
-          )}
+          </div>
         </div>
+      )}
+      {!isPremium && sortedRealBodyScansByTime(historyForUi).length >= 2 && (
+        <Card style={{ marginTop: 8 }}>
+          <div style={{ padding: '12px 14px', background: 'rgba(114,184,149,0.06)', borderRadius: 12, border: `1px solid rgba(114,184,149,0.15)` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name="lock" size={12} color={C.green} strokeWidth={2.5} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Scan history &amp; comparisons are a Premium feature</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 8, lineHeight: 1.55 }}>
+              Upgrade to browse past scans, deltas, and full context. Your latest scan stays visible above.
+            </div>
+          </div>
+        </Card>
       )}
       {typeof viewOld === 'number' && (
         <ScanDetailModal
@@ -7825,7 +7868,7 @@ export default function MassIQ() {
             throw planErr;
           }
         }
-        console.info('[entitlements] duplicate scan skip — no DB scan row, counters unchanged');
+        console.info('[entitlements:body] duplicate skip — no DB scan row, counters unchanged');
         console.info('[entitlement:update]', { user_id: userId, increment_applied: false, reason: 'duplicate_skip' });
         setToast('Plan saved. Same photo as a previous scan — no new scan was recorded and free scans were not used.');
         return;
@@ -7868,10 +7911,15 @@ export default function MassIQ() {
             throw new Error('[sync] step2:createScan: Supabase returned no id — scan not saved');
           }
           insertedNewBodyScan = true;
-          savedScanEntry = { ...newScanEntry, dbId: scanId };
+          // Merge DB row (created_at on `date`, ids) so relative time and "latest" are not date-only/stale.
+          savedScanEntry = { ...newScanEntry, ...saved, dbId: saved.id || saved.dbId || scanId };
           const newHistory = [...historyBeforeInsert, savedScanEntry];
           LS.set(LS_KEYS.scanHistory, newHistory);
           setScanHistory(newHistory);
+          console.info('[latest-scan] UI refreshed from insert', {
+            scan_id: savedScanEntry.dbId,
+            date: savedScanEntry.date,
+          });
           console.info('[sync] step2:createScan:ok — history updated', { scanId, total: newHistory.length });
         }
       }
@@ -7905,33 +7953,38 @@ export default function MassIQ() {
       if (insertedNewBodyScan && newScanEntry?.scanStatus !== 'duplicate' && scanId) {
         try {
           const rpc = await applyBodyScanEntitlement(session.access_token, scanId);
-          console.info('[entitlement:update]', {
+          console.info('[entitlements:body] increment success', {
             user_id: userId,
+            scan_id: scanId,
             increment_applied: rpc?.increment_applied === true,
             reason: rpc?.reason || (rpc?.ok === false ? 'rpc_failed' : 'new_scan'),
             free_scans_used: rpc?.free_scans_used,
             lifetime_scan_count: rpc?.lifetime_scan_count,
           });
         } catch (rpcErr) {
-          console.warn('[entitlement:update]', {
+          console.warn('[entitlements:body] increment RPC failed — reconciling from scans table', {
             user_id: userId,
-            increment_applied: false,
-            reason: 'rpc_error',
+            scan_id: scanId,
             error: rpcErr?.message,
           });
+          try {
+            await reconcileBodyScanEntitlements(session.access_token);
+          } catch (recErr) {
+            console.warn('[entitlements:body] reconcile failed', recErr?.message);
+          }
         }
         try {
           const ent = await fetchUserEntitlements(session.access_token, userId);
           if (ent) {
             setEntitlements(ent);
-            console.info('[entitlements] refreshed after body scan save', {
+            console.info('[entitlements:body] refreshed after body scan save', {
               free_scans_used: ent.free_scans_used,
               free_scan_limit: ent.free_scan_limit,
               lifetime_scan_count: ent.lifetime_scan_count,
             });
           }
         } catch (e) {
-          console.warn('[entitlements] refresh after scan failed', e?.message);
+          console.warn('[entitlements:body] refresh after scan failed', e?.message);
         }
       }
 
@@ -8609,7 +8662,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
