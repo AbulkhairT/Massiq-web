@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { PREMIUM_SCAN_QUOTA_SENTINEL } from '../../../../lib/entitlementsConstants.js';
 
 export const runtime = 'nodejs';
 
@@ -158,6 +159,45 @@ async function fetchEntitlementsService(supabaseUrl, serviceKey, userId) {
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
+async function fetchSubscriptionStatus(supabaseUrl, serviceKey, userId) {
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/subscriptions?user_id=eq.${userId}&select=status&order=updated_at.desc&limit=1`,
+    { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } },
+  );
+  if (!res.ok) return null;
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows[0] ? rows[0].status : null;
+}
+
+function isPremiumSubscriptionStatus(status) {
+  return ['active', 'trialing'].includes(String(status || '').toLowerCase());
+}
+
+/** Keeps DB free_scan_limit aligned with premium — counters remain analytics-only for quota. */
+async function patchPremiumBodyScanLimit(supabaseUrl, serviceKey, userId) {
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    Prefer: 'return=minimal',
+  };
+  const res = await fetch(`${supabaseUrl}/rest/v1/user_entitlements?user_id=eq.${userId}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({
+      free_scan_limit: PREMIUM_SCAN_QUOTA_SENTINEL,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    console.warn('[scan:apply-entitlement] premium scan_limit patch failed', { user_id: userId, status: res.status, body: t.slice(0, 200) });
+  } else {
+    console.info('[scan:apply-entitlement] premium scan_limit synced', { user_id: userId, free_scan_limit: PREMIUM_SCAN_QUOTA_SENTINEL });
+  }
+  return res.ok;
+}
+
 /**
  * POST /api/scan/apply-entitlement
  * Body: { scan_id: uuid }
@@ -192,6 +232,15 @@ export async function POST(req) {
 
   console.info('[scan:apply-entitlement] start', { user_id: userId, scan_id: scanId });
 
+  const subStatus = await fetchSubscriptionStatus(supabaseUrl, serviceKey, userId);
+  const isPremium = isPremiumSubscriptionStatus(subStatus);
+  console.info('[scan:apply-entitlement] subscription', {
+    user_id: userId,
+    scan_id: scanId,
+    subscription_status: subStatus,
+    premium: isPremium,
+  });
+
   try {
     const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/apply_body_scan_entitlement`, {
       method: 'POST',
@@ -215,12 +264,16 @@ export async function POST(req) {
     }
 
     if (rpcRes.ok && rpcJson && typeof rpcJson === 'object') {
+      if (isPremium) {
+        await patchPremiumBodyScanLimit(supabaseUrl, serviceKey, userId);
+      }
       const ent = await fetchEntitlementsUser(supabaseUrl, anonKey, bearerToken, userId);
       console.info('[scan:apply-entitlement] rpc ok', {
         user_id: userId,
         scan_id: scanId,
         increment_applied: rpcJson.increment_applied === true,
         free_scans_used: rpcJson.free_scans_used ?? ent?.free_scans_used,
+        premium: isPremium,
       });
       return NextResponse.json({
         ok: rpcJson.ok !== false,
@@ -237,6 +290,9 @@ export async function POST(req) {
     });
 
     const fallback = await applyEntitlementFallback(serviceKey, supabaseUrl, userId, scanId);
+    if (isPremium && fallback.increment_applied) {
+      await patchPremiumBodyScanLimit(supabaseUrl, serviceKey, userId);
+    }
     const ent =
       fallback.entitlements ||
       (await fetchEntitlementsUser(supabaseUrl, anonKey, bearerToken, userId)) ||
@@ -247,6 +303,7 @@ export async function POST(req) {
       scan_id: scanId,
       increment_applied: fallback.increment_applied,
       reason: fallback.reason || null,
+      premium: isPremium,
     });
 
     return NextResponse.json({

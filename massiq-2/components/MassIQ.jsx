@@ -49,7 +49,24 @@ import {
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
-import { hasFeature, isPremiumActive, FEATURES, canScan, scansRemaining, FREE_SCAN_LIMIT, canFoodScan, foodScansRemainingToday, FREE_FOOD_SCAN_LIMIT, getFoodScansUsedToday, setFoodScanCache, isBodyScanQuotaExhausted } from '../lib/features';
+import {
+  hasFeature,
+  isPremiumActive,
+  FEATURES,
+  canScan,
+  scansRemaining,
+  FREE_SCAN_LIMIT,
+  canFoodScan,
+  foodScansRemainingToday,
+  FREE_FOOD_SCAN_LIMIT,
+  getFoodScansUsedToday,
+  setFoodScanCache,
+  isBodyScanQuotaExhausted,
+  normalizeScanEntitlementsForSubscription,
+  logSubscriptionResolution,
+  logEntitlementsResolution,
+  logScanAccessDecision,
+} from '../lib/features';
 
 /* ─── Design Tokens ─────────────────────────────────────────────────────── */
 const C = {
@@ -2339,12 +2356,14 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
         /* ── STATE A: No scans yet — render polished pre-scan hero ── */
         if (!hasScan) {
-          const freeLeft = accessToken
-            ? (entitlements != null
-                ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
-                : null)
-            : scansRemaining(subscription, resolvedHistory, null, false);
           const isPremium = isPremiumActive(subscription);
+          const freeLeft = isPremium
+            ? Infinity
+            : (accessToken
+              ? (entitlements != null
+                  ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+                  : null)
+              : scansRemaining(subscription, resolvedHistory, null, false));
           return (
             <div style={{
               borderRadius: 22,
@@ -5525,9 +5544,12 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
             setError('Could not load your scan allowance from the server. Check your connection and try again.');
             return;
           }
-          const allowed = canScan(subscription, parentScanHistory, entFresh, isLoggedIn);
+          const normalized = normalizeScanEntitlementsForSubscription(subscription, entFresh);
+          const allowed = canScan(subscription, parentScanHistory, normalized, isLoggedIn);
+          logScanAccessDecision(subscription, normalized, isLoggedIn, allowed);
           console.info('[entitlements:body] before scan', {
             can_scan: allowed,
+            premium: isPremiumActive(subscription),
             free_scans_used: entFresh?.free_scans_used,
             free_scan_limit: entFresh?.free_scan_limit,
             lifetime_scan_count: entFresh?.lifetime_scan_count,
@@ -6061,13 +6083,17 @@ Return ONLY this JSON (no markdown, no extra text):
   /* Pre-scan derived state + logging — MUST stay above any conditional returns (hooks order). */
   const isPremium = isPremiumActive(subscription);
   const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
-  const remaining = isLoggedIn
-    ? (entitlements != null
-        ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
-        : null)
-    : scansRemaining(subscription, parentScanHistory, null, false);
+  const remaining = isPremium
+    ? Infinity
+    : (isLoggedIn
+      ? (entitlements != null
+          ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+          : null)
+      : scansRemaining(subscription, parentScanHistory, null, false));
   const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
+  const dbFreeLimit = isPremiumActive(subscription)
+    ? FREE_SCAN_LIMIT
+    : (entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT);
 
   /* ── Scanning spinner ── */
   if (scanning) return (
@@ -7194,6 +7220,11 @@ export default function MassIQ() {
   const [scanHistory,   setScanHistory]   = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [subscription,  setSubscription]  = useState(null);
   const [entitlements,  setEntitlements]  = useState(null);
+  /** user_entitlements aligned with subscription tier (premium = sentinel limit); not used for premium gating. */
+  const scanEntitlements = useMemo(
+    () => normalizeScanEntitlementsForSubscription(subscription, entitlements),
+    [subscription, entitlements],
+  );
   const [paywallOpen,   setPaywallOpen]   = useState(false);
   const [checkoutActivating, setCheckoutActivating] = useState(false);
   const [checkoutRetryExhausted, setCheckoutRetryExhausted] = useState(false);
@@ -7206,6 +7237,11 @@ export default function MassIQ() {
     const latestScan = LS.get(LS_KEYS.scanHistory, []).slice(-1)[0] || null;
     return calcTargets(profile, latestScan);
   }, [profile, activePlan]);
+
+  useEffect(() => {
+    if (!session?.access_token) return;
+    logEntitlementsResolution('state', subscription, entitlements, scanEntitlements);
+  }, [subscription, entitlements, scanEntitlements, session?.access_token]);
 
   useEffect(() => {
     // If the user landed on /app with a Supabase recovery token in the URL hash
@@ -7441,6 +7477,7 @@ export default function MassIQ() {
         try {
           const sub = await getSubscription(session.access_token, userId);
           if (mounted) setSubscription(sub);
+          if (sub) logSubscriptionResolution('hydrate', sub);
           const premium = sub && ['active', 'trialing'].includes(sub.status);
           console.info('[sync] subscription:ok', {
             status: sub?.status || 'none',
@@ -7678,6 +7715,7 @@ export default function MassIQ() {
             if (sub && isPremiumActive(sub)) {
               if (!cancelled) {
                 setSubscription(sub);
+                logSubscriptionResolution('poll', sub);
                 try {
                   const ent = await fetchUserEntitlements(session.access_token, userId);
                   if (!cancelled) {
@@ -8572,9 +8610,9 @@ export default function MassIQ() {
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={scanEntitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
+        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={scanEntitlements} onFoodScanComplete={handleFoodScanComplete} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={scanEntitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab

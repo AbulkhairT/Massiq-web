@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { PREMIUM_SCAN_QUOTA_SENTINEL } from '../../../../lib/entitlementsConstants.js';
 
 export const runtime = 'nodejs';
 
@@ -59,8 +60,32 @@ export async function GET(req) {
   const subStatus = Array.isArray(subRows) && subRows[0] ? subRows[0].status : null;
   const isPremium = ['active', 'trialing'].includes(String(subStatus || '').toLowerCase());
 
-  const ent = await ensureEntitlementsRow(userId);
+  let ent = await ensureEntitlementsRow(userId);
   if (!ent) return NextResponse.json({ error: 'Could not load entitlements' }, { status: 500 });
+
+  if (isPremium && Number(ent.free_scan_limit) < PREMIUM_SCAN_QUOTA_SENTINEL / 2) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (supabaseUrl && serviceKey) {
+      const patch = await fetch(`${supabaseUrl}/rest/v1/user_entitlements?user_id=eq.${userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: serviceKey,
+          Authorization: `Bearer ${serviceKey}`,
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({
+          free_scan_limit: PREMIUM_SCAN_QUOTA_SENTINEL,
+          updated_at: new Date().toISOString(),
+        }),
+      });
+      if (patch.ok) {
+        const rows = await patch.json().catch(() => []);
+        ent = Array.isArray(rows) && rows[0] ? rows[0] : { ...ent, free_scan_limit: PREMIUM_SCAN_QUOTA_SENTINEL };
+      }
+    }
+  }
 
   const freeScansUsed = Number(ent.free_scans_used) || 0;
   const freeScanLimit = Number(ent.free_scan_limit) || 2;

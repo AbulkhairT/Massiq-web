@@ -1406,7 +1406,8 @@ const USER_ENTITLEMENTS_SELECT =
   'user_id,free_scans_used,free_scan_limit,lifetime_scan_count,free_food_scans_used,free_food_scans_date,free_food_scans_used_today';
 
 /**
- * Read user_entitlements only (no insert). Source of truth for free scan UI.
+ * Read user_entitlements only (no insert). Used for free-tier counters and food-scan fields.
+ * Premium body-scan access is determined by getSubscription (active/trialing), not this row.
  */
 export async function fetchUserEntitlements(token, userId) {
   if (!token || !userId) return null;

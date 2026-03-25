@@ -1,5 +1,10 @@
+import { PREMIUM_SCAN_QUOTA_SENTINEL } from './entitlementsConstants.js';
+
 /**
  * Feature gate definitions — single source of truth.
+ *
+ * Premium access: public.subscriptions (active / trialing) via isPremiumActive().
+ * user_entitlements is usage counters / cache only — never authoritative for premium.
  *
  * All premium access logic runs through here.
  * Do NOT scatter isPremium checks across the codebase.
@@ -105,6 +110,68 @@ export function foodScansRemainingToday(subscription, entitlements, userId) {
 export function isPremiumActive(subscription) {
   if (!subscription) return false;
   return ['active', 'trialing'].includes(subscription?.status);
+}
+
+export { PREMIUM_SCAN_QUOTA_SENTINEL };
+
+/**
+ * Aligns user_entitlements row shape with subscription tier for UI and arithmetic.
+ * - Premium: free_scan_limit is at least sentinel so used <= limit for any realistic used count.
+ * - Free: if DB still has premium sentinel after downgrade, cap limit to FREE_SCAN_LIMIT for display.
+ */
+export function normalizeScanEntitlementsForSubscription(subscription, entitlements) {
+  if (entitlements == null) return null;
+  const used = Number(entitlements.free_scans_used) || 0;
+  if (isPremiumActive(subscription)) {
+    return {
+      ...entitlements,
+      free_scan_limit: Math.max(PREMIUM_SCAN_QUOTA_SENTINEL, used + 1),
+    };
+  }
+  const rawLim = Number(entitlements.free_scan_limit);
+  if (Number.isFinite(rawLim) && rawLim >= PREMIUM_SCAN_QUOTA_SENTINEL / 2) {
+    return { ...entitlements, free_scan_limit: FREE_SCAN_LIMIT };
+  }
+  return entitlements;
+}
+
+/**
+ * Structured logs for debugging entitlement + scan gating (subscription is SoT for premium).
+ */
+export function logSubscriptionResolution(context, subscription) {
+  console.info(`[subscription:resolve:${context}]`, {
+    status: subscription?.status ?? null,
+    premium: isPremiumActive(subscription),
+    stripe_subscription_id: subscription?.stripe_subscription_id ?? null,
+  });
+}
+
+export function logScanAccessDecision(subscription, entitlements, isLoggedIn, allowed) {
+  const premium = isPremiumActive(subscription);
+  let reason = 'unknown';
+  if (premium) reason = 'premium_subscription';
+  else if (isLoggedIn && entitlements == null) reason = 'entitlements_unloaded';
+  else if (!premium && entitlements != null) reason = 'free_tier_quota';
+  else if (!isLoggedIn) reason = 'logged_out_local_fallback';
+
+  console.info('[scan:access]', {
+    allowed,
+    premium,
+    reason,
+    subscription_status: subscription?.status ?? null,
+    free_scans_used: entitlements?.free_scans_used ?? null,
+    free_scan_limit: entitlements?.free_scan_limit ?? null,
+  });
+}
+
+export function logEntitlementsResolution(context, subscription, rawEntitlements, normalizedEntitlements) {
+  console.info(`[entitlements:resolve:${context}]`, {
+    subscription_status: subscription?.status ?? null,
+    premium: isPremiumActive(subscription),
+    raw_free_scans_used: rawEntitlements?.free_scans_used ?? null,
+    raw_free_scan_limit: rawEntitlements?.free_scan_limit ?? null,
+    normalized_free_scan_limit: normalizedEntitlements?.free_scan_limit ?? null,
+  });
 }
 
 /**
