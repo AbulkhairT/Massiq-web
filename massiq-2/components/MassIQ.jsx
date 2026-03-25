@@ -47,7 +47,6 @@ import {
   getSubscription,
   fetchUserEntitlements,
   hydrateUserEntitlements,
-  applyBodyScanEntitlement,
   reconcileBodyScanEntitlements,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
@@ -2152,6 +2151,16 @@ async function recordFoodScanSuccess(accessToken, payload) {
   return data;
 }
 
+async function fetchBodyScanAccess(accessToken) {
+  if (!accessToken) return null;
+  const res = await fetch('/api/body-scan/access', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `body-scan access ${res.status}`);
+  return data;
+}
+
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
 function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade, userId, accessToken, onFoodScanComplete }) {
   const today      = new Date().toISOString().slice(0, 10);
@@ -2344,7 +2353,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         if (!hasScan) {
           const freeLeft = accessToken
             ? (entitlements != null
-                ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+                ? Math.max(0, Number(entitlements.free_scan_limit) - Number(entitlements.free_scans_used))
                 : null)
             : scansRemaining(subscription, resolvedHistory, null, false);
           const isPremium = isPremiumActive(subscription);
@@ -2369,7 +2378,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                 </div>
                 {!isPremium && freeLeft != null && freeLeft > 0 && (
                   <span style={{ fontSize: 11, color: C.dimmed }}>
-                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} included
+                    {freeLeft} free scan{freeLeft !== 1 ? 's' : ''} remaining
                   </span>
                 )}
                 {!isPremium && freeLeft === null && !!accessToken && (
@@ -2379,7 +2388,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                   <button className="bp" onClick={onUpgrade} style={{
                     fontSize: 11, fontWeight: 700, color: C.green, background: 'none',
                     border: 'none', cursor: 'pointer', padding: 0,
-                  }}>Upgrade →</button>
+                  }}>No free scans remaining · Upgrade →</button>
                 )}
               </div>
 
@@ -4770,7 +4779,7 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null, scanHistoryFromDb = [], latestDecisionSummary = null }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null, scanHistoryFromDb = [], latestDecisionSummary = null, accessToken = null }) {
   const rawScanHistory = Array.isArray(scanHistoryFromDb) && scanHistoryFromDb.length > 0 ? scanHistoryFromDb : LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -4883,15 +4892,23 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
     if (!customerId) return;
     setPortalLoading(true);
     try {
+      console.info('[billing-portal] request start', { has_customer_id: true, has_access_token: Boolean(accessToken) });
       const res = await fetch('/api/stripe/portal', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body:    JSON.stringify({ customerId }),
       });
-      const { url, error: apiErr } = await res.json();
-      if (apiErr) throw new Error(apiErr);
-      if (url) window.location.href = url;
+      const data = await res.json().catch(() => ({}));
+      console.info('[billing-portal] response', { status: res.status, body: data });
+      const { url, error: apiErr } = data || {};
+      if (!res.ok || apiErr) throw new Error(apiErr || `HTTP ${res.status}`);
+      if (!url) throw new Error('Missing billing portal URL');
+      window.location.assign(url);
     } catch (err) {
+      console.error('[billing-portal] failure reason', err?.message || err);
       showToast('Could not open billing portal. Try again.');
     }
     setPortalLoading(false);
@@ -5523,7 +5540,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
   );
 }
 
-function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory, onRefreshEntitlements, isLoggedIn }) {
+function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramArtifacts, subscription, entitlements, parentScanHistory, onRefreshEntitlements, isLoggedIn, accessToken, onUpgrade }) {
   const photoRef  = useRef(null);
   const uploadRef = useRef(null);
 
@@ -5588,23 +5605,28 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
     try {
       if (isLoggedIn && onRefreshEntitlements) {
         try {
-          const entFresh = await onRefreshEntitlements();
+          console.info('[entitlements:body] entitlement fetch start');
+          const access = await fetchBodyScanAccess(accessToken);
+          const entFresh = access?.entitlements || null;
           if (entFresh == null) {
             console.warn('[entitlements:body] before scan — no DB row (cannot enforce limit safely)');
             setError('Could not load your scan allowance from the server. Check your connection and try again.');
             return;
           }
-          const allowed = canScan(subscription, parentScanHistory, entFresh, isLoggedIn);
+          await onRefreshEntitlements();
+          const allowed = Boolean(access?.canScan);
           console.info('[entitlements:body] before scan', {
             can_scan: allowed,
+            is_premium: access?.isPremium,
             free_scans_used: entFresh?.free_scans_used,
             free_scan_limit: entFresh?.free_scan_limit,
             lifetime_scan_count: entFresh?.lifetime_scan_count,
           });
           if (!allowed) {
             console.info('[entitlements:body] blocked — free body scan quota exhausted');
-            setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
-            showToast('Free scan limit reached. Upgrade for unlimited scans.');
+            setError('No free scans remaining.');
+            showToast('Free scans used. Upgrade to Premium to continue.');
+            onUpgrade?.();
             return;
           }
         } catch (refErr) {
@@ -6132,11 +6154,11 @@ Return ONLY this JSON (no markdown, no extra text):
   const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
   const remaining = isLoggedIn
     ? (entitlements != null
-        ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+        ? Math.max(0, Number(entitlements.free_scan_limit) - Number(entitlements.free_scans_used))
         : null)
     : scansRemaining(subscription, parentScanHistory, null, false);
   const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
+  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : null;
 
   /* ── Scanning spinner ── */
   if (scanning) return (
@@ -6738,9 +6760,9 @@ Return ONLY this JSON (no markdown, no extra text):
         }}>
           <Icon name="camera" size={14} color={remaining === 1 ? C.orange : C.green} strokeWidth={2} />
           <span style={{ fontSize: 13, color: remaining === 1 ? C.orange : C.muted, flex: 1 }}>
-            {remaining === 1
-              ? 'Last free scan. Upgrade before your next check-in to keep tracking.'
-              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining.`}
+            {remaining <= 0
+              ? 'No free scans remaining'
+              : `${remaining} free scan${remaining !== 1 ? 's' : ''} remaining`}
           </span>
         </div>
       )}
@@ -7933,15 +7955,20 @@ export default function MassIQ() {
       }
 
       if (insertedNewBodyScan && newScanEntry?.scanStatus !== 'duplicate' && scanId) {
+        console.info('[entitlements:body] before', {
+          user_id: userId,
+          scan_id: scanId,
+          free_scans_used: entitlements?.free_scans_used,
+          free_scan_limit: entitlements?.free_scan_limit,
+          lifetime_scan_count: entitlements?.lifetime_scan_count,
+        });
         try {
-          const rpc = await applyBodyScanEntitlement(session.access_token, scanId);
+          await reconcileBodyScanEntitlements(session.access_token);
           console.info('[entitlements:body] increment success', {
             user_id: userId,
             scan_id: scanId,
-            increment_applied: rpc?.increment_applied === true,
-            reason: rpc?.reason || (rpc?.ok === false ? 'rpc_failed' : 'new_scan'),
-            free_scans_used: rpc?.free_scans_used,
-            lifetime_scan_count: rpc?.lifetime_scan_count,
+            increment_applied: true,
+            reason: 'reconcile_after_new_scan',
           });
         } catch (rpcErr) {
           console.warn('[entitlements:body] increment RPC failed — reconciling from scans table', {
@@ -7959,7 +7986,7 @@ export default function MassIQ() {
           const ent = await fetchUserEntitlements(session.access_token, userId);
           if (ent) {
             setEntitlements(ent);
-            console.info('[entitlements:body] refreshed after body scan save', {
+            console.info('[entitlements:body] refresh success', {
               free_scans_used: ent.free_scans_used,
               free_scan_limit: ent.free_scan_limit,
               lifetime_scan_count: ent.lifetime_scan_count,
@@ -8234,10 +8261,16 @@ export default function MassIQ() {
     }
     let planRow;
     try {
-      planRow = await upsertPlan(session.access_token, userId, nextPlan);
+      const latest = await getPlan(session.access_token, userId);
+      if (latest?.id) {
+        planRow = latest;
+        console.info('[db:plan] persistProgramArtifacts using existing plan row', { user_id: userId, plan_id: latest.id });
+      } else {
+        console.info('[db:plan] persistProgramArtifacts no existing plan; upserting', { user_id: userId });
+        planRow = await upsertPlan(session.access_token, userId, nextPlan);
+      }
     } catch (e) {
-      console.error('[db:plan] persistProgramArtifacts upsertPlan FAILED', { user_id: userId, error: e?.message });
-      setToast('Could not save plan to server. Meal/workout sync skipped.');
+      console.error('[db:plan] persistProgramArtifacts plan lookup/upsert FAILED', { user_id: userId, error: e?.message });
       throw e;
     }
     const planId = planRow?.id;
@@ -8644,7 +8677,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} accessToken={session?.access_token} onUpgrade={() => setPaywallOpen(true)} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
@@ -8654,6 +8687,7 @@ export default function MassIQ() {
             latestPlanAdjustment={latestPlanAdjustment}
             scanHistoryFromDb={scanHistory}
             latestDecisionSummary={latestDecisionSummary}
+            accessToken={session?.access_token}
             setTab={setTab}
             onEditProfile={handleEditProfile}
             onDeleteScanHistory={handleDeleteScanHistory}
