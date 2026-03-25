@@ -136,8 +136,9 @@ export function getScanCount(scanHistory) {
 export function canScan(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return true;
   if (entitlements != null) {
-    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
-    const used = Number(entitlements.free_scans_used) || 0;
+    const limit = Number(entitlements.free_scan_limit);
+    const used = Number(entitlements.free_scans_used);
+    if (!Number.isFinite(limit) || !Number.isFinite(used)) return false;
     return used < limit;
   }
   if (isLoggedIn) return false;
@@ -158,8 +159,9 @@ export function canScan(subscription, scanHistory, entitlements = null, isLogged
 export function scansRemaining(subscription, scanHistory, entitlements = null, isLoggedIn = false) {
   if (isPremiumActive(subscription)) return Infinity;
   if (entitlements != null) {
-    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
-    const used = Number(entitlements.free_scans_used) || 0;
+    const limit = Number(entitlements.free_scan_limit);
+    const used = Number(entitlements.free_scans_used);
+    if (!Number.isFinite(limit) || !Number.isFinite(used)) return null;
     return Math.max(0, limit - used);
   }
   if (isLoggedIn) return null;
@@ -175,8 +177,9 @@ export function isBodyScanQuotaExhausted(subscription, scanHistory, entitlements
   if (isPremiumActive(subscription)) return false;
   if (isLoggedIn) {
     if (entitlements == null) return false;
-    const limit = Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT;
-    const used = Number(entitlements.free_scans_used) || 0;
+    const limit = Number(entitlements.free_scan_limit);
+    const used = Number(entitlements.free_scans_used);
+    if (!Number.isFinite(limit) || !Number.isFinite(used)) return false;
     return used >= limit;
   }
   return getScanCount(scanHistory) >= FREE_SCAN_LIMIT;

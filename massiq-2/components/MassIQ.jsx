@@ -47,7 +47,6 @@ import {
   getSubscription,
   fetchUserEntitlements,
   hydrateUserEntitlements,
-  applyBodyScanEntitlement,
   reconcileBodyScanEntitlements,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
@@ -2344,7 +2343,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         if (!hasScan) {
           const freeLeft = accessToken
             ? (entitlements != null
-                ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+                ? Math.max(0, Number(entitlements.free_scan_limit) - Number(entitlements.free_scans_used))
                 : null)
             : scansRemaining(subscription, resolvedHistory, null, false);
           const isPremium = isPremiumActive(subscription);
@@ -4770,7 +4769,7 @@ function AIPatterns({ profile, activePlan, scanHistory }) {
   );
 }
 
-function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null, scanHistoryFromDb = [], latestDecisionSummary = null }) {
+function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHistory, onDeleteAccount, onLogout, showToast, onUpdateUnits, subscription, onUpgrade, progressMetrics = [], latestPlanAdjustment = null, scanHistoryFromDb = [], latestDecisionSummary = null, accessToken = null }) {
   const rawScanHistory = Array.isArray(scanHistoryFromDb) && scanHistoryFromDb.length > 0 ? scanHistoryFromDb : LS.get(LS_KEYS.scanHistory, []);
   // Always display in chronological order (oldest first)
   const scanHistory = [...rawScanHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -4883,15 +4882,23 @@ function ProfileTab({ profile, activePlan, setTab, onEditProfile, onDeleteScanHi
     if (!customerId) return;
     setPortalLoading(true);
     try {
+      console.info('[billing-portal] request start', { has_customer_id: true, has_access_token: Boolean(accessToken) });
       const res = await fetch('/api/stripe/portal', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body:    JSON.stringify({ customerId }),
       });
-      const { url, error: apiErr } = await res.json();
-      if (apiErr) throw new Error(apiErr);
-      if (url) window.location.href = url;
+      const data = await res.json().catch(() => ({}));
+      console.info('[billing-portal] response', { status: res.status, body: data });
+      const { url, error: apiErr } = data || {};
+      if (!res.ok || apiErr) throw new Error(apiErr || `HTTP ${res.status}`);
+      if (!url) throw new Error('Missing billing portal URL');
+      window.location.assign(url);
     } catch (err) {
+      console.error('[billing-portal] failure reason', err?.message || err);
       showToast('Could not open billing portal. Try again.');
     }
     setPortalLoading(false);
@@ -6132,11 +6139,11 @@ Return ONLY this JSON (no markdown, no extra text):
   const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
   const remaining = isLoggedIn
     ? (entitlements != null
-        ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+        ? Math.max(0, Number(entitlements.free_scan_limit) - Number(entitlements.free_scans_used))
         : null)
     : scansRemaining(subscription, parentScanHistory, null, false);
   const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
-  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
+  const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : null;
 
   /* ── Scanning spinner ── */
   if (scanning) return (
@@ -7933,15 +7940,20 @@ export default function MassIQ() {
       }
 
       if (insertedNewBodyScan && newScanEntry?.scanStatus !== 'duplicate' && scanId) {
+        console.info('[entitlements:body] before', {
+          user_id: userId,
+          scan_id: scanId,
+          free_scans_used: entitlements?.free_scans_used,
+          free_scan_limit: entitlements?.free_scan_limit,
+          lifetime_scan_count: entitlements?.lifetime_scan_count,
+        });
         try {
-          const rpc = await applyBodyScanEntitlement(session.access_token, scanId);
+          await reconcileBodyScanEntitlements(session.access_token);
           console.info('[entitlements:body] increment success', {
             user_id: userId,
             scan_id: scanId,
-            increment_applied: rpc?.increment_applied === true,
-            reason: rpc?.reason || (rpc?.ok === false ? 'rpc_failed' : 'new_scan'),
-            free_scans_used: rpc?.free_scans_used,
-            lifetime_scan_count: rpc?.lifetime_scan_count,
+            increment_applied: true,
+            reason: 'reconcile_after_new_scan',
           });
         } catch (rpcErr) {
           console.warn('[entitlements:body] increment RPC failed — reconciling from scans table', {
@@ -7959,7 +7971,7 @@ export default function MassIQ() {
           const ent = await fetchUserEntitlements(session.access_token, userId);
           if (ent) {
             setEntitlements(ent);
-            console.info('[entitlements:body] refreshed after body scan save', {
+            console.info('[entitlements:body] refresh success', {
               free_scans_used: ent.free_scans_used,
               free_scan_limit: ent.free_scan_limit,
               lifetime_scan_count: ent.lifetime_scan_count,
@@ -8654,6 +8666,7 @@ export default function MassIQ() {
             latestPlanAdjustment={latestPlanAdjustment}
             scanHistoryFromDb={scanHistory}
             latestDecisionSummary={latestDecisionSummary}
+            accessToken={session?.access_token}
             setTab={setTab}
             onEditProfile={handleEditProfile}
             onDeleteScanHistory={handleDeleteScanHistory}
