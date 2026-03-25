@@ -495,10 +495,11 @@ export default function LandingPage() {
             MassIQ is in public beta and works best as a home screen app.
           </p>
           <p style={{ fontSize: 12, color: C.dim, lineHeight: 1.6 }}>
-  Native app is on the way.{' '}
-  <span style={{ color: '#e5e5e5', fontWeight: 500 }}>
-    Add to Home Screen via Safari for the full experience.
-  </span>
+  Native app is on the way.
+</p>
+
+<p style={{ fontSize: 13, color: '#ffffff', fontWeight: 600 }}>
+  Add to Home Screen via Safari for the full experience.
 </p>
         </div>
       </div>
