@@ -2342,7 +2342,11 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
 
         /* ── STATE A: No scans yet — render polished pre-scan hero ── */
         if (!hasScan) {
-          const freeLeft = scansRemaining(subscription, resolvedHistory, entitlements, !!accessToken);
+          const freeLeft = accessToken
+            ? (entitlements != null
+                ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+                : null)
+            : scansRemaining(subscription, resolvedHistory, null, false);
           const isPremium = isPremiumActive(subscription);
           return (
             <div style={{
@@ -2369,7 +2373,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                   </span>
                 )}
                 {!isPremium && freeLeft === null && !!accessToken && (
-                  <span style={{ fontSize: 11, color: C.dimmed }}>Loading allowance…</span>
+                  <span style={{ fontSize: 11, color: C.dimmed }}>Checking scan allowance…</span>
                 )}
                 {!isPremium && freeLeft != null && freeLeft <= 0 && (
                   <button className="bp" onClick={onUpgrade} style={{
@@ -6126,15 +6130,11 @@ Return ONLY this JSON (no markdown, no extra text):
   /* Pre-scan derived state + logging — MUST stay above any conditional returns (hooks order). */
   const isPremium = isPremiumActive(subscription);
   const historyForUi = isLoggedIn && Array.isArray(parentScanHistory) ? parentScanHistory : scanHistory;
-  const latestCompleted = pickLatestRealScan(historyForUi);
-  useEffect(() => {
-    if (!latestCompleted?.dbId && !latestCompleted?.id) return;
-    console.info('[latest-scan] UI refreshed', {
-      id: latestCompleted.dbId || latestCompleted.id,
-      date: latestCompleted.date,
-    });
-  }, [latestCompleted?.dbId, latestCompleted?.id, latestCompleted?.date]);
-  const remaining  = scansRemaining(subscription, parentScanHistory, entitlements, isLoggedIn);
+  const remaining = isLoggedIn
+    ? (entitlements != null
+        ? Math.max(0, (Number(entitlements.free_scan_limit) || FREE_SCAN_LIMIT) - (Number(entitlements.free_scans_used) || 0))
+        : null)
+    : scansRemaining(subscription, parentScanHistory, null, false);
   const scanLocked = isBodyScanQuotaExhausted(subscription, parentScanHistory, entitlements, isLoggedIn);
   const dbFreeLimit = entitlements?.free_scan_limit != null ? Number(entitlements.free_scan_limit) : FREE_SCAN_LIMIT;
 
@@ -6728,24 +6728,6 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       </Card>
 
-      {latestCompleted && (
-        <Card style={{ background: C.card, border: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.dimmed, textTransform: 'uppercase', marginBottom: 8 }}>Your latest scan</div>
-          <div style={{ fontSize: 14, color: C.white, fontWeight: 600, marginBottom: 6 }}>
-            Last scan: <span style={{ color: C.muted, fontWeight: 500 }}>{formatRelativeScanTime(latestCompleted)}</span>
-          </div>
-          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
-            Body fat {getBFDisplay(latestCompleted)}
-            {latestCompleted.physiqueScore != null && (
-              <span> · Physique score {Math.round(latestCompleted.physiqueScore)}</span>
-            )}
-            {latestCompleted.symmetryScore != null && (
-              <span> · Symmetry {Math.round(latestCompleted.symmetryScore)}</span>
-            )}
-          </div>
-        </Card>
-      )}
-
       {/* ── Free scan remaining notice ── */}
       {!scanLocked && !isPremium && remaining != null && remaining < Infinity && (
         <div style={{
@@ -6763,7 +6745,7 @@ Return ONLY this JSON (no markdown, no extra text):
         </div>
       )}
       {!scanLocked && !isPremium && isLoggedIn && remaining === null && (
-        <div style={{ fontSize: 13, color: C.dimmed, padding: '8px 4px' }}>Loading scan allowance from your account…</div>
+        <div style={{ fontSize: 13, color: C.dimmed, padding: '8px 4px' }}>Checking scan allowance…</div>
       )}
 
       {/* ── Scan limit reached — upgrade gate ── */}
@@ -6887,7 +6869,7 @@ Return ONLY this JSON (no markdown, no extra text):
               <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>Scan history &amp; comparisons are a Premium feature</span>
             </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 8, lineHeight: 1.55 }}>
-              Upgrade to browse past scans, deltas, and full context. Your latest scan stays visible above.
+              Upgrade to browse past scans, deltas, and full context.
             </div>
           </div>
         </Card>
@@ -8662,7 +8644,7 @@ export default function MassIQ() {
       switch (tab) {
         case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={entitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
         case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={entitlements} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
+        case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={entitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
         case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
         case 'profile':   return (
           <ProfileTab
