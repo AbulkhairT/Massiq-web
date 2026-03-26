@@ -2580,7 +2580,10 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                 </span>
               </div>
               {activePlan ? (
-                <span style={{ fontSize: 12, color: C.dimmed, fontWeight: 500 }}>Week {weekNum} / 12</span>
+                <span style={{ fontSize: 12, color: C.dimmed, fontWeight: 500, textAlign: 'right', lineHeight: 1.35 }}>
+                  <span style={{ display: 'block' }}>Week {weekNum} of 12</span>
+                  <span style={{ display: 'block', fontSize: 10, fontWeight: 500, opacity: 0.88 }}>full program cycle</span>
+                </span>
               ) : (
                 <span style={{ fontSize: 12, color: C.dimmed }}>No plan yet</span>
               )}
@@ -2620,9 +2623,22 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
                   transition: 'width .6s ease',
                 }} />
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 11, color: C.dimmed }}>{hasScan ? `Week ${weekNum}` : 'Scan to activate'}</span>
-                {weeksLeft != null && <span style={{ fontSize: 11, color: C.dimmed }}>~{weeksLeft} weeks to target</span>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                  <span style={{ fontSize: 11, color: C.dimmed }}>
+                    {hasScan ? 'Progress toward target body fat' : 'Scan to activate'}
+                  </span>
+                  {weeksLeft != null && (
+                    <span style={{ fontSize: 11, color: C.dimmed, textAlign: 'right', flexShrink: 0, maxWidth: '58%' }}>
+                      ~{weeksLeft} wk to target BF, then refine
+                    </span>
+                  )}
+                </div>
+                {hasScan && weeksLeft != null && (
+                  <span style={{ fontSize: 10, color: C.dimmed, lineHeight: 1.4, opacity: 0.92 }}>
+                    Phase 1: reach target (~{weeksLeft} wk) · Phase 2: optimize &amp; maintain (rest of 12-wk cycle)
+                  </span>
+                )}
               </div>
             </div>
 
