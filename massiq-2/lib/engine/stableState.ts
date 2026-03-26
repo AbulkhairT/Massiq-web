@@ -418,7 +418,7 @@ function applyPhaseOverrideForAdverseEvidence(decision: AnyObj, input: AnyObj): 
 }
 
 export function runDecisionEngineOnStableState(input: AnyObj): AnyObj {
-  const base = runScanDecisionEngine(input)
+  const base = runScanDecisionEngine(input as any)
   const out = applyPhaseOverrideForAdverseEvidence(base, input)
   console.info('[stable-decision] phase', {
     recommended_phase: out?.phase_decision?.recommended_phase,

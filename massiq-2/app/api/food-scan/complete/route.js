@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { extractFoodSignals, summarizeFoodSignals } from '../../../lib/engine/foodSignals';
+import { extractFoodSignals, summarizeFoodSignals } from '../../../../lib/engine/foodSignals';
 
 export const runtime = 'nodejs';
 
