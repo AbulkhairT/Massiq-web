@@ -752,8 +752,66 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
   };
 }
 
-function sanitizeScanData(scan, profile) {
+function getPhysiqueTier(score) {
+  const s = Number(score || 0);
+  if (s < 40) return 'Foundation';
+  if (s < 60) return 'Developing';
+  if (s < 75) return 'Athletic';
+  if (s < 90) return 'Advanced';
+  return 'Elite';
+}
+
+function getPhysiqueReinforcement(tier) {
+  if (tier === 'Foundation') return 'Building your base - early progress comes fast.';
+  if (tier === 'Developing') return 'Strong base - visible progress ahead.';
+  if (tier === 'Athletic') return 'Well-developed physique - refining details now.';
+  if (tier === 'Advanced') return 'High-level physique - pushing toward elite.';
+  return 'Top-tier physique.';
+}
+
+function estimateStagePercentile(score, tier) {
+  const baseByTier = { Foundation: 20, Developing: 45, Athletic: 68, Advanced: 84, Elite: 95 };
+  const base = baseByTier[tier] || 50;
+  const local = Math.max(0, Math.min(1, (Number(score || 0) % 10) / 10));
+  return Math.max(5, Math.min(99, Math.round(base + (local - 0.5) * 8)));
+}
+
+function smoothPhysiqueScoreForNoise({
+  rawScore,
+  previousScore,
+  bodyFatPct,
+  previousBodyFatPct,
+  leanMassLbs,
+  previousLeanMassLbs,
+  meaningfulChange = false,
+}) {
+  const next = Number(rawScore);
+  const prev = Number(previousScore);
+  if (!Number.isFinite(next) || !Number.isFinite(prev)) {
+    return { score: Number.isFinite(next) ? next : rawScore, applied: false, reason: 'missing_scores' };
+  }
+  const bfDelta = Number(bodyFatPct) - Number(previousBodyFatPct);
+  const leanMassDeltaLbs = Number(leanMassLbs) - Number(previousLeanMassLbs);
+  const leanMassDeltaKg = leanMassDeltaLbs * 0.453592;
+  const noiseBand = Math.abs(bfDelta) < 0.5 && Math.abs(leanMassDeltaKg) < 0.3;
+  if (meaningfulChange || !noiseBand) {
+    return { score: next, applied: false, reason: meaningfulChange ? 'meaningful_change' : 'composition_change' };
+  }
+  const cappedDelta = Math.max(-2, Math.min(2, next - prev));
+  const smoothed = Math.round(prev + cappedDelta);
+  return {
+    score: smoothed,
+    applied: smoothed !== next,
+    reason: 'noise_guard',
+    bfDelta: Number(bfDelta.toFixed(2)),
+    leanMassDeltaKg: Number(leanMassDeltaKg.toFixed(3)),
+  };
+}
+
+function sanitizeScanData(scan, profile, options = {}) {
   if (!scan) return scan;
+  const previousScan = options?.previousScan || null;
+  const meaningfulChange = Boolean(options?.meaningfulChange);
   // Support bodyFatRange object from new prompt OR flat bodyFatPct from old prompt
   const bfLow  = Number(scan.bodyFatRange?.low  || 0);
   const bfHigh = Number(scan.bodyFatRange?.high || 0);
@@ -786,6 +844,19 @@ function sanitizeScanData(scan, profile) {
     claudeSymmetry: claudeRawSymmetry,
     confidence,
   });
+  const rawPhysiqueScore = scored.physiqueScore;
+  const smoothed = smoothPhysiqueScoreForNoise({
+    rawScore: rawPhysiqueScore,
+    previousScore: previousScan?.physiqueScore,
+    bodyFatPct,
+    previousBodyFatPct: getBF(previousScan),
+    leanMassLbs: leanMass,
+    previousLeanMassLbs: previousScan?.leanMass,
+    meaningfulChange,
+  });
+  const finalScore = Number(smoothed.score);
+  const tier = getPhysiqueTier(finalScore);
+  const percentile = estimateStagePercentile(finalScore, tier);
 
   return {
     ...scan,
@@ -795,11 +866,25 @@ function sanitizeScanData(scan, profile) {
     bodyFatReasoning: scan.bodyFatReasoning || '',
     leanMass: Number(leanMass.toFixed(1)),
     leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
-    physiqueScore:    scored.physiqueScore,
+    physiqueScore:    finalScore,
     symmetryScore:    scored.symmetryScore,
     ffmi:             scored.ffmi,
     scoringBreakdown: scored.breakdown,
     scoringVersion:   SCORING_VERSION,
+    physiqueTier: tier,
+    physiqueLabel: `${finalScore} - ${tier} Physique`,
+    physiqueContext:
+      'This score reflects how optimized your physique is (body fat, muscle balance, and definition), not overall health or attractiveness.',
+    physiqueReinforcement: getPhysiqueReinforcement(tier),
+    stagePercentile: percentile,
+    scoreSmoothing: {
+      rawScore: rawPhysiqueScore,
+      finalScore,
+      applied: smoothed.applied,
+      reason: smoothed.reason,
+      bfDelta: smoothed.bfDelta ?? null,
+      leanMassDeltaKg: smoothed.leanMassDeltaKg ?? null,
+    },
     symmetryDetails: scan.symmetryDetails || '',
     confidence,
     limitingFactor: scan.limitingFactor || '',
@@ -4825,6 +4910,33 @@ function ProfileTab({ profile, setTab, onEditProfile, onDeleteScanHistory, onDel
   const firstScan = scanHistory[0];
   const bfDelta   = firstScan && lastScan ? ((getBF(lastScan) || 0) - (getBF(firstScan) || 0)).toFixed(1)  : null;
   const lmDelta   = firstScan && lastScan ? (lastScan.leanMass - firstScan.leanMass).toFixed(1) : null;
+  const scoreDeltaSinceStart = firstScan && lastScan && firstScan.physiqueScore != null && lastScan.physiqueScore != null
+    ? Math.round(lastScan.physiqueScore - firstScan.physiqueScore)
+    : null;
+  const lookbackSnapshot = (days) => {
+    if (!lastScan?.date) return null;
+    const cutoff = new Date(lastScan.date).getTime() - (days * 86400000);
+    return [...scanHistory].reverse().find((s) => {
+      const t = new Date(s?.date || 0).getTime();
+      return Number.isFinite(t) && t <= cutoff;
+    }) || firstScan || null;
+  };
+  const scan7 = lookbackSnapshot(7);
+  const scan30 = lookbackSnapshot(30);
+  const progressRows = [
+    { label: 'Since you started', base: firstScan, latest: lastScan },
+    { label: 'Last 7 days', base: scan7, latest: lastScan },
+    { label: 'Last 30 days', base: scan30, latest: lastScan },
+  ].map((row) => {
+    const base = row.base;
+    const latest = row.latest;
+    const bf = base && latest ? Number(((getBF(latest) || 0) - (getBF(base) || 0)).toFixed(1)) : null;
+    const lm = base && latest ? Number(((Number(latest.leanMass || 0) - Number(base.leanMass || 0))).toFixed(1)) : null;
+    const score = base && latest && base.physiqueScore != null && latest.physiqueScore != null
+      ? Math.round(Number(latest.physiqueScore) - Number(base.physiqueScore))
+      : null;
+    return { ...row, bf, lm, score };
+  });
 
   const GOAL_COLORS = { Cut: C.orange, Bulk: C.blue, Recomp: C.purple, Maintain: C.green };
   const goalColor = GOAL_COLORS[profile?.goal] || C.green;
@@ -5025,9 +5137,21 @@ function ProfileTab({ profile, setTab, onEditProfile, onDeleteScanHistory, onDel
         {scanHistory.length === 0 ? null : (
           <Card style={{ padding: 16 }}>
             {bfDelta !== null && (
-              <div style={{ fontSize: 13, color: C.green, fontWeight: 600, marginBottom: 14 }}>
-                Since you started: {Number(bfDelta) <= 0 ? `${Math.abs(bfDelta)}% body fat lost` : `${bfDelta}% body fat gained`}
-                {lmDelta !== null && `, ${Number(lmDelta) >= 0 ? '+' : ''}${lmDelta} lbs lean mass`}
+              <div style={{ marginBottom: 14, display: 'grid', gridTemplateColumns: '1fr', gap: 7 }}>
+                {progressRows.map((p) => (
+                  <div key={p.label} style={{ fontSize: 12, color: C.muted }}>
+                    <span style={{ color: C.white, fontWeight: 600 }}>{p.label}:</span>{' '}
+                    <span style={{ color: p.bf != null && p.bf <= 0 ? C.green : C.red }}>
+                      BF {p.bf == null ? '—' : `${p.bf > 0 ? '+' : ''}${p.bf}%`}
+                    </span>{' · '}
+                    <span style={{ color: p.lm != null && p.lm >= 0 ? C.green : C.red }}>
+                      LM {p.lm == null ? '—' : `${p.lm >= 0 ? '+' : ''}${p.lm} lbs`}
+                    </span>{' · '}
+                    <span style={{ color: p.score != null && p.score >= 0 ? C.green : C.red }}>
+                      Score {p.score == null ? '—' : `${p.score >= 0 ? '+' : ''}${p.score}`}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
             {/* Horizontal scroll of scan cards — oldest left, newest right */}
@@ -5049,6 +5173,7 @@ function ProfileTab({ profile, setTab, onEditProfile, onDeleteScanHistory, onDel
                       {isLatestScan && !s.isBaseline && <span style={{ fontSize: 8, fontWeight: 700, color: C.green, background: C.greenBg, padding: '1px 5px', borderRadius: 99, textTransform: 'uppercase' }}>Latest</span>}
                     </div>
                     <div style={{ fontSize: 17, fontWeight: 700, color: C.white }}>{safeNum(s.physiqueScore)}</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{s.physiqueTier || getPhysiqueTier(s.physiqueScore)}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>score{scoreΔ !== null && <span style={{ color: scoreΔ >= 0 ? C.green : C.red }}> {scoreΔ >= 0 ? '+' : ''}{scoreΔ}</span>}</div>
                     <div style={{ marginTop: 6, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ color: C.muted }}>
@@ -5411,7 +5536,7 @@ function ScanHistoryModal({ scan, isLatest, profile, onClose }) {
             {[
               { label: 'Body Fat',      value: getBFDisplay(scan), color: C.orange },
               { label: 'Lean Mass',     value: scan.leanMass > 0 ? fmt.leanMass(scan.leanMass, profile?.unitSystem) : '—',                                                    color: C.blue },
-              { label: 'Physique Score', value: `${safeNum(scan.physiqueScore)}/100`,                                                                                          color: C.green },
+              { label: 'Physique Score', value: `${safeNum(scan.physiqueScore)}/100 · ${scan.physiqueTier || getPhysiqueTier(scan.physiqueScore)}`,                          color: C.green },
               { label: 'Symmetry',      value: `${safeNum(scan.symmetryScore)}/100`,                                                                                           color: C.purple },
             ].map(m => (
               <div key={m.label} style={{ background: C.cardElevated, borderRadius: 14, padding: '14px 12px', textAlign: 'center', border: `1px solid ${C.border}` }}>
@@ -5762,7 +5887,7 @@ Return ONLY this JSON (no markdown, no extra text):
 
       const match = text.match(/\{[\s\S]*\}/);
       if (!match) throw new Error('Could not parse scan result');
-      const visualData = sanitizeScanData(JSON.parse(match[0]), profile);
+      const visualData = sanitizeScanData(JSON.parse(match[0]), profile, { previousScan: prevScan, meaningfulChange: false });
 
       // ── Step 1b: Upload photo to Supabase Storage + create scan_asset row ─
       // sha256Hash is optional — upload proceeds even without it (non-HTTPS fallback).
@@ -6274,7 +6399,9 @@ Return ONLY this JSON (no markdown, no extra text):
                   <span style={{ fontSize: 11, fontWeight: 700, color: confColor, background: confColor + '22', padding: '4px 10px', borderRadius: 99, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
                     {conf} confidence
                   </span>
-                  <span style={{ fontSize: 11, color: C.muted }}>Score: {safeNum(result.physiqueScore)}/100</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>
+                    {safeNum(result.physiqueScore)} - {result.physiqueTier || getPhysiqueTier(result.physiqueScore)} Physique
+                  </span>
                 </div>
               </div>
               {conf !== 'high' && (
@@ -6287,6 +6414,15 @@ Return ONLY this JSON (no markdown, no extra text):
                   </span>
                 </div>
               )}
+              <div style={{ marginTop: 10, fontSize: 12, color: C.dimmed, lineHeight: 1.5 }}>
+                {result.physiqueContext || 'This score reflects how optimized your physique is (body fat, muscle balance, and definition), not overall health or attractiveness.'}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 12, color: C.green, fontWeight: 600 }}>
+                {result.physiqueReinforcement || getPhysiqueReinforcement(result.physiqueTier || getPhysiqueTier(result.physiqueScore))}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: C.muted }}>
+                Ahead of about {result.stagePercentile || estimateStagePercentile(result.physiqueScore, result.physiqueTier || getPhysiqueTier(result.physiqueScore))}% of users at your stage.
+              </div>
             </Card>
           );
         })()}
@@ -6400,7 +6536,7 @@ Return ONLY this JSON (no markdown, no extra text):
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {[
               { label: 'Lean Mass', value: safeNum(result.leanMass, 1) !== '—' ? fmt.leanMass(result.leanMass, profile?.unitSystem) : '—', color: C.blue },
-              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100`,             color: C.green },
+              { label: 'Score',     value: `${safeNum(result.physiqueScore)}/100 · ${result.physiqueTier || getPhysiqueTier(result.physiqueScore)}`,             color: C.green },
               { label: 'Symmetry',  value: `${safeNum(result.symmetryScore)}/100`,             color: C.purple },
               { label: 'Body Fat',  value: `${safeNum(result.bodyFatPct, 1)}%`,                color: C.orange },
             ].map(m => (
@@ -6822,8 +6958,11 @@ Return ONLY this JSON (no markdown, no extra text):
                   )}
                   <div style={{ fontSize: 11, color: C.dimmed, marginTop: 3 }}>Tap to view full scan context</div>
                 </div>
-                <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}` }}>
-                  {s.physiqueScore > 0 ? s.physiqueScore : '—'}/100
+                <div style={{ background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 700, padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.greenDim}`, textAlign: 'right' }}>
+                  <div>{s.physiqueScore > 0 ? s.physiqueScore : '—'}/100</div>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, marginTop: 1 }}>
+                    {s?.physiqueScore > 0 ? (s.physiqueTier || getPhysiqueTier(s.physiqueScore)) : '—'}
+                  </div>
                 </div>
               </div>
             )})}
@@ -6898,7 +7037,7 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial', pre
             {[
               { label: 'Body Fat', value: getBFDisplay(scan), tone: (bfDelta || 0) <= 0 ? C.green : C.orange, delta: bfDelta },
               { label: 'Lean Mass', value: fmt.leanMass(scan.leanMass || 0, unitSystem), tone: (lmDelta || 0) >= 0 ? C.green : C.orange, delta: lmDelta, lb: true },
-              { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100`, tone: C.white },
+              { label: 'Physique Score', value: `${scan.physiqueScore || '—'}/100 · ${scan.physiqueScore ? (scan.physiqueTier || getPhysiqueTier(scan.physiqueScore)) : '—'}`, tone: C.white },
               { label: 'Symmetry', value: `${scan.symmetryScore || '—'}/100`, tone: C.white },
             ].map((m) => (
               <div key={m.label} style={{ background: C.cardElevated, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12 }}>
@@ -6911,6 +7050,9 @@ function ScanDetailModal({ scan, prevScan, onClose, unitSystem = 'imperial', pre
                 )}
               </div>
             ))}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: C.dimmed, lineHeight: 1.45 }}>
+            This score reflects physique optimization (body fat, muscle balance, and definition), not overall health or attractiveness.
           </div>
         </Card>
 
@@ -8071,8 +8213,31 @@ export default function MassIQ() {
             previousScan: priorScan || null,
           });
           const stableDecision = runDecisionEngineOnStableState(stableDecisionInput);
+          const postStableSmoothing = smoothPhysiqueScoreForNoise({
+            rawScore: savedScanEntry?.physiqueScore,
+            previousScore: priorScan?.physiqueScore,
+            bodyFatPct: getBF(savedScanEntry),
+            previousBodyFatPct: getBF(priorScan),
+            leanMassLbs: savedScanEntry?.leanMass,
+            previousLeanMassLbs: priorScan?.leanMass,
+            meaningfulChange: Boolean(stableComparison?.meaningfulChange),
+          });
+          const stabilizedScore = Number(postStableSmoothing.score);
+          const stabilizedTier = getPhysiqueTier(stabilizedScore);
           savedScanEntry = {
             ...savedScanEntry,
+            physiqueScore: stabilizedScore,
+            physiqueTier: stabilizedTier,
+            physiqueLabel: `${stabilizedScore} - ${stabilizedTier} Physique`,
+            physiqueReinforcement: getPhysiqueReinforcement(stabilizedTier),
+            stagePercentile: estimateStagePercentile(stabilizedScore, stabilizedTier),
+            scoreSmoothing: {
+              ...(savedScanEntry?.scoreSmoothing || {}),
+              afterStableState: {
+                applied: postStableSmoothing.applied,
+                reason: postStableSmoothing.reason,
+              },
+            },
             decisionEngine: stableDecision,
             decisionExplanation: stableDecision?.human_explanation || savedScanEntry?.decisionExplanation || '',
             adaptationRationale: stableComparison?.summary || savedScanEntry?.adaptationRationale || null,
