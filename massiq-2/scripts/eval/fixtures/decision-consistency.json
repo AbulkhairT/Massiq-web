@@ -1,0 +1,132 @@
+[
+  {
+    "id": "decision-phase-inertia-noisy-scan",
+    "description": "Noisy scan should not force phase flip",
+    "profile": { "goal": "Cut", "gender": "Male" },
+    "currentPlan": { "phase": "Cut", "targetBF": 13.5, "dailyTargets": { "calories": 2100, "protein": 180, "carbs": 190, "fat": 65 } },
+    "previousScan": { "date": "2026-03-01", "bodyFat": 15.1, "leanMass": 150.2, "symmetryScore": 74, "confidence": "medium" },
+    "previousState": { "stable_body_fat_low": 14.8, "stable_body_fat_high": 15.4, "stable_lean_mass_kg": 68.0, "primary_limiting_factor": "upper_chest" },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.2, "high": 16.0, "midpoint": 15.6 },
+      "confidence": "low",
+      "symmetryScore": 73,
+      "muscleGroups": { "core": "moderate", "chest": "early", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "chest fullness"],
+      "photoQuality": { "overall": "low", "lighting": "poor", "pose": "acceptable", "framing": "acceptable" },
+      "leanMass": 149.4
+    },
+    "expected": {
+      "phase_should_remain": "Cut",
+      "must_not_trigger_meaningful_change": true,
+      "limiting_factor_should_persist": "upper_chest"
+    }
+  },
+  {
+    "id": "decision-strong-evidence-phase-shift",
+    "description": "Strong, high-confidence fat gain should shift from bulk to recomp",
+    "profile": { "goal": "Bulk", "gender": "Male" },
+    "currentPlan": { "phase": "Bulk", "targetBF": 14.5, "dailyTargets": { "calories": 2850, "protein": 180, "carbs": 340, "fat": 80 } },
+    "previousScan": { "date": "2026-02-20", "bodyFat": 15.0, "leanMass": 153.1, "symmetryScore": 75, "confidence": "high" },
+    "previousState": { "stable_body_fat_low": 14.6, "stable_body_fat_high": 15.2, "stable_lean_mass_kg": 69.2, "primary_limiting_factor": "back" },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 19.2, "high": 20.4, "midpoint": 19.8 },
+      "confidence": "high",
+      "symmetryScore": 72,
+      "muscleGroups": { "core": "early", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["waist definition", "core"],
+      "photoQuality": { "overall": "high", "lighting": "good", "pose": "good", "framing": "good" },
+      "leanMass": 152.8
+    },
+    "expected": {
+      "phase_should_be_one_of": ["Recomp", "Cut"],
+      "must_trigger_meaningful_change": true
+    },
+    "recentFoodSummary": {
+      "adherenceContext": {
+        "skipped_meals_per_week_estimate": 10,
+        "weekend_slip_score": 0.62
+      }
+    }
+  },
+  {
+    "id": "decision-noisy-bulk-stays-bulk",
+    "description": "Noisy medium-confidence upward estimate should preserve Bulk",
+    "profile": { "goal": "Bulk", "gender": "Male" },
+    "currentPlan": { "phase": "Bulk", "targetBF": 14.0, "dailyTargets": { "calories": 2750, "protein": 175, "carbs": 320, "fat": 78 } },
+    "previousScan": { "date": "2026-03-03", "bodyFat": 14.8, "leanMass": 154.2, "symmetryScore": 76, "confidence": "medium" },
+    "previousState": { "stable_body_fat_low": 14.5, "stable_body_fat_high": 15.1, "stable_lean_mass_kg": 69.7, "primary_limiting_factor": "back" },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.6, "high": 16.4, "midpoint": 16.0 },
+      "confidence": "medium",
+      "symmetryScore": 75,
+      "muscleGroups": { "core": "moderate", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["back", "upper_back"],
+      "photoQuality": { "overall": "medium", "lighting": "acceptable", "pose": "acceptable", "framing": "acceptable" },
+      "leanMass": 154.0
+    },
+    "expected": {
+      "phase_should_remain": "Bulk",
+      "must_not_trigger_meaningful_change": true,
+      "limiting_factor_should_persist": "back"
+    }
+  },
+  {
+    "id": "decision-repeated-moderate-gain-bulk-to-recomp",
+    "description": "Repeated moderate fat gain should override inertia to Recomp",
+    "profile": { "goal": "Bulk", "gender": "Male" },
+    "currentPlan": { "phase": "Bulk", "targetBF": 14.5, "dailyTargets": { "calories": 2820, "protein": 180, "carbs": 330, "fat": 82 } },
+    "previousScan": { "date": "2026-02-26", "bodyFat": 16.4, "leanMass": 153.0, "symmetryScore": 74, "confidence": "medium" },
+    "previousState": { "stable_body_fat_low": 15.8, "stable_body_fat_high": 16.5, "stable_lean_mass_kg": 69.0, "primary_limiting_factor": "waist definition" },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 17.8, "high": 18.6, "midpoint": 18.2 },
+      "confidence": "high",
+      "symmetryScore": 72,
+      "muscleGroups": { "core": "early", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["waist definition", "core"],
+      "photoQuality": { "overall": "high", "lighting": "good", "pose": "good", "framing": "good" },
+      "leanMass": 152.6
+    },
+    "recentFoodSummary": {
+      "evidence_history": [
+        { "bf_gap_delta": 0.8, "confidence": 0.64 },
+        { "bf_gap_delta": 0.9, "confidence": 0.67 },
+        { "bf_gap_delta": 0.7, "confidence": 0.62 }
+      ],
+      "adherenceContext": {
+        "skipped_meals_per_week_estimate": 8,
+        "weekend_slip_score": 0.56
+      }
+    },
+    "expected": {
+      "phase_should_be_one_of": ["Recomp"],
+      "must_trigger_meaningful_change": true
+    }
+  },
+  {
+    "id": "decision-strong-high-confidence-gain-shift",
+    "description": "Strong high-confidence adverse gain should move out of Bulk",
+    "profile": { "goal": "Bulk", "gender": "Male" },
+    "currentPlan": { "phase": "Bulk", "targetBF": 14.2, "dailyTargets": { "calories": 2900, "protein": 185, "carbs": 350, "fat": 85 } },
+    "previousScan": { "date": "2026-02-15", "bodyFat": 15.1, "leanMass": 153.6, "symmetryScore": 75, "confidence": "high" },
+    "previousState": { "stable_body_fat_low": 14.7, "stable_body_fat_high": 15.3, "stable_lean_mass_kg": 69.4, "primary_limiting_factor": "core" },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 19.5, "high": 20.8, "midpoint": 20.1 },
+      "confidence": "high",
+      "symmetryScore": 71,
+      "muscleGroups": { "core": "early", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["waist definition", "core"],
+      "photoQuality": { "overall": "high", "lighting": "good", "pose": "good", "framing": "good" },
+      "leanMass": 152.9
+    },
+    "recentFoodSummary": {
+      "adherenceContext": {
+        "skipped_meals_per_week_estimate": 11,
+        "weekend_slip_score": 0.64
+      }
+    },
+    "expected": {
+      "phase_should_be_one_of": ["Recomp", "Cut"],
+      "must_trigger_meaningful_change": true
+    }
+  }
+]

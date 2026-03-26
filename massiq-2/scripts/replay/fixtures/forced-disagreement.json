@@ -1,0 +1,139 @@
+{
+  "description": "Synthetic cases intentionally forcing changed/improved/regressed classifications",
+  "sequences": [
+    {
+      "sequence_id": "forced-cut-to-maintain-improvement-01",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 13.5 },
+      "plan_phase": "Cut",
+      "target_bf": 13.5,
+      "points": [
+        {
+          "day": 0,
+          "bf": 16.9,
+          "lean_mass_lbs": 149.6,
+          "confidence": "medium",
+          "weakest_groups": ["upper_chest"],
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Cut", "confidence": "medium", "reason": "legacy cut", "rationale": "legacy cut" },
+            "body_state": { "bf_vs_target": "above" },
+            "nutrition_adjustments": { "calories_delta": -140, "protein_delta_g": 10, "carbs_delta_g": -20, "fat_delta_g": -5 },
+            "training_adjustments": { "priority_muscles_high": ["chest", "shoulders"] },
+            "human_explanation": "Legacy kept aggressive cut."
+          }
+        }
+      ]
+    },
+    {
+      "sequence_id": "forced-maintain-to-cut-regression-01",
+      "profile": { "goal": "Bulk", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Bulk",
+      "target_bf": 14.0,
+      "points": [
+        {
+          "day": 0,
+          "bf": 20.3,
+          "lean_mass_lbs": 151.9,
+          "confidence": "high",
+          "weakest_groups": ["waist definition"],
+          "meaningful_change": true,
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Maintain", "confidence": "medium", "reason": "legacy maintain", "rationale": "legacy maintain" },
+            "body_state": { "bf_vs_target": "near" },
+            "nutrition_adjustments": { "calories_delta": 0, "protein_delta_g": 0, "carbs_delta_g": 0, "fat_delta_g": 0 },
+            "training_adjustments": { "priority_muscles_high": [] },
+            "human_explanation": "Legacy did not react."
+          }
+        }
+      ]
+    },
+    {
+      "sequence_id": "forced-remove-macro-noise-improvement-01",
+      "profile": { "goal": "Maintain", "gender": "Male", "targetBF": 16.0 },
+      "plan_phase": "Maintain",
+      "target_bf": 16.0,
+      "points": [
+        {
+          "day": 0,
+          "bf": 16.4,
+          "lean_mass_lbs": 150.3,
+          "confidence": "medium",
+          "weakest_groups": ["back"],
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Maintain", "confidence": "medium", "reason": "legacy maintain", "rationale": "legacy maintain" },
+            "body_state": { "bf_vs_target": "above" },
+            "nutrition_adjustments": { "calories_delta": -120, "protein_delta_g": 8, "carbs_delta_g": -10, "fat_delta_g": -3 },
+            "training_adjustments": { "priority_muscles_high": ["back", "shoulders", "arms"] },
+            "human_explanation": "Legacy noisy micro adjustments."
+          }
+        }
+      ]
+    },
+    {
+      "sequence_id": "forced-unsupported-priorities-improvement-01",
+      "profile": { "goal": "Recomp", "gender": "Female", "targetBF": 25.0 },
+      "plan_phase": "Recomp",
+      "target_bf": 25.0,
+      "points": [
+        {
+          "day": 0,
+          "bf": 25.5,
+          "lean_mass_lbs": 110.1,
+          "confidence": "medium",
+          "weakest_groups": ["glutes"],
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Recomp", "confidence": "medium", "reason": "legacy recomp", "rationale": "legacy recomp" },
+            "body_state": { "bf_vs_target": "above" },
+            "nutrition_adjustments": { "calories_delta": 20, "protein_delta_g": 0, "carbs_delta_g": 5, "fat_delta_g": 0 },
+            "training_adjustments": { "priority_muscles_high": ["chest", "arms", "back"] },
+            "human_explanation": "Legacy unsupported priorities."
+          }
+        }
+      ]
+    },
+    {
+      "sequence_id": "forced-missed-adverse-escalation-improvement-01",
+      "profile": { "goal": "Bulk", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Bulk",
+      "target_bf": 14.0,
+      "points": [
+        {
+          "day": 0,
+          "bf": 19.8,
+          "lean_mass_lbs": 152.2,
+          "confidence": "high",
+          "weakest_groups": ["waist definition", "core"],
+          "meaningful_change": true,
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Bulk", "confidence": "medium", "reason": "legacy bulk", "rationale": "legacy bulk" },
+            "body_state": { "bf_vs_target": "near" },
+            "nutrition_adjustments": { "calories_delta": 120, "protein_delta_g": 5, "carbs_delta_g": 20, "fat_delta_g": 5 },
+            "training_adjustments": { "priority_muscles_high": ["core"] },
+            "human_explanation": "Legacy failed to react to adverse evidence."
+          }
+        }
+      ]
+    },
+    {
+      "sequence_id": "forced-overcorrected-cut-regression-01",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Cut",
+      "target_bf": 14.0,
+      "points": [
+        {
+          "day": 0,
+          "bf": 14.4,
+          "lean_mass_lbs": 148.9,
+          "confidence": "medium",
+          "weakest_groups": ["chest"],
+          "source_output_override": {
+            "phase_decision": { "recommended_phase": "Recomp", "confidence": "medium", "reason": "legacy recomp", "rationale": "legacy recomp" },
+            "body_state": { "bf_vs_target": "near" },
+            "nutrition_adjustments": { "calories_delta": 0, "protein_delta_g": 10, "carbs_delta_g": 10, "fat_delta_g": 0 },
+            "training_adjustments": { "priority_muscles_high": ["chest"] },
+            "human_explanation": "Legacy de-aggressed appropriately."
+          }
+        }
+      ]
+    }
+  ]
+}

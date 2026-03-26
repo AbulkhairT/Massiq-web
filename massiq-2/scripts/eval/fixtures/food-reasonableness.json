@@ -1,0 +1,73 @@
+[
+  {
+    "id": "food-simple-meal",
+    "description": "Chicken + rice bowl, low ambiguity",
+    "payload": {
+      "meal_name": "Chicken Rice Bowl",
+      "calories": 620,
+      "protein_g": 45,
+      "carbs_g": 70,
+      "fat_g": 16,
+      "food_items": [{ "name": "grilled chicken" }, { "name": "white rice" }, { "name": "vegetables" }],
+      "notes": "home meal"
+    },
+    "expected": {
+      "calories_midpoint_tolerance": 90,
+      "protein_midpoint_tolerance": 12,
+      "min_confidence": "medium"
+    }
+  },
+  {
+    "id": "food-mixed-meal",
+    "description": "Mixed plate with moderate ambiguity",
+    "payload": {
+      "meal_name": "Mixed Dinner Plate",
+      "calories": 780,
+      "protein_g": 40,
+      "carbs_g": 85,
+      "fat_g": 30,
+      "food_items": [{ "name": "salmon" }, { "name": "potatoes" }, { "name": "salad" }],
+      "notes": "possible extra oil"
+    },
+    "expected": {
+      "calories_midpoint_tolerance": 140,
+      "protein_midpoint_tolerance": 15,
+      "min_confidence": "low"
+    }
+  },
+  {
+    "id": "food-ambiguous-restaurant",
+    "description": "Restaurant meal with sauce/oil ambiguity",
+    "payload": {
+      "meal_name": "Restaurant Pasta",
+      "calories": 930,
+      "protein_g": 32,
+      "carbs_g": 98,
+      "fat_g": 39,
+      "food_items": [{ "name": "pasta" }, { "name": "cream sauce" }, { "name": "chicken" }],
+      "notes": "restaurant sauce and oil uncertain"
+    },
+    "expected": {
+      "must_have_ambiguity_flags": true,
+      "max_confidence": "medium"
+    }
+  },
+  {
+    "id": "food-packaged",
+    "description": "Packaged food with known label values",
+    "payload": {
+      "meal_name": "Protein Bar",
+      "calories": 210,
+      "protein_g": 20,
+      "carbs_g": 23,
+      "fat_g": 6,
+      "food_items": [{ "name": "packaged protein bar" }],
+      "notes": "label visible"
+    },
+    "expected": {
+      "calories_midpoint_tolerance": 40,
+      "protein_midpoint_tolerance": 5,
+      "min_confidence": "medium"
+    }
+  }
+]

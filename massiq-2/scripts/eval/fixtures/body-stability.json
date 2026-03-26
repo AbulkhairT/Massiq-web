@@ -1,0 +1,205 @@
+[
+  {
+    "id": "body-lighting-variation",
+    "description": "Same body, slightly different lighting",
+    "previousState": {
+      "stable_body_fat_low": 14.0,
+      "stable_body_fat_high": 15.4,
+      "stable_lean_mass_kg": 67.8,
+      "primary_limiting_factor": "upper_chest",
+      "last_meaningful_change_at": "2026-03-01T00:00:00.000Z"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 14.3, "high": 15.9, "midpoint": 15.1 },
+      "confidence": "medium",
+      "symmetryScore": 74,
+      "muscleGroups": { "core": "moderate", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "chest fullness"],
+      "photoQuality": { "overall": "medium", "lighting": "acceptable", "pose": "acceptable", "framing": "good" },
+      "leanMass": 149.2
+    },
+    "expected": {
+      "max_midpoint_shift": 0.6,
+      "expected_primary_limiting_factor": "upper_chest",
+      "allow_meaningful_change": false
+    }
+  },
+  {
+    "id": "body-angle-pose-variation",
+    "description": "Same body, slight pose/angle change",
+    "previousState": {
+      "stable_body_fat_low": 15.1,
+      "stable_body_fat_high": 16.2,
+      "stable_lean_mass_kg": 66.9,
+      "primary_limiting_factor": "upper_chest",
+      "last_meaningful_change_at": "2026-03-10T00:00:00.000Z"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.3, "high": 16.7, "midpoint": 16.0 },
+      "confidence": "medium",
+      "symmetryScore": 72,
+      "muscleGroups": { "core": "moderate", "chest": "early", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "chest fullness"],
+      "photoQuality": { "overall": "medium", "lighting": "good", "pose": "acceptable", "framing": "acceptable" },
+      "leanMass": 148.0
+    },
+    "expected": {
+      "max_midpoint_shift": 0.7,
+      "expected_primary_limiting_factor": "upper_chest",
+      "allow_meaningful_change": false
+    }
+  },
+  {
+    "id": "body-strong-change-evidence",
+    "description": "Multiple signals indicate real composition shift",
+    "previousState": {
+      "stable_body_fat_low": 13.8,
+      "stable_body_fat_high": 14.9,
+      "stable_lean_mass_kg": 68.1,
+      "primary_limiting_factor": "upper_chest",
+      "last_meaningful_change_at": "2026-02-10T00:00:00.000Z"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 16.2, "high": 17.4, "midpoint": 16.8 },
+      "confidence": "high",
+      "symmetryScore": 69,
+      "muscleGroups": { "core": "early", "chest": "early", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "waist definition"],
+      "photoQuality": { "overall": "high", "lighting": "good", "pose": "good", "framing": "good" },
+      "leanMass": 145.4
+    },
+    "expected": {
+      "min_midpoint_shift": 1.0,
+      "expected_primary_limiting_factor": "upper_chest",
+      "allow_meaningful_change": true
+    }
+  },
+  {
+    "id": "noise-same-photo-different-lighting",
+    "description": "Same photo but poor lighting pass should not change phase",
+    "previousState": {
+      "stable_body_fat_low": 15.2,
+      "stable_body_fat_high": 16.0,
+      "stable_lean_mass_kg": 67.4,
+      "primary_limiting_factor": "upper_chest"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.6, "high": 16.5, "midpoint": 16.0 },
+      "confidence": "low",
+      "symmetryScore": 73,
+      "muscleGroups": { "core": "moderate", "chest": "early", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "chest fullness"],
+      "photoQuality": { "overall": "low", "lighting": "poor", "pose": "acceptable", "framing": "good" },
+      "confidenceConsistencyWithPrior": "low",
+      "leanMass": 148.9
+    },
+    "decisionContext": {
+      "profile": { "goal": "Cut", "gender": "Male" },
+      "currentPlan": { "phase": "Cut", "targetBF": 13.8 },
+      "previousScan": { "date": "2026-03-01", "bodyFat": 15.6, "leanMass": 149.1, "confidence": "medium" }
+    },
+    "expected": {
+      "max_midpoint_shift": 0.6,
+      "expected_primary_limiting_factor": "upper_chest",
+      "allow_meaningful_change": false,
+      "expected_robustness_label": "low",
+      "phase_should_remain": "Cut"
+    }
+  },
+  {
+    "id": "noise-same-pose-slight-angle",
+    "description": "Slight angle change with same pose should not drift phase",
+    "previousState": {
+      "stable_body_fat_low": 15.0,
+      "stable_body_fat_high": 15.9,
+      "stable_lean_mass_kg": 67.0,
+      "primary_limiting_factor": "chest"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.4, "high": 16.2, "midpoint": 15.8 },
+      "confidence": "medium",
+      "symmetryScore": 74,
+      "muscleGroups": { "core": "moderate", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["chest", "upper_chest"],
+      "photoQuality": { "overall": "medium", "lighting": "good", "pose": "good", "framing": "acceptable" },
+      "angleConsistency": "acceptable",
+      "leanMass": 147.9
+    },
+    "decisionContext": {
+      "profile": { "goal": "Recomp", "gender": "Male" },
+      "currentPlan": { "phase": "Recomp", "targetBF": 14.8 },
+      "previousScan": { "date": "2026-03-01", "bodyFat": 15.5, "leanMass": 148.0, "confidence": "medium" }
+    },
+    "expected": {
+      "max_midpoint_shift": 0.5,
+      "expected_primary_limiting_factor": "chest",
+      "allow_meaningful_change": false,
+      "phase_should_remain": "Recomp"
+    }
+  },
+  {
+    "id": "noise-different-background",
+    "description": "Background changed should lower robustness but not trigger phase change",
+    "previousState": {
+      "stable_body_fat_low": 16.1,
+      "stable_body_fat_high": 16.9,
+      "stable_lean_mass_kg": 66.5,
+      "primary_limiting_factor": "back"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 16.5, "high": 17.2, "midpoint": 16.8 },
+      "confidence": "medium",
+      "symmetryScore": 72,
+      "muscleGroups": { "core": "moderate", "chest": "moderate", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["back", "upper_back"],
+      "photoQuality": { "overall": "medium", "lighting": "acceptable", "pose": "acceptable", "framing": "acceptable" },
+      "backgroundConsistency": "low",
+      "leanMass": 146.4
+    },
+    "decisionContext": {
+      "profile": { "goal": "Maintain", "gender": "Male" },
+      "currentPlan": { "phase": "Maintain", "targetBF": 16.0 },
+      "previousScan": { "date": "2026-03-01", "bodyFat": 16.6, "leanMass": 146.5, "confidence": "medium" }
+    },
+    "expected": {
+      "max_midpoint_shift": 0.45,
+      "expected_primary_limiting_factor": "back",
+      "allow_meaningful_change": false,
+      "expected_robustness_label": "medium",
+      "phase_should_remain": "Maintain"
+    }
+  },
+  {
+    "id": "noise-lower-image-quality",
+    "description": "Slight blur/compression should reduce impact and keep phase stable",
+    "previousState": {
+      "stable_body_fat_low": 14.6,
+      "stable_body_fat_high": 15.2,
+      "stable_lean_mass_kg": 68.0,
+      "primary_limiting_factor": "upper_chest"
+    },
+    "currentScanResult": {
+      "bodyFatRange": { "low": 15.0, "high": 15.7, "midpoint": 15.3 },
+      "confidence": "medium",
+      "symmetryScore": 75,
+      "muscleGroups": { "core": "moderate", "chest": "early", "shoulders": "moderate", "arms": "moderate" },
+      "weakestGroups": ["upper_chest", "chest fullness"],
+      "photoQuality": { "overall": "low", "lighting": "acceptable", "pose": "acceptable", "framing": "acceptable" },
+      "imageQuality": "low",
+      "visibleBodyCompleteness": "acceptable",
+      "leanMass": 149.8
+    },
+    "decisionContext": {
+      "profile": { "goal": "Cut", "gender": "Male" },
+      "currentPlan": { "phase": "Cut", "targetBF": 13.5 },
+      "previousScan": { "date": "2026-03-01", "bodyFat": 14.9, "leanMass": 149.9, "confidence": "medium" }
+    },
+    "expected": {
+      "max_midpoint_shift": 0.5,
+      "expected_primary_limiting_factor": "upper_chest",
+      "allow_meaningful_change": false,
+      "expected_robustness_label": "medium",
+      "phase_should_remain": "Cut"
+    }
+  }
+]

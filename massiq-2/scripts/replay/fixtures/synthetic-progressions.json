@@ -1,0 +1,301 @@
+{
+  "description": "Synthetic replay sequences simulating realistic user progression patterns",
+  "sequences": [
+    {
+      "sequence_id": "gradual-fat-loss-01",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 12.5 },
+      "plan_phase": "Cut",
+      "target_bf": 12.5,
+      "points": [
+        { "day": 0, "bf": 22.8, "lean_mass_lbs": 151.0, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 14, "bf": 21.7, "lean_mass_lbs": 151.1, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 28, "bf": 20.9, "lean_mass_lbs": 151.0, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 42, "bf": 19.8, "lean_mass_lbs": 150.9, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 56, "bf": 18.9, "lean_mass_lbs": 150.8, "confidence": "high", "weakest_groups": ["chest"] }
+      ]
+    },
+    {
+      "sequence_id": "gradual-fat-loss-02",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 13.0 },
+      "plan_phase": "Cut",
+      "target_bf": 13.0,
+      "points": [
+        { "day": 0, "bf": 21.9, "lean_mass_lbs": 149.5, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 14, "bf": 21.0, "lean_mass_lbs": 149.4, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 28, "bf": 20.2, "lean_mass_lbs": 149.4, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 42, "bf": 19.4, "lean_mass_lbs": 149.3, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 56, "bf": 18.7, "lean_mass_lbs": 149.2, "confidence": "medium", "weakest_groups": ["upper_chest"] }
+      ]
+    },
+    {
+      "sequence_id": "plateau-01",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Cut",
+      "target_bf": 14.0,
+      "points": [
+        { "day": 0, "bf": 18.2, "lean_mass_lbs": 150.0, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 18.1, "lean_mass_lbs": 149.9, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 18.0, "lean_mass_lbs": 149.8, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 18.1, "lean_mass_lbs": 149.8, "confidence": "medium", "weakest_groups": ["core"] }
+      ]
+    },
+    {
+      "sequence_id": "plateau-02",
+      "profile": { "goal": "Maintain", "gender": "Male", "targetBF": 15.0 },
+      "plan_phase": "Maintain",
+      "target_bf": 15.0,
+      "points": [
+        { "day": 0, "bf": 15.8, "lean_mass_lbs": 152.1, "confidence": "medium", "weakest_groups": ["shoulders"] },
+        { "day": 14, "bf": 15.7, "lean_mass_lbs": 152.0, "confidence": "medium", "weakest_groups": ["shoulders"] },
+        { "day": 28, "bf": 15.8, "lean_mass_lbs": 152.0, "confidence": "medium", "weakest_groups": ["shoulders"] },
+        { "day": 42, "bf": 15.6, "lean_mass_lbs": 151.9, "confidence": "medium", "weakest_groups": ["shoulders"] }
+      ]
+    },
+    {
+      "sequence_id": "fat-gain-trigger-cut-01",
+      "profile": { "goal": "Bulk", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Bulk",
+      "target_bf": 14.0,
+      "points": [
+        { "day": 0, "bf": 14.8, "lean_mass_lbs": 153.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 16.0, "lean_mass_lbs": 153.2, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 17.4, "lean_mass_lbs": 153.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 18.8, "lean_mass_lbs": 152.8, "confidence": "high", "weakest_groups": ["waist definition"] },
+        { "day": 56, "bf": 20.2, "lean_mass_lbs": 152.7, "confidence": "high", "weakest_groups": ["waist definition"] }
+      ]
+    },
+    {
+      "sequence_id": "fat-gain-trigger-cut-02",
+      "profile": { "goal": "Bulk", "gender": "Male", "targetBF": 14.5 },
+      "plan_phase": "Bulk",
+      "target_bf": 14.5,
+      "points": [
+        { "day": 0, "bf": 15.1, "lean_mass_lbs": 151.4, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 16.4, "lean_mass_lbs": 151.5, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 17.6, "lean_mass_lbs": 151.4, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 18.9, "lean_mass_lbs": 151.2, "confidence": "high", "weakest_groups": ["waist definition"] },
+        { "day": 56, "bf": 20.1, "lean_mass_lbs": 151.0, "confidence": "high", "weakest_groups": ["waist definition"] }
+      ]
+    },
+    {
+      "sequence_id": "lean-loss-in-cut-01",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 13.5 },
+      "plan_phase": "Cut",
+      "target_bf": 13.5,
+      "points": [
+        { "day": 0, "bf": 18.9, "lean_mass_lbs": 153.2, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 14, "bf": 18.1, "lean_mass_lbs": 152.3, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 28, "bf": 17.2, "lean_mass_lbs": 151.4, "confidence": "high", "weakest_groups": ["chest"] },
+        { "day": 42, "bf": 16.6, "lean_mass_lbs": 150.3, "confidence": "high", "weakest_groups": ["chest"] }
+      ]
+    },
+    {
+      "sequence_id": "lean-loss-in-cut-02",
+      "profile": { "goal": "Cut", "gender": "Male", "targetBF": 14.0 },
+      "plan_phase": "Cut",
+      "target_bf": 14.0,
+      "points": [
+        { "day": 0, "bf": 19.4, "lean_mass_lbs": 152.0, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 14, "bf": 18.7, "lean_mass_lbs": 151.0, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 28, "bf": 17.9, "lean_mass_lbs": 150.0, "confidence": "high", "weakest_groups": ["upper_chest"] },
+        { "day": 42, "bf": 17.3, "lean_mass_lbs": 149.2, "confidence": "high", "weakest_groups": ["upper_chest"] }
+      ]
+    },
+    {
+      "sequence_id": "noisy-scan-stable-01",
+      "profile": { "goal": "Recomp", "gender": "Male", "targetBF": 15.0 },
+      "plan_phase": "Recomp",
+      "target_bf": 15.0,
+      "points": [
+        { "day": 0, "bf": 16.0, "lean_mass_lbs": 151.0, "confidence": "low", "weakest_groups": ["shoulders"], "meaningful_change": false },
+        { "day": 14, "bf": 17.1, "lean_mass_lbs": 151.1, "confidence": "low", "weakest_groups": ["shoulders"], "meaningful_change": false },
+        { "day": 28, "bf": 15.8, "lean_mass_lbs": 151.0, "confidence": "low", "weakest_groups": ["shoulders"], "meaningful_change": false },
+        { "day": 42, "bf": 16.6, "lean_mass_lbs": 151.0, "confidence": "low", "weakest_groups": ["shoulders"], "meaningful_change": false }
+      ]
+    },
+    {
+      "sequence_id": "noisy-scan-stable-02",
+      "profile": { "goal": "Maintain", "gender": "Male", "targetBF": 16.0 },
+      "plan_phase": "Maintain",
+      "target_bf": 16.0,
+      "points": [
+        { "day": 0, "bf": 16.3, "lean_mass_lbs": 150.5, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 14, "bf": 17.2, "lean_mass_lbs": 150.4, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 28, "bf": 16.1, "lean_mass_lbs": 150.6, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 42, "bf": 17.0, "lean_mass_lbs": 150.5, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false }
+      ]
+    },
+    {
+      "sequence_id": "oscillating-bf-stabilize-01",
+      "profile": { "goal": "Recomp", "gender": "Male", "targetBF": 15.0 },
+      "plan_phase": "Recomp",
+      "target_bf": 15.0,
+      "points": [
+        { "day": 0, "bf": 15.6, "lean_mass_lbs": 151.0, "confidence": "medium", "weakest_groups": ["back"] },
+        { "day": 14, "bf": 16.8, "lean_mass_lbs": 151.0, "confidence": "medium", "weakest_groups": ["back"] },
+        { "day": 28, "bf": 15.4, "lean_mass_lbs": 151.0, "confidence": "medium", "weakest_groups": ["back"] },
+        { "day": 42, "bf": 16.6, "lean_mass_lbs": 150.9, "confidence": "medium", "weakest_groups": ["back"] },
+        { "day": 56, "bf": 15.5, "lean_mass_lbs": 151.0, "confidence": "medium", "weakest_groups": ["back"] }
+      ]
+    },
+    {
+      "sequence_id": "oscillating-bf-stabilize-02",
+      "profile": { "goal": "Maintain", "gender": "Male", "targetBF": 15.5 },
+      "plan_phase": "Maintain",
+      "target_bf": 15.5,
+      "points": [
+        { "day": 0, "bf": 16.1, "lean_mass_lbs": 150.2, "confidence": "medium", "weakest_groups": ["chest"] },
+        { "day": 14, "bf": 15.0, "lean_mass_lbs": 150.2, "confidence": "medium", "weakest_groups": ["chest"] },
+        { "day": 28, "bf": 16.3, "lean_mass_lbs": 150.1, "confidence": "medium", "weakest_groups": ["chest"] },
+        { "day": 42, "bf": 15.1, "lean_mass_lbs": 150.1, "confidence": "medium", "weakest_groups": ["chest"] },
+        { "day": 56, "bf": 16.0, "lean_mass_lbs": 150.0, "confidence": "medium", "weakest_groups": ["chest"] }
+      ]
+    },
+    {
+      "sequence_id": "gradual-fat-loss-03",
+      "profile": { "goal": "Cut", "gender": "Female", "targetBF": 22.0 },
+      "plan_phase": "Cut",
+      "target_bf": 22.0,
+      "points": [
+        { "day": 0, "bf": 30.5, "lean_mass_lbs": 108.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 29.7, "lean_mass_lbs": 108.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 28.9, "lean_mass_lbs": 107.9, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 28.0, "lean_mass_lbs": 107.8, "confidence": "high", "weakest_groups": ["core"] }
+      ]
+    },
+    {
+      "sequence_id": "gradual-fat-loss-04",
+      "profile": { "goal": "Cut", "gender": "Female", "targetBF": 23.0 },
+      "plan_phase": "Cut",
+      "target_bf": 23.0,
+      "points": [
+        { "day": 0, "bf": 31.2, "lean_mass_lbs": 110.1, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 14, "bf": 30.5, "lean_mass_lbs": 110.0, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 28, "bf": 29.6, "lean_mass_lbs": 109.8, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 42, "bf": 28.9, "lean_mass_lbs": 109.8, "confidence": "high", "weakest_groups": ["glutes"] }
+      ]
+    },
+    {
+      "sequence_id": "plateau-03",
+      "profile": { "goal": "Cut", "gender": "Female", "targetBF": 24.0 },
+      "plan_phase": "Cut",
+      "target_bf": 24.0,
+      "points": [
+        { "day": 0, "bf": 27.3, "lean_mass_lbs": 109.4, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 27.2, "lean_mass_lbs": 109.3, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 27.4, "lean_mass_lbs": 109.3, "confidence": "medium", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 27.2, "lean_mass_lbs": 109.2, "confidence": "medium", "weakest_groups": ["core"] }
+      ]
+    },
+    {
+      "sequence_id": "plateau-04",
+      "profile": { "goal": "Maintain", "gender": "Female", "targetBF": 25.0 },
+      "plan_phase": "Maintain",
+      "target_bf": 25.0,
+      "points": [
+        { "day": 0, "bf": 25.8, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 14, "bf": 25.9, "lean_mass_lbs": 109.9, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 28, "bf": 25.7, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 42, "bf": 25.8, "lean_mass_lbs": 109.9, "confidence": "medium", "weakest_groups": ["hamstrings"] }
+      ]
+    },
+    {
+      "sequence_id": "fat-gain-trigger-cut-03",
+      "profile": { "goal": "Bulk", "gender": "Female", "targetBF": 24.0 },
+      "plan_phase": "Bulk",
+      "target_bf": 24.0,
+      "points": [
+        { "day": 0, "bf": 24.8, "lean_mass_lbs": 112.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 25.9, "lean_mass_lbs": 112.1, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 27.1, "lean_mass_lbs": 112.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 28.2, "lean_mass_lbs": 111.8, "confidence": "high", "weakest_groups": ["waist definition"] }
+      ]
+    },
+    {
+      "sequence_id": "fat-gain-trigger-cut-04",
+      "profile": { "goal": "Bulk", "gender": "Female", "targetBF": 23.5 },
+      "plan_phase": "Bulk",
+      "target_bf": 23.5,
+      "points": [
+        { "day": 0, "bf": 24.1, "lean_mass_lbs": 111.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 14, "bf": 25.4, "lean_mass_lbs": 111.1, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 28, "bf": 26.8, "lean_mass_lbs": 111.0, "confidence": "high", "weakest_groups": ["core"] },
+        { "day": 42, "bf": 27.9, "lean_mass_lbs": 110.9, "confidence": "high", "weakest_groups": ["waist definition"] }
+      ]
+    },
+    {
+      "sequence_id": "lean-loss-in-cut-03",
+      "profile": { "goal": "Cut", "gender": "Female", "targetBF": 23.0 },
+      "plan_phase": "Cut",
+      "target_bf": 23.0,
+      "points": [
+        { "day": 0, "bf": 27.8, "lean_mass_lbs": 111.8, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 14, "bf": 27.0, "lean_mass_lbs": 111.0, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 28, "bf": 26.2, "lean_mass_lbs": 110.0, "confidence": "high", "weakest_groups": ["glutes"] },
+        { "day": 42, "bf": 25.6, "lean_mass_lbs": 109.1, "confidence": "high", "weakest_groups": ["glutes"] }
+      ]
+    },
+    {
+      "sequence_id": "lean-loss-in-cut-04",
+      "profile": { "goal": "Cut", "gender": "Female", "targetBF": 22.5 },
+      "plan_phase": "Cut",
+      "target_bf": 22.5,
+      "points": [
+        { "day": 0, "bf": 28.4, "lean_mass_lbs": 112.1, "confidence": "high", "weakest_groups": ["upper_back"] },
+        { "day": 14, "bf": 27.6, "lean_mass_lbs": 111.2, "confidence": "high", "weakest_groups": ["upper_back"] },
+        { "day": 28, "bf": 26.8, "lean_mass_lbs": 110.2, "confidence": "high", "weakest_groups": ["upper_back"] },
+        { "day": 42, "bf": 26.1, "lean_mass_lbs": 109.3, "confidence": "high", "weakest_groups": ["upper_back"] }
+      ]
+    },
+    {
+      "sequence_id": "noisy-scan-stable-03",
+      "profile": { "goal": "Recomp", "gender": "Female", "targetBF": 25.0 },
+      "plan_phase": "Recomp",
+      "target_bf": 25.0,
+      "points": [
+        { "day": 0, "bf": 25.4, "lean_mass_lbs": 110.0, "confidence": "low", "weakest_groups": ["back"], "meaningful_change": false },
+        { "day": 14, "bf": 26.5, "lean_mass_lbs": 110.1, "confidence": "low", "weakest_groups": ["back"], "meaningful_change": false },
+        { "day": 28, "bf": 25.3, "lean_mass_lbs": 110.0, "confidence": "low", "weakest_groups": ["back"], "meaningful_change": false },
+        { "day": 42, "bf": 26.2, "lean_mass_lbs": 110.1, "confidence": "low", "weakest_groups": ["back"], "meaningful_change": false }
+      ]
+    },
+    {
+      "sequence_id": "noisy-scan-stable-04",
+      "profile": { "goal": "Maintain", "gender": "Female", "targetBF": 25.5 },
+      "plan_phase": "Maintain",
+      "target_bf": 25.5,
+      "points": [
+        { "day": 0, "bf": 25.7, "lean_mass_lbs": 109.8, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 14, "bf": 26.8, "lean_mass_lbs": 109.7, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 28, "bf": 25.5, "lean_mass_lbs": 109.8, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false },
+        { "day": 42, "bf": 26.3, "lean_mass_lbs": 109.8, "confidence": "low", "weakest_groups": ["arms"], "meaningful_change": false }
+      ]
+    },
+    {
+      "sequence_id": "oscillating-bf-stabilize-03",
+      "profile": { "goal": "Recomp", "gender": "Female", "targetBF": 25.0 },
+      "plan_phase": "Recomp",
+      "target_bf": 25.0,
+      "points": [
+        { "day": 0, "bf": 25.4, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["glutes"] },
+        { "day": 14, "bf": 26.3, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["glutes"] },
+        { "day": 28, "bf": 25.2, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["glutes"] },
+        { "day": 42, "bf": 26.1, "lean_mass_lbs": 109.9, "confidence": "medium", "weakest_groups": ["glutes"] },
+        { "day": 56, "bf": 25.3, "lean_mass_lbs": 110.0, "confidence": "medium", "weakest_groups": ["glutes"] }
+      ]
+    },
+    {
+      "sequence_id": "oscillating-bf-stabilize-04",
+      "profile": { "goal": "Maintain", "gender": "Female", "targetBF": 25.5 },
+      "plan_phase": "Maintain",
+      "target_bf": 25.5,
+      "points": [
+        { "day": 0, "bf": 25.9, "lean_mass_lbs": 109.7, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 14, "bf": 25.0, "lean_mass_lbs": 109.8, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 28, "bf": 26.1, "lean_mass_lbs": 109.7, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 42, "bf": 25.2, "lean_mass_lbs": 109.8, "confidence": "medium", "weakest_groups": ["hamstrings"] },
+        { "day": 56, "bf": 25.8, "lean_mass_lbs": 109.7, "confidence": "medium", "weakest_groups": ["hamstrings"] }
+      ]
+    }
+  ]
+}

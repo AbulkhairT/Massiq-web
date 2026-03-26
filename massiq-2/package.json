@@ -1,0 +1,26 @@
+{
+  "name": "massiq",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "eval:harness": "tsx scripts/eval/harness.ts",
+    "replay:decision": "tsx scripts/replay/decision-replay.ts"
+  },
+  "dependencies": {
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "stripe": "^20.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.0",
+    "@types/react": "19.2.14",
+    "tsx": "^4.21.0",
+    "typescript": "5.9.3"
+  }
+}

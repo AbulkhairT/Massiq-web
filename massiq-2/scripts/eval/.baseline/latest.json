@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-03-26T17:29:23.887Z",
+  "sections": [
+    {
+      "name": "Body Scan Stability",
+      "passCount": 7,
+      "total": 7,
+      "failed": []
+    },
+    {
+      "name": "Food Scan Reasonableness",
+      "passCount": 4,
+      "total": 4,
+      "failed": []
+    },
+    {
+      "name": "Decision Engine Consistency",
+      "passCount": 5,
+      "total": 5,
+      "failed": []
+    }
+  ]
+}
