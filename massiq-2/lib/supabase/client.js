@@ -2241,6 +2241,19 @@ export async function createScanCaptureSession(token, userId, fields = {}) {
     scan_asset_id: fields.scan_asset_id || null,
     started_at: fields.started_at || new Date().toISOString(),
   };
+  const optional = [
+    'device_type',
+    'lighting_score',
+    'alignment_score',
+    'framing_score',
+    'distance_score',
+    'stability_score',
+    'quality_passed',
+    'failure_reason',
+  ];
+  for (const k of optional) {
+    if (fields[k] !== undefined && fields[k] !== null) row[k] = fields[k];
+  }
   const rows = await supabaseFetch('/rest/v1/scan_capture_sessions', {
     method: 'POST',
     headers: { ...authHeaders(token), Prefer: 'return=representation' },
@@ -2259,34 +2272,50 @@ export async function updateScanCaptureSession(token, sessionId, patch = {}) {
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
-export async function insertScanCaptureEvent(token, sessionId, eventType, payload = {}) {
+export async function insertScanCaptureEvent(token, sessionId, eventType, payload = {}, options = {}) {
   if (!sessionId || !eventType) return null;
+  const body = {
+    session_id: sessionId,
+    event_type: String(eventType),
+    payload: payload || {},
+  };
+  if (options.userId) body.user_id = options.userId;
   return safeRest('[scan_capture_events]', () =>
     supabaseFetch('/rest/v1/scan_capture_events', {
       method: 'POST',
       headers: { ...authHeaders(token), Prefer: 'return=representation' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        event_type: String(eventType),
-        payload: payload || {},
-      }),
+      body: JSON.stringify(body),
     }),
   );
 }
 
-export async function insertScanQualityReview(token, userId, { scanId, confidenceLabel, recommendation, notes = {} }) {
+export async function insertScanQualityReview(token, userId, {
+  scanId,
+  confidenceLabel,
+  recommendation,
+  notes = {},
+  reviewSource = null,
+  qualityBucket = null,
+  reasons = null,
+  recommendedAction = null,
+} = {}) {
   if (!userId) return null;
+  const row = {
+    user_id: userId,
+    scan_id: scanId || null,
+    confidence_label: confidenceLabel || null,
+    recommendation: recommendation || null,
+    notes: notes || {},
+  };
+  if (reviewSource) row.review_source = reviewSource;
+  if (qualityBucket) row.quality_bucket = qualityBucket;
+  if (reasons != null) row.reasons = reasons;
+  if (recommendedAction) row.recommended_action = recommendedAction;
   return safeRest('[scan_quality_reviews]', () =>
     supabaseFetch('/rest/v1/scan_quality_reviews', {
       method: 'POST',
       headers: { ...authHeaders(token), Prefer: 'return=representation' },
-      body: JSON.stringify({
-        user_id: userId,
-        scan_id: scanId || null,
-        confidence_label: confidenceLabel || null,
-        recommendation: recommendation || null,
-        notes: notes || {},
-      }),
+      body: JSON.stringify(row),
     }),
   );
 }

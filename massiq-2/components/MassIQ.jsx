@@ -1,6 +1,9 @@
 "use client";
 import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
+import dynamic from 'next/dynamic';
 import { Icon } from './Icon';
+
+const GuidedBodyScanModal = dynamic(() => import('./GuidedBodyScanModal'), { ssr: false });
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
 import { buildMealPlan, sumMealDayMacros, sumMealPlanTotals } from '../lib/content/meals';
@@ -67,7 +70,10 @@ import {
   listSymmetryCorrections,
   insertSymmetryCorrectionRows,
 } from '../lib/supabase/client';
-import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
+import { SCORING_VERSION } from '../lib/engine/scoring';
+import { sanitizeScanData, smoothPhysiqueScoreForNoise } from '../lib/scan/sanitizeScanData';
+import { getBF, getBFDisplay } from '../lib/scan/scanBf';
+import { getPhysiqueTier, getPhysiqueReinforcement, estimateStagePercentile } from '../lib/scan/physiqueLabels';
 import { computeAdaptation } from '../lib/engine/adaptation';
 import {
   hasFeature,
@@ -354,9 +360,13 @@ async function callEngine(profile, scanHistory = []) {
   try {
     const currentScan    = scanHistory.length > 0 ? scanHistory[scanHistory.length - 1] : undefined;
     const previousScans  = scanHistory.length > 1 ? scanHistory.slice(0, -1) : [];
+    const sess = getStoredSession();
     const res = await fetch('/api/engine', {
       method:  'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(sess?.access_token ? { Authorization: `Bearer ${sess.access_token}` } : {}),
+      },
       body:    JSON.stringify({
         profile,
         currentScan,
@@ -444,27 +454,6 @@ const fmt = {
     const inch = Math.round(totalIn % 12);
     return `${ft}'${inch}"`;
   },
-};
-
-// ── Body-fat value helpers ────────────────────────────────────────────────
-// scan.bodyFat may be a number OR {low, high, midpoint} object — normalise both
-const getBF = (scan) => {
-  if (!scan) return null;
-  const bf = scan.bodyFatPct ?? scan.bodyFat;
-  if (bf == null) return null;
-  if (typeof bf === 'number') return bf;
-  if (typeof bf === 'object') return bf.midpoint ?? bf.low ?? Object.values(bf)[0] ?? null;
-  return parseFloat(bf) || null;
-};
-const getBFDisplay = (scan) => {
-  if (!scan) return '—';
-  const bf = scan.bodyFatPct ?? scan.bodyFat;
-  if (bf == null) return '—';
-  if (typeof bf === 'number') return bf.toFixed(1) + '%';
-  if (typeof bf === 'object' && bf.low != null && bf.high != null) return bf.low + '\u2013' + bf.high + '%';
-  if (typeof bf === 'object' && bf.midpoint != null) return bf.midpoint.toFixed(1) + '%';
-  const n = parseFloat(bf);
-  return isNaN(n) ? '—' : n.toFixed(1) + '%';
 };
 
 /** Prefer full ISO from DB (scan.date after save) or savedAt — date-only strings skew "hours ago" by timezone. */
@@ -757,149 +746,6 @@ function sanitizeMeal(meal, targets, profile, idx = 0) {
     description: meal.description || '',
     whyNow: meal.whyNow || 'Matched to your remaining calorie and protein budget.',
     ...(meal.photoThumb ? { photoThumb: meal.photoThumb } : {}),
-  };
-}
-
-function getPhysiqueTier(score) {
-  const s = Number(score || 0);
-  if (s < 40) return 'Foundation';
-  if (s < 60) return 'Developing';
-  if (s < 75) return 'Athletic';
-  if (s < 90) return 'Advanced';
-  return 'Elite';
-}
-
-function getPhysiqueReinforcement(tier) {
-  if (tier === 'Foundation') return 'Building your base - early progress comes fast.';
-  if (tier === 'Developing') return 'Strong base - visible progress ahead.';
-  if (tier === 'Athletic') return 'Well-developed physique - refining details now.';
-  if (tier === 'Advanced') return 'High-level physique - pushing toward elite.';
-  return 'Top-tier physique.';
-}
-
-function estimateStagePercentile(score, tier) {
-  const baseByTier = { Foundation: 20, Developing: 45, Athletic: 68, Advanced: 84, Elite: 95 };
-  const base = baseByTier[tier] || 50;
-  const local = Math.max(0, Math.min(1, (Number(score || 0) % 10) / 10));
-  return Math.max(5, Math.min(99, Math.round(base + (local - 0.5) * 8)));
-}
-
-function smoothPhysiqueScoreForNoise({
-  rawScore,
-  previousScore,
-  bodyFatPct,
-  previousBodyFatPct,
-  leanMassLbs,
-  previousLeanMassLbs,
-  meaningfulChange = false,
-}) {
-  const next = Number(rawScore);
-  const prev = Number(previousScore);
-  if (!Number.isFinite(next) || !Number.isFinite(prev)) {
-    return { score: Number.isFinite(next) ? next : rawScore, applied: false, reason: 'missing_scores' };
-  }
-  const bfDelta = Number(bodyFatPct) - Number(previousBodyFatPct);
-  const leanMassDeltaLbs = Number(leanMassLbs) - Number(previousLeanMassLbs);
-  const leanMassDeltaKg = leanMassDeltaLbs * 0.453592;
-  const noiseBand = Math.abs(bfDelta) < 0.5 && Math.abs(leanMassDeltaKg) < 0.3;
-  if (meaningfulChange || !noiseBand) {
-    return { score: next, applied: false, reason: meaningfulChange ? 'meaningful_change' : 'composition_change' };
-  }
-  const cappedDelta = Math.max(-2, Math.min(2, next - prev));
-  const smoothed = Math.round(prev + cappedDelta);
-  return {
-    score: smoothed,
-    applied: smoothed !== next,
-    reason: 'noise_guard',
-    bfDelta: Number(bfDelta.toFixed(2)),
-    leanMassDeltaKg: Number(leanMassDeltaKg.toFixed(3)),
-  };
-}
-
-function sanitizeScanData(scan, profile, options = {}) {
-  if (!scan) return scan;
-  const previousScan = options?.previousScan || null;
-  const meaningfulChange = Boolean(options?.meaningfulChange);
-  // Support bodyFatRange object from new prompt OR flat bodyFatPct from old prompt
-  const bfLow  = Number(scan.bodyFatRange?.low  || 0);
-  const bfHigh = Number(scan.bodyFatRange?.high || 0);
-  const bfMid  = bfLow && bfHigh ? (bfLow + bfHigh) / 2 : 0;
-  const rawBf  = bfMid || Number(scan.bodyFatPct || scan.bodyFat || (profile?.gender === 'Female' ? 28 : 20));
-  const bodyFatPct = Math.min(55, Math.max(4, rawBf));
-  const bodyFatRange = bfLow && bfHigh
-    ? { low: Math.max(4, bfLow), high: Math.min(55, bfHigh), midpoint: Number(bodyFatPct.toFixed(1)) }
-    : { low: Math.max(4, bodyFatPct - 2), high: Math.min(55, bodyFatPct + 2), midpoint: Number(bodyFatPct.toFixed(1)) };
-  const weight = Number(profile?.weightLbs || 180);
-  // Always derive leanMass from weight (lbs) × (1 - BF%) — never trust Claude's raw leanMass
-  // value since the model may return it in kg while we store/display everything in lbs.
-  // Example: 75 kg person, 14% BF → weightLbs=165.3, leanMass=165.3×0.86=142.2 lbs ✓
-  const computedLeanMass = weight * (1 - bodyFatPct / 100);
-  const leanMass = Number(Math.min(weight * 0.96, Math.max(weight * 0.35, computedLeanMass)).toFixed(1));
-  const confidence = ['low', 'medium', 'high'].includes(scan.bodyFatConfidence || scan.confidence)
-    ? (scan.bodyFatConfidence || scan.confidence)
-    : 'medium';
-  // Deterministic scoring — replaces raw Claude clamping
-  // Claude's visual estimate is one component (visualAssessment), not the whole score.
-  const heightCm = profile?.heightCm || (profile?.heightIn ? Math.round(Number(profile.heightIn) * 2.54) : 170);
-  const claudeRawScore    = Number(scan.physiqueScore || scan.overallPhysiqueScore || scan.score || 60);
-  const claudeRawSymmetry = Number(scan.symmetryScore || 75);
-  const scored = computePhysiqueScore({
-    bodyFatPct,
-    leanMassLbs:    leanMass,
-    heightCm,
-    gender:         profile?.gender || 'Male',
-    claudeScore:    claudeRawScore,
-    claudeSymmetry: claudeRawSymmetry,
-    confidence,
-  });
-  const rawPhysiqueScore = scored.physiqueScore;
-  const smoothed = smoothPhysiqueScoreForNoise({
-    rawScore: rawPhysiqueScore,
-    previousScore: previousScan?.physiqueScore,
-    bodyFatPct,
-    previousBodyFatPct: getBF(previousScan),
-    leanMassLbs: leanMass,
-    previousLeanMassLbs: previousScan?.leanMass,
-    meaningfulChange,
-  });
-  const finalScore = Number(smoothed.score);
-  const tier = getPhysiqueTier(finalScore);
-  const percentile = estimateStagePercentile(finalScore, tier);
-
-  return {
-    ...scan,
-    bodyFatPct: Number(bodyFatPct.toFixed(1)),
-    bodyFatRange,
-    bodyFatConfidence: confidence,
-    bodyFatReasoning: scan.bodyFatReasoning || '',
-    leanMass: Number(leanMass.toFixed(1)),
-    leanMassTrend: ['gaining', 'losing', 'maintaining', 'unknown'].includes(scan.leanMassTrend) ? scan.leanMassTrend : 'unknown',
-    physiqueScore:    finalScore,
-    symmetryScore:    scored.symmetryScore,
-    ffmi:             scored.ffmi,
-    scoringBreakdown: scored.breakdown,
-    scoringVersion:   SCORING_VERSION,
-    physiqueTier: tier,
-    physiqueLabel: `${finalScore} - ${tier} Physique`,
-    physiqueContext:
-      'This score reflects how optimized your physique is (body fat, muscle balance, and definition), not overall health or attractiveness.',
-    physiqueReinforcement: getPhysiqueReinforcement(tier),
-    stagePercentile: percentile,
-    scoreSmoothing: {
-      rawScore: rawPhysiqueScore,
-      finalScore,
-      applied: smoothed.applied,
-      reason: smoothed.reason,
-      bfDelta: smoothed.bfDelta ?? null,
-      leanMassDeltaKg: smoothed.leanMassDeltaKg ?? null,
-    },
-    symmetryDetails: scan.symmetryDetails || '',
-    confidence,
-    limitingFactor: scan.limitingFactor || '',
-    limitingFactorExplanation: scan.limitingFactorExplanation || '',
-    photoQualityIssues: Array.isArray(scan.photoQualityIssues) ? scan.photoQualityIssues : [],
-    trainingFocus: scan.trainingFocus || null,
-    nutritionKeyChange: scan.nutritionKeyChange || '',
   };
 }
 
@@ -5739,6 +5585,36 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
   const [consistencyWarnings, setConsistencyWarnings] = useState([]);
   const [warningsAccepted,  setWarningsAccepted]  = useState(false);
   const [selectedScan,      setSelectedScan]      = useState(null);
+  const [guidedOpen,        setGuidedOpen]        = useState(false);
+
+  const handleTakePhoto = async () => {
+    setError('');
+    if (isLoggedIn && onRefreshEntitlements) {
+      try {
+        const entFresh = await onRefreshEntitlements();
+        if (entFresh == null) {
+          setError('Could not load your scan allowance from the server. Check your connection and try again.');
+          return;
+        }
+        const normalized = normalizeScanEntitlementsForSubscription(subscription, entFresh);
+        const allowed = canScan(subscription, parentScanHistory, normalized, isLoggedIn);
+        if (!allowed) {
+          setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
+          showToast('Free scan limit reached. Upgrade for unlimited scans.');
+          return;
+        }
+      } catch {
+        setError('Could not verify scan allowance. Check your connection and try again.');
+        return;
+      }
+    }
+    const canCamera = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+    if (canCamera && isLoggedIn) {
+      setGuidedOpen(true);
+    } else {
+      photoRef.current?.click();
+    }
+  };
 
   const handleFile = (file) => {
     if (!file) return;
@@ -7164,8 +7040,13 @@ Return ONLY this JSON (no markdown, no extra text):
           <input ref={photoRef}  type="file" accept="image/*" capture="user"  style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
           <input ref={uploadRef} type="file" accept="image/*"                 style={{ display: 'none' }} onChange={e => handleFile(e.target.files?.[0])} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Btn onClick={() => photoRef.current?.click()}  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="camera" size={16} color="currentColor" /> Take Photo</Btn>
+            <Btn onClick={() => handleTakePhoto()} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="camera" size={16} color="currentColor" /> Take Photo</Btn>
             <Btn onClick={() => uploadRef.current?.click()} variant="outline" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><Icon name="arrow-up" size={16} color="currentColor" /> Upload</Btn>
+          </div>
+          <div style={{ fontSize: 11, color: C.dimmed, marginTop: -4, lineHeight: 1.45 }}>
+            {typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia && isLoggedIn
+              ? 'Take Photo opens guided live capture with framing feedback. Use Upload if your browser blocks the camera.'
+              : 'Use Upload to choose a photo from your device.'}
           </div>
         </>
       )}
@@ -7242,6 +7123,70 @@ Return ONLY this JSON (no markdown, no extra text):
           onClose={() => setViewOld(null)}
         />
       )}
+
+      <GuidedBodyScanModal
+        open={guidedOpen}
+        onClose={() => setGuidedOpen(false)}
+        onUploadFallback={() => {
+          setGuidedOpen(false);
+          setTimeout(() => uploadRef.current?.click(), 0);
+        }}
+        profile={profile}
+        accessToken={getStoredSession()?.access_token}
+        userId={getStoredSession()?.user?.id || getStoredSession()?.user_id}
+        scanHistory={LS.get(LS_KEYS.scanHistory, [])}
+        appVersion={
+          typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_APP_VERSION
+            ? process.env.NEXT_PUBLIC_APP_VERSION
+            : '0.1.0'
+        }
+        onScanSuccess={(json, meta) => {
+          const eng = json.engineOutput;
+          const visualData = json.visualData || {};
+          const currentHistory = LS.get(LS_KEYS.scanHistory, []);
+          const prevScan = currentHistory[currentHistory.length - 1] || null;
+          const daysSincePrev = prevScan?.date
+            ? Math.round((Date.now() - new Date(prevScan.date).getTime()) / 86400000)
+            : 0;
+          let cw = [];
+          if (prevScan) {
+            cw = validateScanConsistency(visualData, prevScan, daysSincePrev);
+            if (cw.length) setConsistencyWarnings(cw);
+          }
+          const data = {
+            ...visualData,
+            dailyTargets: json.dailyTargets,
+            phase: {
+              label: profile.goal,
+              name: `${profile.goal} Phase`,
+              durationWeeks: 12,
+              objective: eng?.diagnosis?.primary?.recommended_action || '',
+            },
+            whyThisWorks: eng?.diagnosis?.primary?.primary_issue || visualData.diagnosis,
+            weeklyMissions: eng?.next_actions?.slice(0, 3).map((a) => a.value) || [],
+            nextScanDate: (() => {
+              const d = new Date();
+              d.setDate(d.getDate() + 28);
+              return d.toISOString().slice(0, 10);
+            })(),
+            engineOutput: eng,
+            assetId: json.assetId,
+            captureSessionId: meta?.captureSessionId,
+            dbId: json.scanId,
+            id: json.scanId,
+          };
+          setResult(data);
+          setGuidedOpen(false);
+          setWarningsAccepted(false);
+          try {
+            onRefreshEntitlements?.();
+          } catch {}
+        }}
+        onScanError={(msg) => {
+          setError(msg || 'Scan failed');
+          setGuidedOpen(false);
+        }}
+      />
     </div>
   );
 }
