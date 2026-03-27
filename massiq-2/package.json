@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "next lint",
     "eval:harness": "tsx scripts/eval/harness.ts",
-    "replay:decision": "tsx scripts/replay/decision-replay.ts"
+    "replay:decision": "tsx scripts/replay/decision-replay.ts",
+    "ops:backfill": "tsx scripts/ops/backfill-canonical-tables.ts",
+    "ops:verify": "tsx scripts/ops/verify-user-canonical.ts"
   },
   "dependencies": {
     "next": "^15.2.0",

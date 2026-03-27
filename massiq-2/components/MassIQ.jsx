@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef, useMemo, Component } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, Component } from "react";
 import { Icon } from './Icon';
 import { buildPlanContent, buildMissions, getDailyTip, buildInsights } from '../lib/content/templates';
 import { buildWorkoutPlan } from '../lib/content/workouts';
@@ -29,9 +29,7 @@ import {
   createScan,
   getScans,
   upsertMealPlan,
-  getLatestMealPlan,
   upsertWorkoutProgram,
-  getLatestWorkoutProgram,
   createScanComparison,
   createScanDecision,
   createDecisionLog,
@@ -58,6 +56,16 @@ import {
   fetchUserEntitlements,
   hydrateUserEntitlements,
   reconcileBodyScanEntitlements,
+  createScanCaptureSession,
+  updateScanCaptureSession,
+  insertScanCaptureEvent,
+  insertScanQualityReview,
+  insertProductEvent,
+  upsertPlanWeekRow,
+  getLatestMealPlanHydrated,
+  getLatestWorkoutProgramHydrated,
+  listSymmetryCorrections,
+  insertSymmetryCorrectionRows,
 } from '../lib/supabase/client';
 import { computePhysiqueScore, SCORING_VERSION } from '../lib/engine/scoring';
 import { computeAdaptation } from '../lib/engine/adaptation';
@@ -2264,7 +2272,7 @@ async function recordFoodScanSuccess(accessToken, payload) {
 }
 
 /* ─── Home Tab ───────────────────────────────────────────────────────────── */
-function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade, userId, accessToken, onFoodScanComplete }) {
+function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscription, entitlements, onUpgrade, userId, accessToken, onFoodScanComplete, onLogProductEvent }) {
   const today      = new Date().toISOString().slice(0, 10);
   const macros     = getActiveTargets(activePlan, profile);
   const [meals, setMeals]           = useState(() => LS.get(LS_KEYS.meals(today), []));
@@ -2365,6 +2373,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       return;
     }
     setScanning(true);
+    onLogProductEvent?.('food_scan_started', { source: 'home' });
     const reader = new FileReader();
     reader.onload = async (e) => {
       const base64 = e.target.result.split(',')[1];
@@ -2386,6 +2395,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (res.status === 403) {
+            onLogProductEvent?.('food_scan_failed', { source: 'home', reason: 'limit' });
             showToast?.(data?.error || `Food scan limit reached. Upgrade for unlimited scans.`);
             return;
           }
@@ -2399,6 +2409,7 @@ function HomeTab({ profile, activePlan, setTab, showToast, scanHistory, subscrip
       } catch (err) {
         console.error('Food scan error:', err);
         const msg = String(err?.message || '');
+        onLogProductEvent?.('food_scan_failed', { source: 'home', reason: msg.slice(0, 120) });
         showToast?.(msg.includes('NOT_FOOD') || msg.includes('scan a food') ? 'Oops, you need to scan a food.' : 'Scan failed — try again');
       } finally {
         setScanning(false);
@@ -3136,7 +3147,7 @@ function useAISuggestions(profile, activePlan, meals) {
 }
 
 /* Log Meal Modal */
-function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade, userId, accessToken, entitlements, onFoodScanComplete }) {
+function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade, userId, accessToken, entitlements, onFoodScanComplete, onLogProductEvent }) {
   const [aiTab,     setAiTab]     = useState('describe');
   const [descText,  setDescText]  = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -3207,6 +3218,7 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade
       return;
     }
     setAnalyzing(true); setError('');
+    onLogProductEvent?.('food_scan_started', { source: 'nutrition' });
     const reader = new FileReader();
     reader.onerror = () => { setError('Could not read image file.'); setAnalyzing(false); };
     reader.onload = async (e) => {
@@ -3248,6 +3260,7 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (res.status === 403) {
+            onLogProductEvent?.('food_scan_failed', { source: 'nutrition', reason: 'limit' });
             setError(data?.error || 'Food scan limit reached. Upgrade for unlimited scans.');
             return;
           }
@@ -3263,6 +3276,7 @@ function LogMealModal({ onClose, onAdd, macros, profile, subscription, onUpgrade
       } catch (err) {
         console.error('Photo analysis error:', err);
         const msg = String(err?.message || '');
+        onLogProductEvent?.('food_scan_failed', { source: 'nutrition', reason: msg.slice(0, 120) });
         setError(msg.includes('NOT_FOOD') || msg.includes('scan a food') ? 'Oops, you need to scan a food.' : 'Photo analysis failed — fill in manually.');
       } finally {
         setAnalyzing(false);
@@ -3910,7 +3924,7 @@ function TodayWorkoutCard() {
 }
 
 /* Main Nutrition Tab */
-function NutritionTab({ profile, activePlan, showToast, setTab, subscription, onUpgrade, userId, accessToken, entitlements, onFoodScanComplete }) {
+function NutritionTab({ profile, activePlan, showToast, setTab, subscription, onUpgrade, userId, accessToken, entitlements, onFoodScanComplete, onLogProductEvent }) {
   const today = new Date().toISOString().slice(0, 10);
   const [meals,        setMeals]        = useState(() => LS.get(LS_KEYS.meals(today), []));
   const [showModal,    setShowModal]    = useState(false);
@@ -4082,6 +4096,7 @@ function NutritionTab({ profile, activePlan, showToast, setTab, subscription, on
           accessToken={accessToken}
           entitlements={entitlements}
           onFoodScanComplete={onFoodScanComplete}
+          onLogProductEvent={onLogProductEvent}
         />
       )}
 
@@ -4149,8 +4164,10 @@ function getWeeklyPriorities(profile, targets, plan) {
   return [p1, p2, p3];
 }
 
-function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgrade }) {
+function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgrade, symmetryCorrections = [], onLogProductEvent }) {
   const weekKey = getWeekKey();
+  const mealOpenedLogged = useRef(false);
+  const workoutOpenedLogged = useRef(false);
   const [openSections,  setOpenSections]  = useState(() => new Set(['week', 'focus']));
   const [workoutPage,   setWorkoutPage]   = useState(() => {
     const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
@@ -4182,6 +4199,21 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
     if (saved && saved.length === texts.length) return saved;
     return texts.map((text, i) => ({ id: i, text, done: false }));
   });
+
+  useEffect(() => {
+    if (openSections.has('meals') && mealPlanDays?.length && !mealOpenedLogged.current) {
+      mealOpenedLogged.current = true;
+      onLogProductEvent?.('meal_plan_opened', { plan_id: activePlan?.id || null });
+    }
+  }, [openSections, mealPlanDays, activePlan?.id, onLogProductEvent]);
+
+  useEffect(() => {
+    const wd = LS.get(LS_KEYS.workoutplan, []) || [];
+    if (openSections.has('workouts') && wd.length && !workoutOpenedLogged.current) {
+      workoutOpenedLogged.current = true;
+      onLogProductEvent?.('workout_program_opened', { plan_id: activePlan?.id || null });
+    }
+  }, [openSections, activePlan?.id, onLogProductEvent]);
 
   const toggleSection = (key) => setOpenSections(prev => {
     const next = new Set(prev);
@@ -4251,11 +4283,20 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
   const macros     = getActiveTargets(activePlan, profile);
   const phase      = activePlan.phase || profile?.goal || 'Maintain';
   const today      = new Date().toISOString().slice(0, 10);
-  const week       = activePlan.startDate
+  const computedWeek = activePlan.startDate
     ? Math.min(12, Math.max(1, Math.floor(daysBetween(activePlan.startDate, today) / 7) + 1))
     : (activePlan.week || 1);
-  // [plan:week] verification log — remove after verifying
-  console.info('[plan:week] current week computed', { start_date: activePlan.startDate || null, stored_week: activePlan.week || null, computed_week: week, source: 'plans' });
+  const week =
+    activePlan.planWeekSource === 'plan_weeks' && activePlan.week != null
+      ? Math.min(12, Math.max(1, Math.round(Number(activePlan.week))))
+      : computedWeek;
+  console.info('[plan:week] current week computed', {
+    start_date: activePlan.startDate || null,
+    stored_week: activePlan.week || null,
+    computed_week: computedWeek,
+    display_week: week,
+    source: activePlan.planWeekSource === 'plan_weeks' ? 'plan_weeks' : 'plans',
+  });
   const phasePct   = Math.round((week / 12) * 100);
   const startDate  = activePlan.startDate || today;
   const nextScanDate = activePlan.nextScanDate || (() => {
@@ -4422,6 +4463,23 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
         )}
       </div>
 
+      {/* ══ Symmetry (canonical DB) ═════════════════════════════════════ */}
+      {Array.isArray(symmetryCorrections) && symmetryCorrections.length > 0 && (
+        <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.purple, textTransform: 'uppercase', marginBottom: 12 }}>
+            Symmetry focus
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {symmetryCorrections.slice(0, 8).map((row) => (
+              <div key={row.id || `${row.area}-${row.action}`} style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+                <span style={{ color: C.white, fontWeight: 600 }}>{row.area || 'Focus'}: </span>
+                {row.action}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ══ 5. MEALS ════════════════════════════════════════════════════ */}
       {mealPlanDays && (
         <div style={{ background: C.card, borderRadius: 20, padding: '18px 20px', border: `1px solid rgba(255,255,255,0.08)` }}>
@@ -4517,6 +4575,7 @@ function PlanTab({ profile, activePlan, setTab, showToast, subscription, onUpgra
                               const updated = { ...loggedMeals, [logKey]: true };
                               setLoggedMeals(updated);
                               LS.set(LS_KEYS.logged(today2), updated);
+                              onLogProductEvent?.('meal_logged', { day: day?.day, slot: key, calories: meal.calories });
                               showToast?.('Logged');
                             }} style={{
                               flex: 1, padding: '9px 0', background: 'none', border: 'none',
@@ -5495,6 +5554,37 @@ function getLastValidScan(history = []) {
   return null;
 }
 
+/** Derive symmetry_corrections rows from persisted scan entry (visual + engine). */
+function buildSymmetryCorrectionItemsFromScan(entry) {
+  const items = [];
+  const asym = entry?.asymmetries;
+  if (Array.isArray(asym)) {
+    for (const a of asym) {
+      if (typeof a === 'string' && a.trim()) {
+        items.push({ area: 'Balance', action: a.trim(), source: 'scan_visual' });
+      } else if (a && typeof a === 'object') {
+        const area = a.area || a.muscle || 'Balance';
+        const action = a.action || a.note || a.description || '';
+        if (action) items.push({ area: String(area), action: String(action), source: a.source || 'scan_visual', metadata: a });
+      }
+    }
+  }
+  const details = entry?.symmetryDetails;
+  if (items.length === 0 && details && String(details).trim()) {
+    items.push({ area: 'Symmetry', action: String(details).slice(0, 1900), source: 'scan_details' });
+  }
+  const de = entry?.decisionEngine;
+  if (de?.training_adjustments?.unilateral) {
+    items.push({
+      area: 'Balance',
+      action: 'Add unilateral accessories for lagging or asymmetric sides; prioritize symmetry in weekly volume.',
+      source: 'decision_engine',
+      metadata: { unilateral: true },
+    });
+  }
+  return items;
+}
+
 /* ─── Scan History Detail Modal ─────────────────────────────────────────────
    Shown when user taps a previous scan card.
    Shows key results only — keeps it focused and fast to parse.
@@ -5688,6 +5778,16 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
 
   const runScan = async (base64, mediaType) => {
     setScanning(true); setResult(null); setError(''); setConsistencyWarnings([]); setWarningsAccepted(false);
+    let captureSessionId = null;
+    let captureMeta = {
+      platform: 'web',
+      capture_mode: 'manual',
+    };
+    const appVersion =
+      typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_APP_VERSION
+        ? process.env.NEXT_PUBLIC_APP_VERSION
+        : '0.1.0';
+    captureMeta.app_version = appVersion;
     try {
       if (isLoggedIn && onRefreshEntitlements) {
         try {
@@ -5711,12 +5811,31 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
             console.info('[entitlements:body] blocked — free body scan quota exhausted');
             setError('You have used your free body scans. Upgrade to Premium for unlimited scans.');
             showToast('Free scan limit reached. Upgrade for unlimited scans.');
-            return;
-          }
-        } catch (refErr) {
+          return;
+        }
+      } catch (refErr) {
           console.warn('[entitlements:body] refresh before scan failed', refErr?.message);
           setError('Could not verify scan allowance. Check your connection and try again.');
           return;
+        }
+      }
+
+      const sessionEarly = getStoredSession();
+      const userIdEarly = sessionEarly?.user?.id || sessionEarly?.user_id || null;
+      if (sessionEarly?.access_token && userIdEarly) {
+        try {
+          const cap = await createScanCaptureSession(sessionEarly.access_token, userIdEarly, {
+            platform: 'web',
+            capture_mode: 'manual',
+            app_version: appVersion,
+            metadata: { ...captureMeta, step: 'pre_analysis' },
+          });
+          captureSessionId = cap?.id || null;
+          await insertProductEvent(sessionEarly.access_token, userIdEarly, 'scan_started', {
+            capture_session_id: captureSessionId,
+          });
+        } catch (capErr) {
+          console.warn('[scan_capture] session create failed', capErr?.message);
         }
       }
 
@@ -5768,6 +5887,22 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
         });
       } catch {}
 
+      captureMeta = {
+        ...captureMeta,
+        image_width: imgDimensions.width,
+        image_height: imgDimensions.height,
+        sha256_prefix: sha256Hash ? sha256Hash.slice(0, 16) : null,
+      };
+      if (captureSessionId && sessionEarly?.access_token) {
+        try {
+          await updateScanCaptureSession(sessionEarly.access_token, captureSessionId, {
+            metadata: captureMeta,
+          });
+        } catch (metaErr) {
+          console.warn('[scan_capture] metadata patch failed', metaErr?.message);
+        }
+      }
+
       // ── Step 0b: Exact-duplicate check against Supabase scan_assets ──────
       const session    = getStoredSession();
       const userId     = session?.user?.id || session?.user_id || null;
@@ -5801,6 +5936,14 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
                 perceptualHash:      pHash,
               });
               showToast('This photo was already scanned — previous result loaded to prevent duplicate history.');
+              if (captureSessionId && session?.access_token) {
+                try {
+                  await updateScanCaptureSession(session.access_token, captureSessionId, {
+                    status: 'duplicate_skip',
+                    completed_at: new Date().toISOString(),
+                  });
+                } catch (e) { console.warn('[scan_capture] duplicate_skip', e?.message); }
+              }
               setScanning(false);
               return;
             }
@@ -5836,6 +5979,14 @@ function ScanTab({ profile, setTab, showToast, onPlanApplied, onPersistProgramAr
               imageHash:      sha256Hash,
               perceptualHash: pHash,
             });
+            if (captureSessionId && session?.access_token) {
+              try {
+                await updateScanCaptureSession(session.access_token, captureSessionId, {
+                  status: 'duplicate_skip',
+                  completed_at: new Date().toISOString(),
+                });
+              } catch (e) { console.warn('[scan_capture] local_cache duplicate_skip', e?.message); }
+            }
             setScanning(false);
             return;
           }
@@ -5940,6 +6091,15 @@ Return ONLY this JSON (no markdown, no extra text):
             height:         imgDimensions.height,
           });
           resolvedAssetId = asset?.id || null;
+          if (resolvedAssetId && captureSessionId && session?.access_token) {
+            try {
+              await updateScanCaptureSession(session.access_token, captureSessionId, {
+                scan_asset_id: resolvedAssetId,
+              });
+            } catch (e) {
+              console.warn('[scan_capture] asset link failed', e?.message);
+            }
+          }
           if (resolvedAssetId) {
             console.info('[scan:asset] scan_assets row created, assetId:', resolvedAssetId);
           } else {
@@ -5961,10 +6121,59 @@ Return ONLY this JSON (no markdown, no extra text):
       // Cache this result keyed by SHA-256 (or lightweight fallback) so re-scanning same photo returns same result
       try { localStorage.setItem(cacheKey, JSON.stringify({ visualData, ts: Date.now() })); } catch {}
 
+      const pq = visualData.photoQuality || {};
+      captureMeta = {
+        ...captureMeta,
+        lighting: pq.lighting || null,
+        alignment: pq.pose || null,
+        framing: pq.clothing || null,
+        pose: pq.pose || null,
+        distance: null,
+        stability: Array.isArray(visualData.photoQualityIssues) && visualData.photoQualityIssues.length ? 'low' : 'medium',
+        photo_quality_overall: pq.overall || null,
+        photo_quality_notes: pq.notes || null,
+      };
+      if (captureSessionId && session?.access_token) {
+        try {
+          await updateScanCaptureSession(session.access_token, captureSessionId, { metadata: captureMeta });
+        } catch (e) {
+          console.warn('[scan_capture] post-visual metadata failed', e?.message);
+        }
+      }
+      if (captureSessionId && session?.access_token && Array.isArray(visualData.photoQualityIssues)) {
+        try {
+          await Promise.all(
+            visualData.photoQualityIssues.map((issue) =>
+              insertScanCaptureEvent(session.access_token, captureSessionId, 'photo_quality_issue', {
+                issue: typeof issue === 'string' ? issue : issue?.message || String(issue),
+              }),
+            ),
+          );
+        } catch (e) {
+          console.warn('[scan_capture] photo_quality events failed', e?.message);
+        }
+      }
+
       // Consistency check: flag suspicious swings before showing results
+      let consistencyWarnings = [];
       if (prevScan) {
-        const warnings = validateScanConsistency(visualData, prevScan, daysSincePrev);
-        if (warnings.length) setConsistencyWarnings(warnings);
+        consistencyWarnings = validateScanConsistency(visualData, prevScan, daysSincePrev);
+        if (consistencyWarnings.length) setConsistencyWarnings(consistencyWarnings);
+      }
+      if (captureSessionId && session?.access_token && consistencyWarnings.length) {
+        try {
+          await Promise.all(
+            consistencyWarnings.map((w) =>
+              insertScanCaptureEvent(session.access_token, captureSessionId, 'consistency_warning', {
+                metric: w.metric,
+                severity: w.severity || 'warning',
+                message: w.message,
+              }),
+            ),
+          );
+        } catch (e) {
+          console.warn('[scan_capture] consistency events failed', e?.message);
+        }
       }
 
       // Step 2: Run the engine with this scan data to get precise targets
@@ -5986,11 +6195,33 @@ Return ONLY this JSON (no markdown, no extra text):
         imageHash:       sha256Hash,
         perceptualHash:  pHash,
         assetId:         resolvedAssetId,
+        captureSessionId,
       };
       console.log('[plan:state] scan result set', { bodyFat: data?.bodyFatPct, leanMass: data?.leanMass });
       setResult(data);
     } catch (err) {
       setError(err.message || 'Scan failed. Please try again.');
+      const sessFail = getStoredSession();
+      const uidFail = sessFail?.user?.id || sessFail?.user_id || null;
+      if (captureSessionId && sessFail?.access_token) {
+        (async () => {
+          try {
+            await updateScanCaptureSession(sessFail.access_token, captureSessionId, {
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              metadata: { ...captureMeta, error: String(err?.message || err || 'unknown') },
+            });
+            if (uidFail) {
+              await insertProductEvent(sessFail.access_token, uidFail, 'scan_failed', {
+                capture_session_id: captureSessionId,
+                error: String(err?.message || 'scan_failed').slice(0, 500),
+              });
+            }
+          } catch (e) {
+            console.warn('[scan_capture] failure cleanup failed', e?.message);
+          }
+        })();
+      }
     }
     setScanning(false);
   };
@@ -6174,6 +6405,10 @@ Return ONLY this JSON (no markdown, no extra text):
       scanStatus:      result.isDuplicate ? 'duplicate' : 'complete',
       duplicateOfScanId: result.duplicateOfScanId || null,
       assetId:         result.assetId        || null,
+      captureSessionId: result.captureSessionId || null,
+      asymmetries:     result.asymmetries      || [],
+      symmetryDetails: result.symmetryDetails  || '',
+      photoQualityIssues: result.photoQualityIssues || [],
       scanContext,
       // Expose adaptation for UI display without re-computing
       adaptationDecision:  adaptation.decision,
@@ -7390,6 +7625,7 @@ export default function MassIQ() {
   const [scanHistory,   setScanHistory]   = useState(() => LS.get(LS_KEYS.scanHistory, []));
   const [subscription,  setSubscription]  = useState(null);
   const [entitlements,  setEntitlements]  = useState(null);
+  const [symmetryCorrections, setSymmetryCorrections] = useState([]);
   /** user_entitlements aligned with subscription tier (premium = sentinel limit); not used for premium gating. */
   const scanEntitlements = useMemo(
     () => normalizeScanEntitlementsForSubscription(subscription, entitlements),
@@ -7475,6 +7711,15 @@ export default function MassIQ() {
         setSession(s);
       } catch (err) {
         if (!mounted) return;
+        try {
+          const partial = getStoredSession();
+          const uid = partial?.user?.id || partial?.user_id;
+          if (partial?.access_token && uid) {
+            insertProductEvent(partial.access_token, uid, 'session_restore_failed', {
+              reason: String(err?.message || err || 'boot_error').slice(0, 220),
+            }).catch(() => {});
+          }
+        } catch {}
         setAuthError(err.message || 'Could not restore session.');
       } finally {
         if (mounted) setAuthReady(true);
@@ -7619,16 +7864,28 @@ export default function MassIQ() {
           loadedScanHistory = [];
         }
         try {
-          loadedMealPlan = await getLatestMealPlan(session.access_token, userId);
-          console.info('[sync] getLatestMealPlan:ok', { hasMealPlan: Boolean(loadedMealPlan) });
+          loadedMealPlan = await getLatestMealPlanHydrated(session.access_token, userId);
+          console.info('[sync] getLatestMealPlan:ok', {
+            hasMealPlan: Boolean(loadedMealPlan),
+            source: loadedMealPlan?._source || 'json',
+          });
         } catch (mealErr) {
           console.warn('sync:getLatestMealPlan failed (non-fatal)', mealErr?.message);
         }
         try {
-          loadedWorkoutProgram = await getLatestWorkoutProgram(session.access_token, userId);
-          console.info('[sync] getLatestWorkoutProgram:ok', { hasWorkoutProgram: Boolean(loadedWorkoutProgram) });
+          loadedWorkoutProgram = await getLatestWorkoutProgramHydrated(session.access_token, userId);
+          console.info('[sync] getLatestWorkoutProgram:ok', {
+            hasWorkoutProgram: Boolean(loadedWorkoutProgram),
+            source: loadedWorkoutProgram?._source || 'json',
+          });
         } catch (workoutErr) {
           console.warn('sync:getLatestWorkoutProgram failed (non-fatal)', workoutErr?.message);
+        }
+        try {
+          const symRows = await listSymmetryCorrections(session.access_token, userId, 40);
+          if (mounted) setSymmetryCorrections(Array.isArray(symRows) ? symRows : []);
+        } catch (symH) {
+          console.warn('sync:symmetry_corrections failed (non-fatal)', symH?.message);
         }
         try {
           loadedComparisons = await getScanComparisons(session.access_token, userId, 100);
@@ -7959,6 +8216,17 @@ export default function MassIQ() {
             const planRow = await upsertPlan(session.access_token, userId, nextPlan);
             dupPlanId = planRow?.id ?? null;
             console.info('[sync] duplicate apply: upsertPlan:ok', { persistedPlanId: dupPlanId });
+            if (dupPlanId) {
+              try {
+                await upsertPlanWeekRow(session.access_token, userId, {
+                  planId: dupPlanId,
+                  plan: nextPlan,
+                  todayStr: new Date().toISOString().slice(0, 10),
+                });
+              } catch (pwErr) {
+                console.warn('[sync] duplicate apply: plan_weeks skipped', pwErr?.message);
+              }
+            }
           } catch (planErr) {
             console.error('[sync] duplicate apply: upsertPlan:error', planErr?.message, planErr);
             throw planErr;
@@ -8017,6 +8285,34 @@ export default function MassIQ() {
             date: savedScanEntry.date,
           });
           console.info('[sync] step2:createScan:ok — history updated', { scanId, total: newHistory.length });
+          if (scanId && newScanEntry?.captureSessionId) {
+            try {
+              await updateScanCaptureSession(session.access_token, newScanEntry.captureSessionId, {
+                scan_id: scanId,
+                status: 'completed',
+                completed_at: new Date().toISOString(),
+              });
+              await insertProductEvent(session.access_token, userId, 'scan_completed', {
+                scan_id: scanId,
+                capture_session_id: newScanEntry.captureSessionId,
+              });
+              const conf = (newScanEntry.confidence || '').toLowerCase();
+              const pqIssues = Array.isArray(newScanEntry.photoQualityIssues) ? newScanEntry.photoQualityIssues.length : 0;
+              if (conf === 'low' || pqIssues > 0) {
+                await insertScanQualityReview(session.access_token, userId, {
+                  scanId,
+                  confidenceLabel: newScanEntry.confidence || 'medium',
+                  recommendation: conf === 'low' || pqIssues > 0 ? 'rescan_recommended' : 'review',
+                  notes: {
+                    photo_quality_issue_count: pqIssues,
+                    photo_quality_issues: newScanEntry.photoQualityIssues || [],
+                  },
+                });
+              }
+            } catch (capFin) {
+              console.warn('[scan_capture] finalize after scan insert failed', capFin?.message);
+            }
+          }
         }
       }
 
@@ -8034,6 +8330,18 @@ export default function MassIQ() {
         } catch (planErr) {
           console.error('[sync] step3:upsertPlan:error', planErr?.message, planErr);
           if (newScanEntry) throw planErr;
+        }
+      }
+
+      if (persistedPlanId && userId) {
+        try {
+          await upsertPlanWeekRow(session.access_token, userId, {
+            planId: persistedPlanId,
+            plan: nextPlan,
+            todayStr: new Date().toISOString().slice(0, 10),
+          });
+        } catch (pwErr) {
+          console.warn('[sync] plan_weeks upsert skipped', pwErr?.message);
         }
       }
 
@@ -8417,6 +8725,21 @@ export default function MassIQ() {
             has_next: Boolean(nextPlan),
           });
         }
+
+        if (persistedPlanId && savedScanEntry?.dbId) {
+          try {
+            const symItems = buildSymmetryCorrectionItemsFromScan(savedScanEntry);
+            if (symItems.length) {
+              await insertSymmetryCorrectionRows(session.access_token, userId, {
+                scanId: savedScanEntry.dbId,
+                planId: persistedPlanId,
+                items: symItems,
+              });
+            }
+          } catch (symErr) {
+            console.warn('[symmetry_corrections] insert skipped', symErr?.message);
+          }
+        }
       }
 
     } catch (err) {
@@ -8450,6 +8773,16 @@ export default function MassIQ() {
       console.error('[db:plan] persistProgramArtifacts — no plan id after upsert');
       setToast('Plan not synced; meal/workout not saved.');
       return;
+    }
+
+    try {
+      await upsertPlanWeekRow(session.access_token, userId, {
+        planId,
+        plan: nextPlan,
+        todayStr: new Date().toISOString().slice(0, 10),
+      });
+    } catch (pwErr) {
+      console.warn('[db:plan_weeks] persistProgramArtifacts skipped', pwErr?.message);
     }
 
     if (Array.isArray(mealDays)) {
@@ -8730,6 +9063,16 @@ export default function MassIQ() {
     }
   };
 
+  const logProductEvent = useCallback(async (eventName, payload = {}) => {
+    const uid = session?.user?.id ?? session?.user_id;
+    if (!session?.access_token || !uid) return;
+    try {
+      await insertProductEvent(session.access_token, uid, eventName, payload);
+    } catch (e) {
+      console.warn('[product_events]', eventName, e?.message);
+    }
+  }, [session?.access_token, session?.user?.id, session?.user_id]);
+
   const handleFoodScanComplete = async (payload = {}) => {
     if (!session?.access_token) return;
     const data = await recordFoodScanSuccess(session.access_token, payload);
@@ -8743,6 +9086,9 @@ export default function MassIQ() {
         setEntitlements(ent);
       } catch {}
     }
+    try {
+      await logProductEvent('food_scan_completed', { source: payload?.source || 'unknown' });
+    } catch {}
   };
 
   const showToast = (msg) => setToast(msg);
@@ -8843,10 +9189,10 @@ export default function MassIQ() {
   const renderTab = () => {
     const content = (() => {
       switch (tab) {
-        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={scanEntitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} />;
-        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={scanEntitlements} onFoodScanComplete={handleFoodScanComplete} />;
+        case 'home':      return <HomeTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} scanHistory={scanHistory} subscription={subscription} entitlements={scanEntitlements} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} onFoodScanComplete={handleFoodScanComplete} onLogProductEvent={logProductEvent} />;
+        case 'nutrition': return <NutritionTab profile={profile} activePlan={activePlan} showToast={showToast} setTab={setTab} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} userId={session?.user?.id} accessToken={session?.access_token} entitlements={scanEntitlements} onFoodScanComplete={handleFoodScanComplete} onLogProductEvent={logProductEvent} />;
         case 'scan':      return <ScanTab profile={profile} setTab={setTab} showToast={showToast} subscription={subscription} entitlements={scanEntitlements} parentScanHistory={scanHistory} onPersistProgramArtifacts={persistProgramArtifacts} onPlanApplied={async (p, entry) => { const prevPlan = activePlan; setActivePlan(p); await persistUserState(profile, p, entry, { previousPlan: prevPlan }); await refreshEntitlementsForScan(); const uid = session?.user?.id ?? session?.user_id; if (session?.access_token && uid) { const fresh = await fetchUserEntitlements(session.access_token, uid); setEntitlements(fresh); } }} onRefreshEntitlements={refreshEntitlementsForScan} isLoggedIn={!!session?.access_token} />;
-        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} />;
+        case 'plan':      return <PlanTab profile={profile} activePlan={activePlan} setTab={setTab} showToast={showToast} subscription={subscription} onUpgrade={() => setPaywallOpen(true)} symmetryCorrections={symmetryCorrections} onLogProductEvent={logProductEvent} />;
         case 'profile':   return (
           <ProfileTab
             profile={profile}

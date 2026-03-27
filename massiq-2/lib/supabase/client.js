@@ -15,6 +15,33 @@ function authHeaders(token) {
   };
 }
 
+/** Server-side / backfill only — bypasses RLS. Never expose in browser bundles. */
+export function serviceRoleHeaders() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) throw new Error('[supabase] SUPABASE_SERVICE_ROLE_KEY is required for serviceRoleHeaders()');
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+function resolveAuthHeaders(token, opts = {}) {
+  if (opts && opts.serviceRole) return serviceRoleHeaders();
+  return authHeaders(token);
+}
+
+/** One-off backfill / admin scripts — list or patch rows with service role (bypasses RLS). */
+export async function serviceRoleFetch(path, opts = {}) {
+  return supabaseFetch(path, {
+    ...opts,
+    headers: {
+      ...serviceRoleHeaders(),
+      ...(opts.headers || {}),
+    },
+  });
+}
+
 /**
  * PostgREST / Supabase REST errors expose `code`, `details`, `hint`, `message` in JSON body.
  * We attach them on the Error for client debugging (RLS, FK, constraint names).
@@ -236,6 +263,7 @@ function deserializePlan(row) {
   const week = row.week != null ? Math.max(1, Math.min(12, Math.round(Number(row.week)))) : null;
   const startDate = row.start_date ? String(row.start_date).slice(0, 10) : null;
   return {
+    id: row.id || null,
     phase: phaseLabel,
     phaseName: `${phaseLabel} Phase`,
     objective: '',
@@ -705,7 +733,29 @@ export async function getPlan(token, userId) {
       );
     } else throw err;
   }
-  return Array.isArray(rows) && rows[0] ? deserializePlan(rows[0]) : null;
+  const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!row) return null;
+  const plan = deserializePlan(row);
+  try {
+    const planId = row.id;
+    if (planId) {
+      const pwRows = await supabaseFetch(
+        `/rest/v1/plan_weeks?select=week_number,week_start_date,phase,metadata,updated_at&plan_id=eq.${planId}&order=week_number.desc&limit=1`,
+        { method: 'GET', headers: authHeaders(token) },
+      );
+      const pw = Array.isArray(pwRows) && pwRows[0] ? pwRows[0] : null;
+      if (pw && pw.week_number != null) {
+        const wn = Math.max(1, Math.min(12, Math.round(Number(pw.week_number))));
+        plan.week = wn;
+        plan.planWeekSource = 'plan_weeks';
+        plan.weekMetadata = pw.metadata || null;
+        if (pw.week_start_date) plan.activeWeekStartDate = String(pw.week_start_date).slice(0, 10);
+      }
+    }
+  } catch (e) {
+    console.warn('[db:plan_weeks] merge skipped', e?.message);
+  }
+  return plan;
 }
 
 /**
@@ -749,7 +799,11 @@ export async function upsertMealPlan(token, userId, { planId, preferencesSnapsho
       });
       const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
       console.info('[db:meal-plan] ok PATCH', { user_id: userId, plan_id: planId, meal_plan_id: row?.id ?? existing.id });
-      return row || { id: existing.id, ...payload };
+      const out = row || { id: existing.id, ...payload };
+      if (out?.id && Array.isArray(payload.meals) && payload.meals.length) {
+        await syncMealPlanNormalizedRows(token, userId, out.id, payload.meals);
+      }
+      return out;
     }
     const rows = await supabaseFetch('/rest/v1/meal_plans', {
       method: 'POST',
@@ -758,7 +812,11 @@ export async function upsertMealPlan(token, userId, { planId, preferencesSnapsho
     });
     const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
     console.info('[db:meal-plan] ok POST', { user_id: userId, plan_id: planId, meal_plan_id: row?.id ?? null });
-    return row;
+    const out = row;
+    if (out?.id && Array.isArray(payload.meals) && payload.meals.length) {
+      await syncMealPlanNormalizedRows(token, userId, out.id, payload.meals);
+    }
+    return out;
   } catch (err) {
     console.error('[db:meal-plan] FAILED', { user_id: userId, plan_id: planId, error: err?.message, raw: String(err) });
     throw err;
@@ -808,7 +866,12 @@ export async function upsertWorkoutProgram(token, userId, { planId, splitName = 
       });
       const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
       console.info('[db:workout] ok PATCH', { user_id: userId, plan_id: planId, workout_program_id: row?.id ?? existing.id });
-      return row || { id: existing.id, ...payload };
+      const out = row || { id: existing.id, ...payload };
+      const days = payload.structure?.days;
+      if (out?.id && Array.isArray(days) && days.length) {
+        await syncWorkoutProgramNormalizedRows(token, userId, out.id, days);
+      }
+      return out;
     }
     const rows = await supabaseFetch('/rest/v1/workout_programs', {
       method: 'POST',
@@ -817,6 +880,9 @@ export async function upsertWorkoutProgram(token, userId, { planId, splitName = 
     });
     const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
     console.info('[db:workout] ok POST', { user_id: userId, plan_id: planId, workout_program_id: row?.id ?? null });
+    if (row?.id && Array.isArray(payload.structure?.days) && payload.structure.days.length) {
+      await syncWorkoutProgramNormalizedRows(token, userId, row.id, payload.structure.days);
+    }
     return row;
   } catch (err) {
     console.error('[db:workout] FAILED', { user_id: userId, plan_id: planId, error: err?.message });
@@ -2079,6 +2145,476 @@ export async function persistPersonalizationArtifacts(token, userId, {
       recovery_notes: ta.recovery_notes,
     },
   });
+}
+
+/* ─── Day helpers (meal plan normalization) ─────────────────────────────── */
+function sumMealMacrosLocal(m) {
+  if (!m) return { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  return {
+    calories: Number(m.calories ?? 0) || 0,
+    protein: Number(m.protein ?? 0) || 0,
+    carbs: Number(m.carbs ?? 0) || 0,
+    fat: Number(m.fat ?? 0) || 0,
+  };
+}
+
+function sumMealDayMacrosLocal(day) {
+  if (!day) return { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  if (Array.isArray(day.meals) && day.meals.length) {
+    return day.meals.reduce(
+      (acc, m) => {
+        const s = sumMealMacrosLocal(m);
+        return {
+          calories: acc.calories + s.calories,
+          protein: acc.protein + s.protein,
+          carbs: acc.carbs + s.carbs,
+          fat: acc.fat + s.fat,
+        };
+      },
+      { calories: 0, protein: 0, carbs: 0, fat: 0 },
+    );
+  }
+  const b = sumMealMacrosLocal(day.breakfast);
+  const l = sumMealMacrosLocal(day.lunch);
+  const d = sumMealMacrosLocal(day.dinner);
+  const s = sumMealMacrosLocal(day.snack);
+  return {
+    calories: b.calories + l.calories + d.calories + s.calories,
+    protein: b.protein + l.protein + d.protein + s.protein,
+    carbs: b.carbs + l.carbs + d.carbs + s.carbs,
+    fat: b.fat + l.fat + d.fat + s.fat,
+  };
+}
+
+function daysBetweenIso(a, b) {
+  const A = new Date(`${String(a).slice(0, 10)}T12:00:00Z`).getTime();
+  const B = new Date(`${String(b).slice(0, 10)}T12:00:00Z`).getTime();
+  if (!Number.isFinite(A) || !Number.isFinite(B)) return 0;
+  return Math.round((B - A) / 86400000);
+}
+
+/** Active program week index (1–12) from plan start date. */
+export function computeProgramWeekNumber(startDateStr, todayStr) {
+  const t = todayStr || new Date().toISOString().slice(0, 10);
+  if (!startDateStr) return 1;
+  const d = Math.max(0, daysBetweenIso(startDateStr, t));
+  return Math.min(12, Math.max(1, Math.floor(d / 7) + 1));
+}
+
+async function safeRest(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    console.warn(label, e?.message || e);
+    return null;
+  }
+}
+
+/** Product analytics — non-blocking. */
+export async function insertProductEvent(token, userId, eventName, payload = {}) {
+  if (!eventName) return null;
+  const row = {
+    user_id: userId || null,
+    event_name: String(eventName),
+    payload: typeof payload === 'object' && payload ? payload : { value: payload },
+    created_at: new Date().toISOString(),
+  };
+  return safeRest('[product_events]', () =>
+    supabaseFetch('/rest/v1/product_events', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    }),
+  );
+}
+
+/** Guided scan capture session (created before analysis). */
+export async function createScanCaptureSession(token, userId, fields = {}) {
+  const row = {
+    user_id: userId,
+    platform: fields.platform || 'web',
+    capture_mode: fields.capture_mode || 'manual',
+    app_version: fields.app_version || null,
+    status: fields.status || 'in_progress',
+    pose_sequence: fields.pose_sequence || [],
+    metadata: fields.metadata || {},
+    scan_asset_id: fields.scan_asset_id || null,
+    started_at: fields.started_at || new Date().toISOString(),
+  };
+  const rows = await supabaseFetch('/rest/v1/scan_capture_sessions', {
+    method: 'POST',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(row),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function updateScanCaptureSession(token, sessionId, patch = {}) {
+  if (!sessionId) return null;
+  const rows = await supabaseFetch(`/rest/v1/scan_capture_sessions?id=eq.${sessionId}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(token), Prefer: 'return=representation' },
+    body: JSON.stringify(patch),
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+export async function insertScanCaptureEvent(token, sessionId, eventType, payload = {}) {
+  if (!sessionId || !eventType) return null;
+  return safeRest('[scan_capture_events]', () =>
+    supabaseFetch('/rest/v1/scan_capture_events', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        event_type: String(eventType),
+        payload: payload || {},
+      }),
+    }),
+  );
+}
+
+export async function insertScanQualityReview(token, userId, { scanId, confidenceLabel, recommendation, notes = {} }) {
+  if (!userId) return null;
+  return safeRest('[scan_quality_reviews]', () =>
+    supabaseFetch('/rest/v1/scan_quality_reviews', {
+      method: 'POST',
+      headers: { ...authHeaders(token), Prefer: 'return=representation' },
+      body: JSON.stringify({
+        user_id: userId,
+        scan_id: scanId || null,
+        confidence_label: confidenceLabel || null,
+        recommendation: recommendation || null,
+        notes: notes || {},
+      }),
+    }),
+  );
+}
+
+/** Upsert current plan week row for continuity (does not reset week to 1). */
+export async function upsertPlanWeekRow(token, userId, { planId, plan, todayStr }, opts = {}) {
+  if (!planId || !userId) return null;
+  const h = resolveAuthHeaders(token, opts);
+  const start = plan?.startDate || todayStr || new Date().toISOString().slice(0, 10);
+  const t = todayStr || new Date().toISOString().slice(0, 10);
+  const weekNumber = computeProgramWeekNumber(start, t);
+  const phase = plan?.phase ? toPhaseValue(plan.phase) : null;
+  const row = {
+    user_id: userId,
+    plan_id: planId,
+    week_number: weekNumber,
+    week_start_date: start,
+    phase,
+    metadata: { computed_from_start_date: start, as_of: t },
+    updated_at: new Date().toISOString(),
+  };
+  return safeRest('[plan_weeks]', () =>
+    supabaseFetch('/rest/v1/plan_weeks?on_conflict=plan_id,week_number', {
+      method: 'POST',
+      headers: {
+        ...h,
+        Prefer: 'resolution=merge-duplicates,return=representation',
+      },
+      body: JSON.stringify(row),
+    }),
+  );
+}
+
+export async function syncMealPlanNormalizedRows(token, userId, mealPlanId, mealDays, opts = {}) {
+  if (!mealPlanId || !Array.isArray(mealDays) || mealDays.length === 0) return;
+  const h = resolveAuthHeaders(token, opts);
+  await safeRest('[meal_plan_days] delete', () =>
+    supabaseFetch(`/rest/v1/meal_plan_days?meal_plan_id=eq.${mealPlanId}`, {
+      method: 'DELETE',
+      headers: h,
+    }),
+  );
+  for (let i = 0; i < mealDays.length; i += 1) {
+    const day = mealDays[i];
+    const totals = sumMealDayMacrosLocal(day);
+    const dayRows = await safeRest('[meal_plan_days] insert', () =>
+      supabaseFetch('/rest/v1/meal_plan_days', {
+        method: 'POST',
+        headers: { ...h, Prefer: 'return=representation' },
+        body: JSON.stringify({
+          meal_plan_id: mealPlanId,
+          day_index: i,
+          day_label: day.day || `Day ${i + 1}`,
+          plan_date: null,
+          totals,
+          payload: { isTrainingDay: day.isTrainingDay ?? null, totalCalories: day.totalCalories, totalProtein: day.totalProtein },
+        }),
+      }),
+    );
+    const dayId = Array.isArray(dayRows) && dayRows[0]?.id ? dayRows[0].id : null;
+    if (!dayId) continue;
+    const slots = [
+      ['breakfast', day.breakfast],
+      ['lunch', day.lunch],
+      ['dinner', day.dinner],
+      ['snack', day.snack],
+    ];
+    let sort = 0;
+    for (const [slotKey, meal] of slots) {
+      if (!meal) continue;
+      const m = sumMealMacrosLocal(meal);
+      await safeRest('[meal_plan_items] slot', () =>
+        supabaseFetch('/rest/v1/meal_plan_items', {
+          method: 'POST',
+          headers: h,
+          body: JSON.stringify({
+            meal_plan_day_id: dayId,
+            sort_order: sort,
+            slot_key: slotKey,
+            name: meal.name || slotKey,
+            calories: Math.round(m.calories),
+            protein_g: Math.round(m.protein),
+            carbs_g: Math.round(m.carbs),
+            fat_g: Math.round(m.fat),
+            payload: meal,
+          }),
+        }),
+      );
+      sort += 1;
+    }
+    if (Array.isArray(day.meals) && day.meals.length) {
+      for (let j = 0; j < day.meals.length; j += 1) {
+        const meal = day.meals[j];
+        const m = sumMealMacrosLocal(meal);
+        await safeRest('[meal_plan_items] meals[]', () =>
+          supabaseFetch('/rest/v1/meal_plan_items', {
+            method: 'POST',
+            headers: h,
+            body: JSON.stringify({
+              meal_plan_day_id: dayId,
+              sort_order: sort + j,
+              slot_key: 'meal',
+              name: meal.name || `Meal ${j + 1}`,
+              calories: Math.round(m.calories),
+              protein_g: Math.round(m.protein),
+              carbs_g: Math.round(m.carbs),
+              fat_g: Math.round(m.fat),
+              payload: meal,
+            }),
+          }),
+        );
+      }
+    }
+  }
+}
+
+async function fetchMealPlanDaysWithItems(token, mealPlanId) {
+  const days = await supabaseFetch(
+    `/rest/v1/meal_plan_days?meal_plan_id=eq.${mealPlanId}&select=*&order=day_index.asc`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  if (!Array.isArray(days) || days.length === 0) return [];
+  const out = [];
+  for (const d of days) {
+    const items = await supabaseFetch(
+      `/rest/v1/meal_plan_items?meal_plan_day_id=eq.${d.id}&select=*&order=sort_order.asc`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    out.push({ day: d, items: Array.isArray(items) ? items : [] });
+  }
+  return out;
+}
+
+/** Rebuild MassIQ meal `days[]` from normalized rows (preferred when present). */
+export function mealDaysFromNormalized(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return rows.map(({ day, items }) => {
+    const base = {
+      day: day.day_label || 'Day',
+      isTrainingDay: day.payload?.isTrainingDay ?? true,
+      totalCalories: day.totals?.calories,
+      totalProtein: day.totals?.protein,
+    };
+    const bySlot = { breakfast: null, lunch: null, dinner: null, snack: null };
+    const mealsArr = [];
+    (items || []).forEach((it) => {
+      const p = it.payload && typeof it.payload === 'object' ? it.payload : {};
+      const meal = Object.keys(p).length ? p : {
+        name: it.name,
+        calories: it.calories,
+        protein: it.protein_g,
+        carbs: it.carbs_g,
+        fat: it.fat_g,
+        mealType: it.slot_key || 'snack',
+        time: it.slot_key || '',
+        icon: 'bowl',
+        description: '',
+        prepTime: '',
+        whyThisMeal: '',
+        tags: [],
+      };
+      if (it.slot_key && bySlot[it.slot_key] === null && ['breakfast', 'lunch', 'dinner', 'snack'].includes(it.slot_key)) {
+        bySlot[it.slot_key] = meal;
+      } else {
+        mealsArr.push(meal);
+      }
+    });
+    if (mealsArr.length) return { ...base, meals: mealsArr };
+    return {
+      ...base,
+      breakfast: bySlot.breakfast,
+      lunch: bySlot.lunch,
+      dinner: bySlot.dinner,
+      snack: bySlot.snack,
+    };
+  });
+}
+
+export async function getLatestMealPlanHydrated(token, userId) {
+  const mp = await getLatestMealPlan(token, userId);
+  if (!mp?.id) return mp;
+  const packed = await safeRest('[meal_plan_days] fetch', () => fetchMealPlanDaysWithItems(token, mp.id));
+  if (!packed || packed.length === 0) return mp;
+  const days = mealDaysFromNormalized(packed);
+  if (!days || days.length === 0) return mp;
+  return { ...mp, meals: days, _source: 'normalized' };
+}
+
+export async function syncWorkoutProgramNormalizedRows(token, userId, workoutProgramId, workoutDays, opts = {}) {
+  if (!workoutProgramId || !Array.isArray(workoutDays) || workoutDays.length === 0) return;
+  const h = resolveAuthHeaders(token, opts);
+  await safeRest('[workout_program_days] delete', () =>
+    supabaseFetch(`/rest/v1/workout_program_days?workout_program_id=eq.${workoutProgramId}`, {
+      method: 'DELETE',
+      headers: h,
+    }),
+  );
+  for (let i = 0; i < workoutDays.length; i += 1) {
+    const wd = workoutDays[i];
+    const dayRows = await safeRest('[workout_program_days] insert', () =>
+      supabaseFetch('/rest/v1/workout_program_days', {
+        method: 'POST',
+        headers: { ...h, Prefer: 'return=representation' },
+        body: JSON.stringify({
+          workout_program_id: workoutProgramId,
+          day_index: i,
+          day_label: wd.day || `Day ${i + 1}`,
+          payload: wd,
+        }),
+      }),
+    );
+    const dayId = Array.isArray(dayRows) && dayRows[0]?.id ? dayRows[0].id : null;
+    if (!dayId || !Array.isArray(wd.exercises)) continue;
+    wd.exercises.forEach((ex, j) => {
+      safeRest('[workout_program_exercises]', () =>
+        supabaseFetch('/rest/v1/workout_program_exercises', {
+          method: 'POST',
+          headers: h,
+          body: JSON.stringify({
+            workout_program_day_id: dayId,
+            exercise_index: j,
+            name: ex.name || null,
+            sets: ex.sets != null ? Number(ex.sets) : null,
+            reps: ex.reps != null ? String(ex.reps) : null,
+            rest: ex.rest != null ? String(ex.rest) : null,
+            weight: ex.weight != null ? String(ex.weight) : null,
+            technique: ex.technique != null ? String(ex.technique) : null,
+            payload: ex,
+          }),
+        }),
+      );
+    });
+  }
+}
+
+async function fetchWorkoutDaysWithExercises(token, workoutProgramId) {
+  const days = await supabaseFetch(
+    `/rest/v1/workout_program_days?workout_program_id=eq.${workoutProgramId}&select=*&order=day_index.asc`,
+    { method: 'GET', headers: authHeaders(token) },
+  );
+  if (!Array.isArray(days) || days.length === 0) return [];
+  const out = [];
+  for (const d of days) {
+    const ex = await supabaseFetch(
+      `/rest/v1/workout_program_exercises?workout_program_day_id=eq.${d.id}&select=*&order=exercise_index.asc`,
+      { method: 'GET', headers: authHeaders(token) },
+    );
+    out.push({ day: d, exercises: Array.isArray(ex) ? ex : [] });
+  }
+  return out;
+}
+
+export function workoutDaysFromNormalized(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return rows.map(({ day, exercises }) => {
+    const p = day.payload && typeof day.payload === 'object' ? day.payload : {};
+    if (p.exercises && Array.isArray(p.exercises)) return p;
+    const exList = (exercises || []).map((e) =>
+      e.payload && typeof e.payload === 'object' && e.payload.name ? e.payload : {
+        name: e.name,
+        sets: e.sets,
+        reps: e.reps,
+        rest: e.rest,
+        weight: e.weight,
+        technique: e.technique,
+      },
+    );
+    return {
+      day: day.day_label || p.day || 'Day',
+      isTrainingDay: p.isTrainingDay !== false,
+      workoutType: p.workoutType || '',
+      focus: p.focus || [],
+      duration: p.duration || '',
+      warmup: p.warmup || '',
+      cooldown: p.cooldown || '',
+      exercises: exList,
+      cardio: p.cardio,
+    };
+  });
+}
+
+export async function getLatestWorkoutProgramHydrated(token, userId) {
+  const wp = await getLatestWorkoutProgram(token, userId);
+  if (!wp?.id) return wp;
+  const packed = await safeRest('[workout_program_days] fetch', () => fetchWorkoutDaysWithExercises(token, wp.id));
+  if (!packed || packed.length === 0) return wp;
+  const days = workoutDaysFromNormalized(packed);
+  if (!days || days.length === 0) return wp;
+  return {
+    ...wp,
+    structure: { days },
+    _source: 'normalized',
+  };
+}
+
+export async function insertSymmetryCorrectionRows(token, userId, { scanId, planId, items = [] }, opts = {}) {
+  if (!userId || !Array.isArray(items) || items.length === 0) return;
+  const h = resolveAuthHeaders(token, opts);
+  for (const it of items) {
+    const area = it.area || it.muscle || it.label || 'general';
+    const action = it.action || it.note || it.text || '';
+    if (!action) continue;
+    await safeRest('[symmetry_corrections]', () =>
+      supabaseFetch('/rest/v1/symmetry_corrections', {
+        method: 'POST',
+        headers: h,
+        body: JSON.stringify({
+          user_id: userId,
+          scan_id: scanId || null,
+          plan_id: planId || null,
+          area: String(area).slice(0, 120),
+          action: String(action).slice(0, 2000),
+          source: it.source || 'scan',
+          metadata: it.metadata || {},
+        }),
+      }),
+    );
+  }
+}
+
+export async function listSymmetryCorrections(token, userId, limit = 20) {
+  const rows = await safeRest('[symmetry_corrections] list', () =>
+    supabaseFetch(
+      `/rest/v1/symmetry_corrections?user_id=eq.${userId}&select=*&order=created_at.desc&limit=${limit}`,
+      { method: 'GET', headers: authHeaders(token) },
+    ),
+  );
+  return Array.isArray(rows) ? rows : [];
 }
 
 export async function createProjection(token, userId, scanId, planId, plan, scan, profile) {
